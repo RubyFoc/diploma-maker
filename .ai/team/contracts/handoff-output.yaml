@@ -1,0 +1,18 @@
+request_id: ""
+role: ""
+status: "in_progress" # in_progress | blocked | done
+changes: []
+decisions: []
+checks:
+  commands: []
+  results: []
+documentation_updates: []
+diagram_updates: []
+best_practices_checks: []
+findings:
+  high: []
+  medium: []
+  low: []
+assumptions: []
+open_questions: []
+next_actions: []

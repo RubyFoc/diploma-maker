@@ -1,0 +1,10 @@
+* @RubyFoc
+
+/docs/project/* @RubyFoc
+/docs/architecture/* @RubyFoc
+/docs/operations/* @RubyFoc
+/docs/testing/* @RubyFoc
+/apps/backend/* @RubyFoc
+/apps/frontend/* @RubyFoc
+/scripts/* @RubyFoc
+/Academic_Platform_PRD.md @RubyFoc

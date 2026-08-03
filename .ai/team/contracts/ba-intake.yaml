@@ -1,0 +1,11 @@
+request_id: ""
+owner_role: "business-analyst"
+status: "in_progress" # blocked | in_progress | done
+source_artifacts:
+  - path: "Academic_Platform_PRD.md"
+    type: "problem-brief"
+    status: "filled"
+summary: ""
+blockers: []
+open_questions: []
+next_actions: []

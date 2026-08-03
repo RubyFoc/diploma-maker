@@ -1,0 +1,22 @@
+request_id: ""
+summary: ""
+business_context:
+  problem_statement: ""
+  target_users: []
+  success_metrics: []
+scope:
+  in_scope: []
+  out_of_scope: []
+constraints: []
+non_functional_requirements: []
+acceptance_criteria: []
+risks: []
+documentation:
+  affected_docs: []
+  affected_diagrams: []
+  requires_decision_log_update: false
+  requires_architect_signoff: true
+  update_owner: "coordinator"
+artifacts:
+  files_to_touch: []
+  dependencies: []

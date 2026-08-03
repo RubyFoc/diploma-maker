@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  docs-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Docs structure check
+        run: ./scripts/check-docs-structure.sh
+
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      UV_CACHE_DIR: ~/.cache/uv
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+      - name: Setup Python
+        run: uv python install 3.12
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('apps/backend/uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+      - name: Sync backend dependencies
+        run: uv sync --project apps/backend
+      - name: Lint backend
+        run: uv run --project apps/backend ruff check .
+      - name: Test backend
+        run: uv run --project apps/backend pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix apps/frontend ci
+      - name: Lint frontend
+        run: npm --prefix apps/frontend run lint
+      - name: Test frontend
+        run: npm --prefix apps/frontend run test -- --run
