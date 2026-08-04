@@ -3,7 +3,7 @@
 ## Local Bootstrap
 - `cp .env.example .env`
 - `docker compose up -d --build`
-- Backend health: `http://localhost:8000/health`
+- Backend health: `http://localhost:8010/health`
 - Frontend: `http://localhost:5173`
 
 ## Common Issues

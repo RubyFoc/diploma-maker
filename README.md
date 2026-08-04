@@ -20,7 +20,7 @@ university-specific `.docx` formatting.
 1. `cp .env.example .env`
 2. `docker compose up -d --build`
 3. `./scripts/smoke-compose.sh`
-4. Frontend: `http://localhost:5173`, Backend health: `http://localhost:8000/health`
+4. Frontend: `http://localhost:5173`, Backend health: `http://localhost:8010/health`
 
 ## Delivery Process
 - Git/GitHub flow and protected branch policy: `docs/operations/github-workflow.md`
