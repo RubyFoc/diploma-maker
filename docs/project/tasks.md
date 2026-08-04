@@ -19,18 +19,18 @@ status in sync with GitHub issues once tasks move to execution.
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E05-1 | Institution config schema + MongoDB storage per ADR-0005 | E05 | python-developer | ready |
-| TASK-E05-2 | Formatting-sample upload + parser (margins/fonts/citation style extraction) | E05 | python-developer | blocked on TASK-E05-1 |
-| TASK-E05-3 | University dropdown/selection endpoint | E05 | python-developer | blocked on TASK-E05-1 |
-| TASK-E03-1 | DeepSeek client wrapper (fast/heavy tier per ADR-0003) | E03 | python-developer | ready (DeepSeek key provisioned) |
-| TASK-E03-2 | Chapter-summary compaction + cache-friendly prompt assembly | E03 | python-developer | blocked on TASK-E03-1 |
-| TASK-E03-3 | LLM call failure-path handling (timeout/error/retry) | E03 | python-developer | blocked on TASK-E03-1 |
+| TASK-E05-1 | Institution config schema + MongoDB storage per ADR-0005 | E05 | python-developer | done |
+| TASK-E05-2 | Formatting-sample upload + parser (margins/fonts/citation style extraction) | E05 | python-developer | ready |
+| TASK-E05-3 | University dropdown/selection endpoint | E05 | python-developer | ready |
+| TASK-E03-1 | DeepSeek client wrapper (fast/heavy tier per ADR-0003) | E03 | python-developer | done |
+| TASK-E03-2 | Chapter-summary compaction + cache-friendly prompt assembly | E03 | python-developer | ready |
+| TASK-E03-3 | LLM call failure-path handling (timeout/error/retry) | E03 | python-developer | ready |
 
 ## Phase 2 — Sources & Citations
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E04-1 | Qdrant client integration + embedding ingestion pipeline | E04 | python-developer | blocked on TASK-E03-1 |
+| TASK-E04-1 | Qdrant client integration + embedding ingestion pipeline | E04 | python-developer | ready |
 | TASK-E04-2 | Semantic Scholar / CORE API search integration (recency filter) | E04 | python-developer | blocked on TASK-E04-1 |
 | TASK-E04-3 | Geo-fencing filter layer (RU/BY) on search results | E04 | python-developer | blocked on TASK-E04-2 |
 | TASK-E04-4 | Citation verification + retry/reject flow per ADR-0001 | E04 | python-developer | blocked on TASK-E04-1 |
@@ -39,7 +39,7 @@ status in sync with GitHub issues once tasks move to execution.
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E06-1 | Markdown → `.docx` mapping engine (`python-docx`) | E06 | python-developer | blocked on TASK-E05-1 |
+| TASK-E06-1 | Markdown → `.docx` mapping engine (`python-docx`) | E06 | python-developer | ready |
 | TASK-E06-2 | Apply institution config styles to `.docx` output | E06 | python-developer | blocked on TASK-E06-1 |
 | TASK-E06-3 | Media placeholder insertion | E06 | python-developer | blocked on TASK-E06-1 |
 | TASK-E08-1 | Version-snapshot data model per ADR-0004 (backend) | E08 | python-developer | blocked on TASK-E01-3 |
