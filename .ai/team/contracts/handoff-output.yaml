@@ -1,18 +1,57 @@
-request_id: ""
-role: ""
-status: "in_progress" # in_progress | blocked | done
-changes: []
-decisions: []
+request_id: "REQ-0001"
+role: "coordinator"
+status: "done" # in_progress | blocked | done
+changes:
+  - "docs/project/epics.md: 10 epics (E01-E10), architect-reviewed build sequence, cost estimate"
+  - "docs/architecture/decisions.md: ADR-0001..0006, 0008, 0009 accepted; ADR-0007 open/deferred"
+  - "docs/architecture/diagrams.md: pipeline, institution-config, and diff/versioning flows updated"
+  - "docs/project/plan.md: 7-phase delivery plan (new file)"
+  - "docs/project/tasks.md: 27 tasks across all epics with owner role and blocking status (new file)"
+  - "docs/project/frontend-requirements.md: open questions resolved (ADR-0008, ADR-0009)"
+  - "docs/project/brief.md: RU/EN i18n recorded as a confirmed decision beyond the PRD"
+  - "docs/operations/github-workflow.md, AGENTS.md: simplified to direct-push-to-main, no PR/branch-protection gate (user decision)"
+  - ".env created locally (gitignored) for the user to fill in DEEPSEEK_API_KEY"
+decisions:
+  - "ADR-0001: citation retry-then-reject contract"
+  - "ADR-0002: Qdrant as vector DB"
+  - "ADR-0003: static task-type LLM router policy (flash/pro split + cache strategy)"
+  - "ADR-0004: immutable version-snapshot diff/versioning model"
+  - "ADR-0005: institution config JSON schema"
+  - "ADR-0006: billing ledger schema (User/Wallet/Transaction), cost-logging only for now"
+  - "ADR-0007: token pricing formula — OPEN, deferred by user pending real cost data"
+  - "ADR-0008: frontend state management — React Context + hooks only"
+  - "ADR-0009: real-time mechanism — Server-Sent Events (SSE)"
 checks:
-  commands: []
-  results: []
-documentation_updates: []
-diagram_updates: []
-best_practices_checks: []
+  commands:
+    - "./scripts/check-docs-structure.sh"
+  results:
+    - "Docs structure check passed."
+documentation_updates:
+  - "docs/project/epics.md"
+  - "docs/project/plan.md"
+  - "docs/project/tasks.md"
+  - "docs/project/frontend-requirements.md"
+  - "docs/project/brief.md"
+  - "docs/architecture/decisions.md"
+  - "docs/architecture/diagrams.md"
+  - "docs/operations/github-workflow.md"
+  - "AGENTS.md"
+diagram_updates:
+  - "docs/architecture/diagrams.md: RAG/Qdrant annotation, citation retry/reject branch, version-snapshot diff flow"
+best_practices_checks:
+  - "No speculative billing-enforcement code written ahead of ADR-0007 resolution (ponytail/YAGNI)"
+  - "No secrets committed; .env stays gitignored"
 findings:
   high: []
   medium: []
-  low: []
-assumptions: []
-open_questions: []
-next_actions: []
+  low:
+    - "27 tasks in docs/project/tasks.md are architect/coordinator-level breakdowns, not yet individually scoped with acceptance criteria per task — do that at pickup time using docs/llm/task-template.md"
+assumptions:
+  - "MVP scope is exactly PRD §6's journey; billing enforcement, admin config UI, and non-DeepSeek providers are out of scope until asked for"
+open_questions:
+  - "ADR-0007 (token pricing/markup) — deferred pending real observed cost data from the user"
+  - "DeepSeek API account/tier provisioning — user-side action, needed before TASK-E03-1 can run against a real endpoint"
+next_actions:
+  - "User provisions DEEPSEEK_API_KEY in .env when available"
+  - "Pick up Phase 0 tasks (TASK-E01-1..3, TASK-E02-1..3) — no blockers"
+  - "Revisit ADR-0007 once real deepseek_cost_usd data exists from Phase 0+ usage"

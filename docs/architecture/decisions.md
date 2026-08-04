@@ -7,11 +7,11 @@ supersede.
 
 | # | Decision needed | Blocks | Why irreversible |
 | --- | --- | --- | --- |
-| 7 | Token pricing/markup formula for paid usage beyond the free tier | E09 pricing logic only (not E02's ledger schema or the free-tier mechanic) | Money-adjacent; user wants to base it on real observed per-user cost data before committing to a number |
+| ADR-0007 | Token pricing/markup formula for paid usage beyond the free tier | E09 pricing logic only (not E02's ledger schema or the free-tier mechanic) | Money-adjacent; user wants to base it on real observed per-user cost data before committing to a number |
 
-ADRs #1–#6 below are resolved with architect-recommended defaults, accepted 2026-08-04. All
-carry the same caveat: **revisit if real usage data contradicts the assumption behind them** —
-they were not battle-tested against production traffic.
+ADRs 0001–0006, 0008, and 0009 below are resolved with architect-recommended defaults, accepted
+2026-08-04. All carry the same caveat: **revisit if real usage data contradicts the assumption
+behind them** — they were not battle-tested against production traffic.
 
 **ADR #7 status: deferred further by user decision, 2026-08-04.** Interim policy: **usage is
 unmetered/free while the platform is being built** — no free-tier daily limit is enforced, no
@@ -119,3 +119,28 @@ unresolved ADR.
     `Transaction` is written for cost-logging only; usage is unmetered while ADR #7 is open.
 - **Consequences:** Schema is stable regardless of the still-open pricing formula — ADR #7 only
   changes how `amount_tokens` is computed and whether enforcement is turned on, not this shape.
+
+### ADR-0008: Frontend state management
+- **Date:** 2026-08-04
+- **Status:** Accepted
+- **Decision:** React Context + hooks only for the MVP — no Redux/Zustand/Recoil. Workspace state
+  is a small, well-bounded set (current chapters/versions, chat message list, pending diffs,
+  upload status) manageable with a handful of contexts (e.g. `DocumentContext`, `ChatContext`)
+  without store-library machinery.
+- **Consequences:** If profiling later shows context-driven re-render problems at real usage
+  scale, that becomes a new ADR superseding this one — don't pre-adopt a store library
+  speculatively before that happens (per `docs/engineering/best-practices.md`).
+
+### ADR-0009: Real-time chat/diff update mechanism
+- **Date:** 2026-08-04
+- **Status:** Accepted
+- **Decision:** Server-Sent Events (SSE) — FastAPI `StreamingResponse` (`text/event-stream`) for
+  streaming LLM chat/generation output token-by-token to the frontend (`EventSource` client).
+  Rejected: plain polling (too laggy for a streaming-chat UX) and WebSocket (bidirectional
+  push infra the MVP doesn't need — user input is regular request/response, only the model's
+  output needs to stream one-way to the client).
+- **Consequences:** Backend generation endpoints must be generator-based/streamable; diff/document
+  updates can ride the same SSE stream or be fetched via a normal REST call once a generation
+  finishes. Browser auto-reconnect on a dropped SSE connection loses in-flight stream state —
+  the first implementation must treat a reconnect as "restart this generation's stream," not
+  assume seamless resume.

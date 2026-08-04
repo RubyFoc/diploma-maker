@@ -13,8 +13,6 @@
 - **Upload flows**: draft upload, table-of-contents upload, formatting-sample upload, custom
   literature upload.
 
-## Open Questions
-- Exact state-management approach (plain context/hooks vs. a store library) — decide via ADR once
-  the workspace state shape is known from the first implementation slice.
-- Real-time update mechanism for chat + diff (polling vs. WebSocket) — architect to decide, record
-  in `docs/architecture/decisions.md`.
+## Resolved Decisions
+- State management: React Context + hooks only — see ADR-0008.
+- Real-time chat/diff updates: Server-Sent Events (SSE) — see ADR-0009.
