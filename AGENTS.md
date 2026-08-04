@@ -34,8 +34,8 @@ knowledge loss between sessions.
   logic (hidden constraint, workaround, surprising behavior).
 - Write detailed docstrings for public modules, classes, and functions (purpose, inputs, outputs,
   side effects/exceptions).
-- Use git + GitHub workflow for development changes (branching, commits, PR review) — see
-  `docs/operations/github-workflow.md`.
+- Use git for development changes (commits, direct push to `main` — no PR required in solo mode,
+  see `docs/operations/github-workflow.md`).
 - Do not commit or push changes unless explicitly asked.
 
 ## Task Output Contract

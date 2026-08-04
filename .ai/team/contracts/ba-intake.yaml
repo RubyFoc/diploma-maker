@@ -1,11 +1,15 @@
-request_id: ""
+request_id: "REQ-0001"
 owner_role: "business-analyst"
-status: "in_progress" # blocked | in_progress | done
+status: "done" # blocked | in_progress | done
 source_artifacts:
   - path: "Academic_Platform_PRD.md"
     type: "problem-brief"
     status: "filled"
-summary: ""
+summary: "PRD decomposed into 10 candidate epics (E01-E10); architect-reviewed build sequence and 6 of 7 ADRs resolved (ADR-0001..0006 accepted 2026-08-04, see docs/architecture/decisions.md). Only ADR #7 (token pricing/markup formula) remains open, explicitly deferred by user decision pending real usage cost data."
 blockers: []
-open_questions: []
-next_actions: []
+open_questions:
+  - "DeepSeek API account/tier provisioning (actual API key, rate limits) - needed before E03 implementation against a real endpoint"
+  - "Token pricing/markup formula (ADR #7) - deferred by user decision until real observed cost data is available; does not block E02 ledger plumbing or the free tier"
+next_actions:
+  - "Coordinator to break confirmed epics into docs/project/tasks.md, honoring the architect-reviewed build sequence and parallel tracks in docs/project/epics.md."
+  - "Capture deepseek_cost_usd on every Transaction (ADR-0006) from the first implementation onward so ADR #7 can be resolved with real data later."

@@ -10,17 +10,16 @@ used for `cv-analyzer`).
 - `hotfix/TASK-xx-short-name`: urgent production fixes.
 
 ## Pull Request Rules
-- Direct push to `main` is forbidden once branch protection is configured.
-- Every change goes through a PR with a linked `TASK-*`.
-- Current repository mode: solo delivery (`0` required approving reviews).
-- Team-target policy (when multiple maintainers are active): minimum 1-2 reviewers.
-- Required CI checks: `docs-check`, `backend`, `frontend`.
-- Squash merge by default to keep history clean.
+- **Current mode (2026-08-04, user decision): direct push to `main` is allowed.** No PR is
+  required, no branch protection is configured. This is intentional — kept simple while the
+  project is a solo build with no other collaborators to protect against.
+- CI (`docs-check`, `backend`, `frontend`) still runs on every push to `main` and should be green;
+  it's just not a hard merge gate yet.
+- Team-target policy (revisit if a second maintainer joins): require PRs, branch protection with
+  required status checks, and 1-2 reviewers — this section should be updated then, not before.
 
 ## Review Responsibilities
-- Solo mode default: self-review + required CI checks.
-- Solo mode merge rule: do not wait for external PR approvals; document an architectural
-  self-review in the PR for architecture-affecting changes.
+- Solo mode: self-review is sufficient; no PR/approval step is enforced.
 
 ## Commit and PR Hygiene
 - Commit scope: one concern per commit.

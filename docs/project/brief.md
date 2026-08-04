@@ -20,6 +20,11 @@ user-supplied style config.
 - ≤5% AI-detection probability.
 - Aggressive token-cost efficiency via model routing and context caching.
 
+## Confirmed Decisions Beyond the PRD
+- **UI language**: RU/EN i18n is a confirmed MVP requirement (user decision, 2026-08-04) — not
+  originally stated in `Academic_Platform_PRD.md`; recorded here as the authoritative source until
+  the PRD itself is amended.
+
 ## Source of Truth
 Full requirements live in `Academic_Platform_PRD.md` at the repo root. This brief is a summary —
 do not duplicate detail here; update the PRD and link to it instead.
