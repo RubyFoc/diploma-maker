@@ -18,4 +18,4 @@ Index of features below (add a row per note):
 
 | Date | Feature | Note |
 | --- | --- | --- |
-| _(none yet)_ | | |
+| 2026-08-04 | Phase 0: auth/wallet foundation + workspace shell | [2026-08-04_phase0-auth-wallet-and-workspace-shell.md](2026-08-04_phase0-auth-wallet-and-workspace-shell.md) |

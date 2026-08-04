@@ -8,12 +8,12 @@ status in sync with GitHub issues once tasks move to execution.
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E01-1 | Scaffold split-pane workspace layout (chat panel + document viewer) | E01 | frontend-developer | ready |
-| TASK-E01-2 | Wire `DocumentContext`/`ChatContext` per ADR-0008 | E01 | frontend-developer | ready |
-| TASK-E01-3 | Empty project/session creation flow | E01 | frontend-developer | ready |
-| TASK-E02-1 | User model + registration/login endpoints | E02 | python-developer | ready |
-| TASK-E02-2 | Wallet/Transaction schema per ADR-0006 (cost-logging only, no enforcement per ADR-0007) | E02 | python-developer | ready |
-| TASK-E02-3 | JWT auth middleware | E02 | python-developer | ready |
+| TASK-E01-1 | Scaffold split-pane workspace layout (chat panel + document viewer) | E01 | frontend-developer | done |
+| TASK-E01-2 | Wire `DocumentContext`/`ChatContext` per ADR-0008 | E01 | frontend-developer | done |
+| TASK-E01-3 | Empty project/session creation flow | E01 | frontend-developer | done |
+| TASK-E02-1 | User model + registration/login endpoints | E02 | python-developer | done |
+| TASK-E02-2 | Wallet/Transaction schema per ADR-0006 (cost-logging only, no enforcement per ADR-0007) | E02 | python-developer | done |
+| TASK-E02-3 | JWT auth middleware | E02 | python-developer | done |
 
 ## Phase 1 — Core Services
 
@@ -22,7 +22,7 @@ status in sync with GitHub issues once tasks move to execution.
 | TASK-E05-1 | Institution config schema + MongoDB storage per ADR-0005 | E05 | python-developer | ready |
 | TASK-E05-2 | Formatting-sample upload + parser (margins/fonts/citation style extraction) | E05 | python-developer | blocked on TASK-E05-1 |
 | TASK-E05-3 | University dropdown/selection endpoint | E05 | python-developer | blocked on TASK-E05-1 |
-| TASK-E03-1 | DeepSeek client wrapper (fast/heavy tier per ADR-0003) | E03 | python-developer | blocked on TASK-E02-3, DeepSeek API key |
+| TASK-E03-1 | DeepSeek client wrapper (fast/heavy tier per ADR-0003) | E03 | python-developer | ready (DeepSeek key provisioned) |
 | TASK-E03-2 | Chapter-summary compaction + cache-friendly prompt assembly | E03 | python-developer | blocked on TASK-E03-1 |
 | TASK-E03-3 | LLM call failure-path handling (timeout/error/retry) | E03 | python-developer | blocked on TASK-E03-1 |
 
