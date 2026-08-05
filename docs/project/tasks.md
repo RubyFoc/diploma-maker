@@ -42,10 +42,10 @@ status in sync with GitHub issues once tasks move to execution.
 | TASK-E06-1 | Markdown → `.docx` mapping engine (`python-docx`) | E06 | python-developer | done |
 | TASK-E06-2 | Apply institution config styles to `.docx` output | E06 | python-developer | done |
 | TASK-E06-3 | Media placeholder insertion | E06 | python-developer | done |
-| TASK-E08-1 | Version-snapshot data model per ADR-0004 (backend) | E08 | python-developer | ready |
-| TASK-E08-2 | Diff viewer UI (accept/reject) | E08 | frontend-developer | ready |
+| TASK-E08-1 | Version-snapshot data model per ADR-0004 (backend) | E08 | python-developer | done |
+| TASK-E08-2 | Diff viewer UI (accept/reject) | E08 | frontend-developer | done |
 | TASK-E08-3 | SSE streaming client for chat/generation per ADR-0009 | E08 | frontend-developer | ready |
-| TASK-E08-4 | Live WYSIWYG document preview rendering | E08 | frontend-developer | blocked on TASK-E08-1 |
+| TASK-E08-4 | Live WYSIWYG document preview rendering | E08 | frontend-developer | ready |
 
 ## Phase 4 — Humanization & Plagiarism
 

@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import './App.css'
 import { ChatProvider, useChat } from './context/ChatContext'
 import { DocumentProvider, useDocument } from './context/DocumentContext'
 import { useNewProject } from './hooks/useNewProject'
 import { strings } from './strings'
+import { DiffViewer } from './components/DiffViewer'
 
 function ChatPanel() {
   const { chat } = useChat()
@@ -27,8 +29,19 @@ function ChatPanel() {
   )
 }
 
+// Placeholder pending-draft simulation for TASK-E08-2. There is no backend
+// draft-fetching wired up yet (E08-1's endpoint doesn't exist), so this local
+// state stands in for "a chapter has a pending LLM-proposed draft" per
+// ADR-0004. A later integration task should replace `pendingDraft` with a
+// real fetch of the draft version for the selected chapter and replace
+// accept/reject handlers with real API calls instead of clearing local state.
 function DocumentPanel() {
   const { document: doc } = useDocument()
+  const [pendingDraft, setPendingDraft] = useState<{ chapterId: string; content: string } | null>(
+    null,
+  )
+
+  const draftChapter = doc.chapters.find((chapter) => chapter.id === pendingDraft?.chapterId)
 
   return (
     <section className="document-panel" aria-label={strings.documentPanelTitle}>
@@ -38,9 +51,29 @@ function DocumentPanel() {
       ) : (
         <ul>
           {doc.chapters.map((chapter) => (
-            <li key={chapter.id}>{chapter.title}</li>
+            <li key={chapter.id}>
+              {chapter.title}
+              {pendingDraft === null && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPendingDraft({ chapterId: chapter.id, content: `${chapter.content}\n(draft edit)` })
+                  }
+                >
+                  {strings.simulatePendingDraftButton}
+                </button>
+              )}
+            </li>
           ))}
         </ul>
+      )}
+      {pendingDraft && draftChapter && (
+        <DiffViewer
+          before={draftChapter.content}
+          after={pendingDraft.content}
+          onAccept={() => setPendingDraft(null)}
+          onReject={() => setPendingDraft(null)}
+        />
       )}
     </section>
   )

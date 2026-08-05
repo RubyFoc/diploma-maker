@@ -1,0 +1,31 @@
+.diff-viewer {
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+.diff-segments {
+  white-space: pre-wrap;
+  font-family: monospace;
+}
+
+.diff-segment {
+  margin: 0;
+  padding: 0.15rem 0.25rem;
+}
+
+.diff-segment--added {
+  background-color: #d4f8d4;
+}
+
+.diff-segment--removed {
+  background-color: #f8d4d4;
+  text-decoration: line-through;
+}
+
+.diff-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}

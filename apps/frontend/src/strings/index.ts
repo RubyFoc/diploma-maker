@@ -7,4 +7,9 @@ export const strings = {
   documentPanelTitle: 'Document',
   documentEmpty: 'No chapters yet. Start a new project to begin.',
   newProjectButton: 'New Project',
+  diffViewerTitle: 'Pending Edit',
+  diffAcceptButton: 'Accept',
+  diffRejectButton: 'Reject',
+  diffEmpty: 'No changes.',
+  simulatePendingDraftButton: 'Simulate pending draft',
 } as const
