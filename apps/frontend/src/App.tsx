@@ -10,7 +10,8 @@ import { DocumentPreview } from './components/DocumentPreview'
 import { Onboarding } from './components/Onboarding'
 import { PlagiarismCheckPanel } from './components/PlagiarismCheckPanel'
 import { recordSignal } from './services/feedbackService'
-import { acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
+import { acceptDraft, createChapter, getProject } from './services/projectService'
+import { streamChapterDraft } from './services/generateStream'
 import { toDocumentState } from './utils/mapProject'
 
 function ChatPanel() {
@@ -18,6 +19,15 @@ function ChatPanel() {
   const { document: doc, setDocument } = useDocument()
   const [inputValue, setInputValue] = useState('')
   const [isSending, setIsSending] = useState(false)
+
+  const setChapterStreamingContent = (chapterId: string, streamingContent: string | null) => {
+    setDocument((previous) => ({
+      ...previous,
+      chapters: previous.chapters.map((existing) =>
+        existing.id === chapterId ? { ...existing, streamingContent } : existing,
+      ),
+    }))
+  }
 
   const handleSend = async () => {
     const text = inputValue.trim()
@@ -39,21 +49,45 @@ function ChatPanel() {
           title: created.title,
           content: created.accepted_content ?? '',
           pendingDraft: created.pending_draft,
+          streamingContent: null,
         }
         setDocument((previous) => ({ ...previous, chapters: [...previous.chapters, chapter] }))
       }
 
-      const { version: draft, precheck } = await generateChapterDraft(projectId, chapter.id, text)
-      setDocument((previous) => ({
-        ...previous,
-        chapters: previous.chapters.map((existing) =>
-          existing.id === chapter.id ? { ...existing, pendingDraft: draft } : existing,
-        ),
-      }))
-      appendMessage({
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        text: precheck.flagged ? strings.chatDraftFlaggedMessage : strings.chatDraftReadyMessage,
+      const chapterId = chapter.id
+      let streamedText = ''
+      setChapterStreamingContent(chapterId, '')
+
+      await new Promise<void>((resolve) => {
+        const cleanup = streamChapterDraft(projectId, chapterId, text, {
+          onToken: (chunk) => {
+            streamedText += chunk
+            setChapterStreamingContent(chapterId, streamedText)
+          },
+          onDone: ({ version: draft, precheck }) => {
+            setDocument((previous) => ({
+              ...previous,
+              chapters: previous.chapters.map((existing) =>
+                existing.id === chapterId
+                  ? { ...existing, pendingDraft: draft, streamingContent: null }
+                  : existing,
+              ),
+            }))
+            appendMessage({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              text: precheck.flagged ? strings.chatDraftFlaggedMessage : strings.chatDraftReadyMessage,
+            })
+            cleanup()
+            resolve()
+          },
+          onError: () => {
+            setChapterStreamingContent(chapterId, null)
+            appendMessage({ id: crypto.randomUUID(), role: 'assistant', text: strings.chatGenerationErrorMessage })
+            cleanup()
+            resolve()
+          },
+        })
       })
     } catch {
       appendMessage({ id: crypto.randomUUID(), role: 'assistant', text: strings.chatGenerationErrorMessage })
@@ -141,11 +175,20 @@ function DocumentPanel() {
       ) : (
         <ul className="chapter-list">
           {doc.chapters.map((chapter) => {
-            const { pendingDraft } = chapter
+            const { pendingDraft, streamingContent } = chapter
             return (
               <li key={chapter.id} className="chapter-item">
                 <h3>{chapter.title}</h3>
                 <DocumentPreview content={chapter.content} />
+                {/* Live SSE preview (ADR-0009): shown while tokens are still arriving, before
+                    `pendingDraft`/`DiffViewer` take over once `done` fires. Reuses
+                    `DocumentPreview` rather than a new component since it already renders
+                    arbitrary chapter text and re-renders live as `streamingContent` grows. */}
+                {streamingContent !== null && !pendingDraft && (
+                  <div className="chapter-streaming" aria-label={strings.chapterStreamingLabel}>
+                    <DocumentPreview content={streamingContent} />
+                  </div>
+                )}
                 {pendingDraft && (
                   <DiffViewer
                     before={chapter.content}

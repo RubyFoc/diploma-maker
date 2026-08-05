@@ -17,6 +17,7 @@ export const strings = {
   chatDraftFlaggedMessage:
     'Draft ready, but flagged by the plagiarism/AI-detection pre-check — review it carefully in the document panel.',
   chatGenerationErrorMessage: 'Generation failed. Please try again.',
+  chapterStreamingLabel: 'Draft streaming in progress',
   defaultChapterTitle: 'Chapter 1',
   chapterContentEmpty: 'No accepted content yet.',
   onboardingTitle: 'Welcome',

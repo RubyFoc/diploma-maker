@@ -16,6 +16,7 @@ export function toDocumentState(project: ProjectDetail, institutionId: string | 
       title: chapter.title,
       content: chapter.accepted_content ?? '',
       pendingDraft: chapter.pending_draft,
+      streamingContent: null,
     })),
   }
 }

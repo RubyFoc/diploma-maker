@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { strings } from './strings'
@@ -14,6 +14,48 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
     json: () => Promise.resolve(body),
     text: () => Promise.resolve(JSON.stringify(body)),
   } as Response
+}
+
+type Listener = (event: { type: string; data?: string }) => void
+
+/**
+ * Minimal `EventSource` stand-in (jsdom has no native one) for exercising `ChatPanel`'s
+ * SSE-based generation flow (ADR-0009/TASK-E08-3), replacing the old fetch-mocked `/generate`
+ * response in these tests. `MockEventSource.instances` lets a test grab the most recently
+ * constructed stream and drive it with `dispatch`.
+ */
+class MockEventSource {
+  static instances: MockEventSource[] = []
+  url: string
+  closed = false
+  private listeners: Record<string, Listener[]> = {}
+
+  constructor(url: string) {
+    this.url = url
+    MockEventSource.instances.push(this)
+  }
+
+  addEventListener(type: string, listener: Listener) {
+    this.listeners[type] = [...(this.listeners[type] ?? []), listener]
+  }
+
+  close() {
+    this.closed = true
+  }
+
+  dispatch(type: string, data?: string) {
+    for (const listener of this.listeners[type] ?? []) {
+      listener({ type, data })
+    }
+  }
+}
+
+function latestEventSource(): MockEventSource {
+  const source = MockEventSource.instances[MockEventSource.instances.length - 1]
+  if (!source) {
+    throw new Error('no EventSource was constructed')
+  }
+  return source
 }
 
 /**
@@ -43,6 +85,8 @@ describe('App', () => {
   beforeEach(() => {
     vi.stubEnv('VITE_API_BASE_URL', BASE_URL)
     localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'test-token')
+    MockEventSource.instances = []
+    vi.stubGlobal('EventSource', MockEventSource)
   })
 
   afterEach(() => {
@@ -124,11 +168,7 @@ describe('App', () => {
       precheck: { plagiarism_score: 0, ai_fingerprint_score: 0, flagged: false, reasons: [] },
     }
 
-    const fetchMock = createFetchMock([
-      jsonResponse(project, true, 201),
-      jsonResponse(chapter, true, 201),
-      jsonResponse(generateResponse, true, 201),
-    ])
+    const fetchMock = createFetchMock([jsonResponse(project, true, 201), jsonResponse(chapter, true, 201)])
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
@@ -140,16 +180,22 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
 
     expect(await screen.findByText('Write the introduction')).toBeInTheDocument()
+
+    const source = await waitFor(() => latestEventSource())
+    expect(source.url).toBe(
+      'http://localhost:8010/projects/p1/chapters/c1/generate/stream?instruction=Write+the+introduction',
+    )
+    act(() => {
+      source.dispatch('token', 'Generated ')
+      source.dispatch('done', JSON.stringify(generateResponse))
+    })
+
     expect(await screen.findByText(strings.chatDraftReadyMessage)).toBeInTheDocument()
     expect(await screen.findByText('Generated introduction text')).toBeInTheDocument()
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:8010/projects/p1/chapters',
       expect.objectContaining({ body: JSON.stringify({ title: strings.defaultChapterTitle }) }),
-    )
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:8010/projects/p1/chapters/c1/generate',
-      expect.objectContaining({ body: JSON.stringify({ instruction: 'Write the introduction' }) }),
     )
   })
 
@@ -165,11 +211,7 @@ describe('App', () => {
       pending_draft: null,
     }
 
-    const fetchMock = createFetchMock([
-      jsonResponse(project, true, 201),
-      jsonResponse(chapter, true, 201),
-      jsonResponse({ detail: 'llm failed' }, false, 502),
-    ])
+    const fetchMock = createFetchMock([jsonResponse(project, true, 201), jsonResponse(chapter, true, 201)])
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
@@ -179,6 +221,11 @@ describe('App', () => {
 
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
     fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+
+    const source = await waitFor(() => latestEventSource())
+    act(() => {
+      source.dispatch('error', JSON.stringify({ detail: 'llm failed' }))
+    })
 
     expect(await screen.findByText(strings.chatGenerationErrorMessage)).toBeInTheDocument()
   })
@@ -224,7 +271,6 @@ describe('App', () => {
     const fetchMock = createFetchMock([
       jsonResponse(project, true, 201),
       jsonResponse(chapter, true, 201),
-      jsonResponse(generateResponse, true, 201),
       jsonResponse(acceptedVersion),
       jsonResponse(signal, true, 201),
       jsonResponse(refreshedProject),
@@ -237,6 +283,10 @@ describe('App', () => {
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
     fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+    const source = await waitFor(() => latestEventSource())
+    act(() => {
+      source.dispatch('done', JSON.stringify(generateResponse))
+    })
     await screen.findByText('Generated introduction text')
 
     fireEvent.click(screen.getByRole('button', { name: strings.diffAcceptButton }))
@@ -295,7 +345,6 @@ describe('App', () => {
     const fetchMock = createFetchMock([
       jsonResponse(project, true, 201),
       jsonResponse(chapter, true, 201),
-      jsonResponse(generateResponse, true, 201),
       jsonResponse(acceptedVersion),
       jsonResponse({ detail: 'feedback service down' }, false, 500),
       jsonResponse(refreshedProject),
@@ -308,6 +357,10 @@ describe('App', () => {
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
     fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+    const source = await waitFor(() => latestEventSource())
+    act(() => {
+      source.dispatch('done', JSON.stringify(generateResponse))
+    })
     await screen.findByText('Generated introduction text')
 
     fireEvent.click(screen.getByRole('button', { name: strings.diffAcceptButton }))
@@ -358,7 +411,6 @@ describe('App', () => {
     const fetchMock = createFetchMock([
       jsonResponse(project, true, 201),
       jsonResponse(chapter, true, 201),
-      jsonResponse(generateResponse, true, 201),
       jsonResponse(signal, true, 201),
     ])
     vi.stubGlobal('fetch', fetchMock)
@@ -369,6 +421,10 @@ describe('App', () => {
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
     fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+    const source = await waitFor(() => latestEventSource())
+    act(() => {
+      source.dispatch('done', JSON.stringify(generateResponse))
+    })
     await screen.findByText('Generated introduction text')
 
     fireEvent.click(screen.getByRole('button', { name: strings.diffRejectButton }))

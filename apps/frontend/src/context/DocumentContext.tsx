@@ -8,6 +8,8 @@ export interface Chapter {
   content: string
   /** Last draft returned by generateChapterDraft, if any, per ADR-0004. */
   pendingDraft: ChapterVersion | null
+  /** In-progress SSE draft text while streaming (ADR-0009); null once idle or `pendingDraft` lands. */
+  streamingContent: string | null
 }
 
 export interface DocumentState {
