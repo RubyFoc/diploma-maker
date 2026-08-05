@@ -19,8 +19,11 @@ Recency filtering: `min_year` is passed to Semantic Scholar as `year=<min_year>-
 range, per its query syntax) and to CORE as a `yearPublished>=<min_year>` clause appended to the
 query string (CORE's search query language supports field filters inline in `q`).
 
-Out of scope here (later, separate tasks): geo-fencing on results (TASK-E04-3), citation
-verification/retry (TASK-E04-4).
+`SourceSearchResult.venue` (journal/publisher name, when the provider supplies one) is populated
+here so that `diploma_backend.sources.geo_filter` (TASK-E04-3) can heuristically filter/annotate
+results for RU/BY academic sources. This module does not itself do any geo-fencing.
+
+Out of scope here (later, separate tasks): citation verification/retry (TASK-E04-4).
 """
 
 import os
@@ -31,7 +34,7 @@ import httpx
 
 _SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org"
 _SEMANTIC_SCHOLAR_SEARCH_PATH = "/graph/v1/paper/search"
-_SEMANTIC_SCHOLAR_FIELDS = "title,authors,year,abstract,url,externalIds"
+_SEMANTIC_SCHOLAR_FIELDS = "title,authors,year,abstract,url,externalIds,venue"
 
 _CORE_BASE_URL = "https://api.core.ac.uk"
 _CORE_SEARCH_PATH = "/v3/search/works"
@@ -58,6 +61,12 @@ class SourceSearchResult:
     `external_id` is the provider's own paper/work identifier (Semantic Scholar's `paperId` or
     CORE's `id`), kept around so a later citation-verification step (TASK-E04-4) can fetch the
     full text back from the same provider without re-searching.
+
+    `venue` is the journal/conference/publisher name if the provider supplied one (Semantic
+    Scholar's `venue` field, CORE's `publisher` field) — `None` if absent. It exists primarily so
+    `diploma_backend.sources.geo_filter` (TASK-E04-3) can heuristically detect RU/BY academic
+    sources; it is optional and defaults to `None` so existing construction call sites are
+    unaffected.
     """
 
     title: str
@@ -67,6 +76,7 @@ class SourceSearchResult:
     url: str | None
     provider: Provider
     external_id: str
+    venue: str | None = None
 
 
 async def _search_semantic_scholar(
@@ -111,6 +121,7 @@ async def _search_semantic_scholar(
                 url=paper.get("url"),
                 provider="semantic_scholar",
                 external_id=str(paper.get("paperId", "")),
+                venue=paper.get("venue") or None,
             )
         )
     return results
@@ -155,6 +166,7 @@ async def _search_core(
                 url=work.get("downloadUrl"),
                 provider="core",
                 external_id=str(work.get("id", "")),
+                venue=work.get("publisher") or None,
             )
         )
     return results

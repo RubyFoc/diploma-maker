@@ -32,7 +32,7 @@ status in sync with GitHub issues once tasks move to execution.
 | --- | --- | --- | --- | --- |
 | TASK-E04-1 | Qdrant client integration + embedding ingestion pipeline | E04 | python-developer | done |
 | TASK-E04-2 | Semantic Scholar / CORE API search integration (recency filter) | E04 | python-developer | done |
-| TASK-E04-3 | Geo-fencing filter layer (RU/BY) on search results | E04 | python-developer | ready |
+| TASK-E04-3 | Geo-fencing filter layer (RU/BY) on search results | E04 | python-developer | done |
 | TASK-E04-4 | Citation verification + retry/reject flow per ADR-0001 | E04 | python-developer | done |
 
 ## Phase 3 — Export & Diff Review
@@ -40,7 +40,7 @@ status in sync with GitHub issues once tasks move to execution.
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
 | TASK-E06-1 | Markdown → `.docx` mapping engine (`python-docx`) | E06 | python-developer | done |
-| TASK-E06-2 | Apply institution config styles to `.docx` output | E06 | python-developer | ready |
+| TASK-E06-2 | Apply institution config styles to `.docx` output | E06 | python-developer | done |
 | TASK-E06-3 | Media placeholder insertion | E06 | python-developer | ready |
 | TASK-E08-1 | Version-snapshot data model per ADR-0004 (backend) | E08 | python-developer | blocked on TASK-E01-3 |
 | TASK-E08-2 | Diff viewer UI (accept/reject) | E08 | frontend-developer | blocked on TASK-E01-1 |

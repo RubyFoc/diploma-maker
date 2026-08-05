@@ -9,7 +9,37 @@ from io import BytesIO
 
 from docx import Document
 
-from diploma_backend.export.docx import markdown_to_docx, markdown_to_docx_bytes
+from diploma_backend.export.docx import (
+    apply_institution_config,
+    markdown_to_docx,
+    markdown_to_docx_bytes,
+)
+from diploma_backend.formatting.models import (
+    FontConfig,
+    Headings,
+    HeadingStyle,
+    InstitutionConfig,
+    MarginsMm,
+    PageConfig,
+)
+
+
+def _make_config(*, size="A4", orientation="portrait", h1_extra=None) -> InstitutionConfig:
+    return InstitutionConfig(
+        institution_id="inst-1",
+        institution_name="Test University",
+        source="seed",
+        page=PageConfig(
+            size=size,
+            orientation=orientation,
+            margins_mm=MarginsMm(top=20, bottom=20, left=30, right=15),
+        ),
+        font=FontConfig(family="Times New Roman", size_pt=14, line_spacing=1.5),
+        headings=Headings(h1=HeadingStyle(**(h1_extra or {}))),
+        citation_style="APA",
+        accuracy_weight=0.5,
+        raw_sample_reference="sample-1",
+    )
 
 
 def test_headings_all_three_levels() -> None:
@@ -110,3 +140,54 @@ def test_markdown_to_docx_bytes_round_trips_via_python_docx() -> None:
     assert document.paragraphs[0].style.name == "Heading 1"
     assert document.paragraphs[0].text == "Heading"
     assert document.paragraphs[1].text == "Some bold text."
+
+
+def test_apply_institution_config_a4_portrait_page_and_margins() -> None:
+    document = markdown_to_docx("Some text.")
+    apply_institution_config(document, _make_config(size="A4", orientation="portrait"))
+
+    section = document.sections[0]
+    assert round(section.page_width.mm, 1) == 210.0
+    assert round(section.page_height.mm, 1) == 297.0
+    assert round(section.top_margin.mm) == 20
+    assert round(section.bottom_margin.mm) == 20
+    assert round(section.left_margin.mm) == 30
+    assert round(section.right_margin.mm) == 15
+
+
+def test_apply_institution_config_a4_landscape_swaps_width_and_height() -> None:
+    document = markdown_to_docx("Some text.")
+    apply_institution_config(document, _make_config(size="A4", orientation="landscape"))
+
+    section = document.sections[0]
+    assert round(section.page_width.mm, 1) == 297.0
+    assert round(section.page_height.mm, 1) == 210.0
+
+
+def test_apply_institution_config_sets_normal_style_font() -> None:
+    document = markdown_to_docx("Some text.")
+    apply_institution_config(document, _make_config())
+
+    normal_font = document.styles["Normal"].font
+    assert normal_font.name == "Times New Roman"
+    assert normal_font.size.pt == 14
+    assert document.styles["Normal"].paragraph_format.line_spacing == 1.5
+
+
+def test_apply_institution_config_heading_font_size_from_extra_fields() -> None:
+    document = markdown_to_docx("# Title\n")
+    config = _make_config(h1_extra={"font_size_pt": 18, "bold": True})
+    apply_institution_config(document, config)
+
+    heading_font = document.styles["Heading 1"].font
+    assert heading_font.size.pt == 18
+    assert heading_font.bold is True
+
+
+def test_apply_institution_config_heading_ignores_unknown_extra_keys() -> None:
+    document = markdown_to_docx("# Title\n")
+    config = _make_config(h1_extra={"color": "red", "font_size_pt": 16})
+    # Should not raise despite the unknown "color" key.
+    apply_institution_config(document, config)
+
+    assert document.styles["Heading 1"].font.size.pt == 16
