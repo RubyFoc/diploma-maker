@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from diploma_backend.auth.router import router as auth_router
+from diploma_backend.feedback.router import router as feedback_router
 from diploma_backend.formatting.router import router as formatting_router
 from diploma_backend.plagiarism.router import router as plagiarism_router
 from diploma_backend.projects.router import router as projects_router
@@ -37,6 +38,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(feedback_router)
 app.include_router(formatting_router)
 app.include_router(plagiarism_router)
 app.include_router(projects_router)

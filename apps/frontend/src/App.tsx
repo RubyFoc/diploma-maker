@@ -9,6 +9,7 @@ import { DiffViewer } from './components/DiffViewer'
 import { DocumentPreview } from './components/DocumentPreview'
 import { Onboarding } from './components/Onboarding'
 import { PlagiarismCheckPanel } from './components/PlagiarismCheckPanel'
+import { recordSignal } from './services/feedbackService'
 import { acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
 import { toDocumentState } from './utils/mapProject'
 
@@ -104,6 +105,9 @@ function DocumentPanel() {
 
   const handleAccept = async (chapterId: string, draftId: string) => {
     await acceptDraft(draftId)
+    if (doc.institutionId !== null) {
+      void recordSignal(doc.institutionId, chapterId, draftId, 'approve').catch(() => {})
+    }
     if (doc.projectId !== null) {
       const project = await getProject(doc.projectId)
       setDocument((previous) => toDocumentState(project, previous.institutionId))
@@ -117,7 +121,10 @@ function DocumentPanel() {
     }))
   }
 
-  const handleReject = (chapterId: string) => {
+  const handleReject = (chapterId: string, draftId: string) => {
+    if (doc.institutionId !== null) {
+      void recordSignal(doc.institutionId, chapterId, draftId, 'reject').catch(() => {})
+    }
     setDocument((previous) => ({
       ...previous,
       chapters: previous.chapters.map((chapter) =>
@@ -144,7 +151,7 @@ function DocumentPanel() {
                     before={chapter.content}
                     after={pendingDraft.content}
                     onAccept={() => void handleAccept(chapter.id, pendingDraft.id)}
-                    onReject={() => handleReject(chapter.id)}
+                    onReject={() => handleReject(chapter.id, pendingDraft.id)}
                   />
                 )}
               </li>
