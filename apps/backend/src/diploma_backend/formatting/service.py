@@ -2,7 +2,13 @@
 
 Storage-layer only: no HTTP routes (that's TASK-E05-3) and no upload/parsing logic (that's
 TASK-E05-2). Documents live in the `institution_configs` collection, keyed by `institution_id`.
+
+`update_accuracy_weight` (TASK-E09-2) is the first update path this module has: prior to it,
+`accuracy_weight` was only ever set once, at config-creation time (see `formatting.seed` and
+`formatting.discovery`), and never touched again.
 """
+
+from datetime import UTC, datetime
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -38,3 +44,22 @@ async def list_institution_configs(db: AsyncIOMotorDatabase) -> list[Institution
     cursor = db[_COLLECTION].find({})
     documents = await cursor.to_list(length=None)
     return [InstitutionConfig.model_validate(document) for document in documents]
+
+
+async def update_accuracy_weight(
+    db: AsyncIOMotorDatabase, institution_id: str, accuracy_weight: float
+) -> InstitutionConfig | None:
+    """Set `accuracy_weight` (and `updated_at`) on the stored config for `institution_id`.
+
+    Returns the updated `InstitutionConfig`, or `None` if `institution_id` doesn't exist (mirrors
+    `get_institution_config`'s miss-handling rather than raising). Callers are expected to compute
+    `accuracy_weight` themselves (see `feedback.weights.recompute_accuracy_weight`); this function
+    performs no validation of the value beyond persisting it as given.
+    """
+    result = await db[_COLLECTION].update_one(
+        {"institution_id": institution_id},
+        {"$set": {"accuracy_weight": accuracy_weight, "updated_at": datetime.now(UTC)}},
+    )
+    if result.matched_count == 0:
+        return None
+    return await get_institution_config(db, institution_id)

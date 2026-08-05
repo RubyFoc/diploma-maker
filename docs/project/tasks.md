@@ -67,7 +67,7 @@ status in sync with GitHub issues once tasks move to execution.
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
 | TASK-E09-1 | Approve/reject/edit signal capture (UI + API) | E09 | frontend-developer, python-developer | done |
-| TASK-E09-2 | Template `accuracy_weight` adjustment logic | E09 | python-developer | ready |
+| TASK-E09-2 | Template `accuracy_weight` adjustment logic | E09 | python-developer | done |
 
 ## Phase 4.5 — Standalone Plagiarism/AI-Check Tab (added 2026-08-05, user request, not in original epic breakdown)
 
