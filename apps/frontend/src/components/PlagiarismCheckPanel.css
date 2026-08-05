@@ -1,45 +1,81 @@
 .plagiarism-check-panel {
-  border: 1px solid #ccc;
-  border-radius: 8px;
-  padding: 1rem;
+  max-width: 720px;
+  margin: 0 auto;
 }
 
-.plagiarism-check-panel textarea {
-  width: 100%;
-  min-height: 200px;
-  font-family: inherit;
-  box-sizing: border-box;
+.plagiarism-check-form textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
+.plagiarism-check-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-3);
 }
 
 .plagiarism-check-result {
-  margin-top: 1rem;
+  margin-top: var(--space-5);
+}
+
+.plagiarism-check-banner {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.9rem;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin: 0 0 var(--space-4);
+}
+
+.plagiarism-check-banner--flagged {
+  background-color: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border: 1px solid var(--color-danger-border);
+}
+
+.plagiarism-check-banner--clear {
+  background-color: var(--color-success-bg);
+  color: var(--color-success-text);
+  border: 1px solid var(--color-success-border);
 }
 
 .plagiarism-check-scores {
   display: flex;
-  gap: 1.5rem;
-  margin-bottom: 0.75rem;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
 }
 
-.plagiarism-check-banner {
-  display: inline-block;
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-  font-weight: bold;
-  margin-bottom: 0.75rem;
+.plagiarism-check-score-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-2);
 }
 
-.plagiarism-check-banner--flagged {
-  background-color: #f8d4d4;
-  color: #7a1f1f;
+.plagiarism-check-score-track {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background-color: var(--color-bg-subtle);
+  overflow: hidden;
 }
 
-.plagiarism-check-banner--clear {
-  background-color: #d4f8d4;
-  color: #1f5c1f;
+.plagiarism-check-score-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background-color: var(--color-primary);
+  transition: width 0.3s ease;
 }
 
 .plagiarism-check-error {
-  color: #7a1f1f;
-  margin-top: 1rem;
+  color: var(--color-danger-text);
+  background-color: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-4);
+  font-size: 0.85rem;
 }

@@ -1,32 +1,35 @@
 .document-preview {
-  line-height: 1.5;
+  line-height: 1.6;
+  font-size: 0.95rem;
 }
 
 .document-preview h1,
 .document-preview h2,
 .document-preview h3 {
-  margin: 0.75rem 0 0.5rem;
+  margin: var(--space-4) 0 var(--space-2);
 }
 
 .document-preview p {
-  margin: 0.5rem 0;
+  margin: var(--space-2) 0;
 }
 
 .document-preview ul,
 .document-preview ol {
-  margin: 0.5rem 0;
+  margin: var(--space-2) 0;
   padding-left: 1.5rem;
 }
 
 .preview-figure-placeholder {
   font-style: italic;
-  color: #666;
-  border: 1px dashed #999;
-  border-radius: 4px;
-  padding: 0.25rem 0.5rem;
+  color: var(--color-text-muted);
+  background-color: var(--color-bg-subtle);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0;
 }
 
 .document-preview-empty {
-  color: #888;
+  color: var(--color-text-faint);
   font-style: italic;
 }

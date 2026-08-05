@@ -1,31 +1,60 @@
 .diff-viewer {
-  border: 1px solid #ccc;
-  border-radius: 8px;
-  padding: 1rem;
-  margin-top: 1rem;
+  background-color: var(--color-bg-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.diff-viewer h3 {
+  margin: 0 0 var(--space-3);
 }
 
 .diff-segments {
   white-space: pre-wrap;
-  font-family: monospace;
+  font-size: 0.9rem;
+  line-height: 1.5;
 }
 
 .diff-segment {
   margin: 0;
-  padding: 0.15rem 0.25rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: var(--radius-sm);
 }
 
 .diff-segment--added {
-  background-color: #d4f8d4;
+  background-color: var(--color-success-bg);
+  color: var(--color-success-text);
 }
 
 .diff-segment--removed {
-  background-color: #f8d4d4;
+  background-color: var(--color-danger-bg);
+  color: var(--color-danger-text);
   text-decoration: line-through;
 }
 
 .diff-actions {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.diff-accept {
+  background-color: var(--color-success-text);
+  border-color: var(--color-success-text);
+  color: #ffffff;
+}
+
+.diff-accept:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.diff-reject {
+  background-color: transparent;
+  border-color: var(--color-danger-border);
+  color: var(--color-danger-text);
+}
+
+.diff-reject:hover:not(:disabled) {
+  background-color: var(--color-danger-bg);
 }

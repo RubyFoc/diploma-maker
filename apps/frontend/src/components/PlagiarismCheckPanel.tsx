@@ -36,9 +36,10 @@ export function PlagiarismCheckPanel() {
   }
 
   return (
-    <section className="plagiarism-check-panel" aria-label={strings.plagiarismCheckTitle}>
+    <section className="panel plagiarism-check-panel" aria-label={strings.plagiarismCheckTitle}>
       <h2>{strings.plagiarismCheckTitle}</h2>
       <form
+        className="plagiarism-check-form"
         onSubmit={(event) => {
           event.preventDefault()
           void handleCheck()
@@ -51,7 +52,7 @@ export function PlagiarismCheckPanel() {
           aria-label={strings.plagiarismCheckTextareaPlaceholder}
           disabled={isChecking}
         />
-        <div>
+        <div className="plagiarism-check-form-actions">
           <button type="submit" disabled={text.trim() === '' || isChecking}>
             {isChecking ? strings.plagiarismCheckButtonPending : strings.plagiarismCheckButton}
           </button>
@@ -70,12 +71,30 @@ export function PlagiarismCheckPanel() {
             {result.flagged ? strings.plagiarismCheckFlaggedMessage : strings.plagiarismCheckNotFlaggedMessage}
           </p>
           <div className="plagiarism-check-scores">
-            <span>
-              {strings.plagiarismCheckScoreLabel}: {Math.round(result.plagiarism_score * 100)}%
-            </span>
-            <span>
-              {strings.plagiarismCheckAiFingerprintScoreLabel}: {Math.round(result.ai_fingerprint_score * 100)}%
-            </span>
+            <div className="plagiarism-check-score">
+              <span className="plagiarism-check-score-label">
+                <span>{strings.plagiarismCheckScoreLabel}</span>
+                <span>{Math.round(result.plagiarism_score * 100)}%</span>
+              </span>
+              <div className="plagiarism-check-score-track">
+                <div
+                  className="plagiarism-check-score-fill"
+                  style={{ width: `${Math.round(result.plagiarism_score * 100)}%` }}
+                />
+              </div>
+            </div>
+            <div className="plagiarism-check-score">
+              <span className="plagiarism-check-score-label">
+                <span>{strings.plagiarismCheckAiFingerprintScoreLabel}</span>
+                <span>{Math.round(result.ai_fingerprint_score * 100)}%</span>
+              </span>
+              <div className="plagiarism-check-score-track">
+                <div
+                  className="plagiarism-check-score-fill"
+                  style={{ width: `${Math.round(result.ai_fingerprint_score * 100)}%` }}
+                />
+              </div>
+            </div>
           </div>
           {result.flagged && result.reasons.length > 0 && (
             <div>

@@ -6,6 +6,7 @@ import { login, register } from '../services/authService'
 import { listInstitutions, uploadInstitutionSample } from '../services/institutionService'
 import type { InstitutionSummary } from '../types/institution'
 import { strings } from '../strings'
+import './Onboarding.css'
 
 /**
  * Registration/login + university selection/upload onboarding gate (TASK-E10-1).
@@ -85,95 +86,113 @@ export function Onboarding() {
 
   if (!hasToken) {
     return (
-      <section className="onboarding" aria-label={strings.onboardingTitle}>
-        <h1>{strings.onboardingTitle}</h1>
-        <form>
-          <label>
-            {strings.onboardingEmailLabel}
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-          </label>
-          <label>
-            {strings.onboardingPasswordLabel}
-            <input
-              type="password"
-              required
-              minLength={8}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </label>
-          {authError !== null && <p role="alert">{authError}</p>}
-          <button
-            type="button"
-            disabled={isSubmittingAuth}
-            onClick={() => void handleAuthSubmit(register)}
-          >
-            {strings.onboardingRegisterButton}
-          </button>
-          <button
-            type="button"
-            disabled={isSubmittingAuth}
-            onClick={() => void handleAuthSubmit(login)}
-          >
-            {strings.onboardingLoginButton}
-          </button>
-        </form>
-      </section>
+      <div className="onboarding-shell">
+        <section className="onboarding-card" aria-label={strings.onboardingTitle}>
+          <h1>{strings.onboardingTitle}</h1>
+          <p className="onboarding-subtitle">{strings.onboardingSubtitle}</p>
+          {authError !== null && <p className="onboarding-error" role="alert">{authError}</p>}
+          <form className="onboarding-form">
+            <label>
+              {strings.onboardingEmailLabel}
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+            </label>
+            <label>
+              {strings.onboardingPasswordLabel}
+              <input
+                type="password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </label>
+            <div className="onboarding-actions">
+              <button
+                type="button"
+                disabled={isSubmittingAuth}
+                onClick={() => void handleAuthSubmit(register)}
+              >
+                {strings.onboardingRegisterButton}
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingAuth}
+                onClick={() => void handleAuthSubmit(login)}
+              >
+                {strings.onboardingLoginButton}
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
     )
   }
 
   return (
-    <section className="onboarding" aria-label={strings.onboardingInstitutionStepTitle}>
-      <h1>{strings.onboardingInstitutionStepTitle}</h1>
-      {doc.institutionId !== null ? null : (
-        <>
-          <label>
-            {strings.onboardingInstitutionSelectLabel}
-            <select
-              value={selectedInstitutionId}
-              onChange={(event) => handleSelectInstitution(event.target.value)}
-            >
-              <option value="">{strings.onboardingInstitutionSelectPlaceholder}</option>
-              {institutions.map((institution) => (
-                <option key={institution.institution_id} value={institution.institution_id}>
-                  {institution.institution_name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {institutionsError !== null && <p role="alert">{institutionsError}</p>}
+    <div className="onboarding-shell">
+      <section className="onboarding-card" aria-label={strings.onboardingInstitutionStepTitle}>
+        <h1>{strings.onboardingInstitutionStepTitle}</h1>
+        <p className="onboarding-subtitle">{strings.onboardingInstitutionStepSubtitle}</p>
+        {doc.institutionId !== null ? null : (
+          <>
+            <label>
+              {strings.onboardingInstitutionSelectLabel}
+              <select
+                value={selectedInstitutionId}
+                onChange={(event) => handleSelectInstitution(event.target.value)}
+              >
+                <option value="">{strings.onboardingInstitutionSelectPlaceholder}</option>
+                {institutions.map((institution) => (
+                  <option key={institution.institution_id} value={institution.institution_id}>
+                    {institution.institution_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {institutionsError !== null && (
+              <p className="onboarding-error" role="alert">
+                {institutionsError}
+              </p>
+            )}
 
-          <h2>{strings.onboardingInstitutionUploadTitle}</h2>
-          <form onSubmit={(event) => void handleUploadSubmit(event)}>
-            <label>
-              {strings.onboardingInstitutionNameLabel}
-              <input
-                type="text"
-                required
-                value={uploadName}
-                onChange={(event) => setUploadName(event.target.value)}
-              />
-            </label>
-            <label>
-              {strings.onboardingInstitutionFileLabel}
-              <input
-                type="file"
-                required
-                onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
-              />
-            </label>
-            {uploadError !== null && <p role="alert">{uploadError}</p>}
-            <button type="submit" disabled={isUploading}>
-              {strings.onboardingInstitutionUploadButton}
-            </button>
-          </form>
-        </>
-      )}
-    </section>
+            <div className="onboarding-divider">{strings.onboardingOrDivider}</div>
+
+            <h2 className="onboarding-section-title">{strings.onboardingInstitutionUploadTitle}</h2>
+            <form className="onboarding-form" onSubmit={(event) => void handleUploadSubmit(event)}>
+              <label>
+                {strings.onboardingInstitutionNameLabel}
+                <input
+                  type="text"
+                  required
+                  value={uploadName}
+                  onChange={(event) => setUploadName(event.target.value)}
+                />
+              </label>
+              <label>
+                {strings.onboardingInstitutionFileLabel}
+                <input
+                  type="file"
+                  required
+                  onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+                />
+              </label>
+              {uploadError !== null && (
+                <p className="onboarding-error" role="alert">
+                  {uploadError}
+                </p>
+              )}
+              <button type="submit" disabled={isUploading}>
+                {strings.onboardingInstitutionUploadButton}
+              </button>
+            </form>
+          </>
+        )}
+      </section>
+    </div>
   )
 }

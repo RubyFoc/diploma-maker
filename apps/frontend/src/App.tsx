@@ -62,22 +62,22 @@ function ChatPanel() {
   }
 
   return (
-    <section className="chat-panel" aria-label={strings.chatPanelTitle}>
+    <section className="panel chat-panel" aria-label={strings.chatPanelTitle}>
       <h2>{strings.chatPanelTitle}</h2>
       <div className="chat-messages">
         {chat.messages.length === 0 ? (
-          <p>{strings.chatEmpty}</p>
+          <p className="chat-empty">{strings.chatEmpty}</p>
         ) : (
-          <ul>
-            {chat.messages.map((message) => (
-              <li key={message.id}>
-                <strong>{message.role}:</strong> {message.text}
-              </li>
-            ))}
-          </ul>
+          chat.messages.map((message) => (
+            <div key={message.id} className={`chat-message chat-message--${message.role}`}>
+              <strong>{message.role}</strong>
+              <span>{message.text}</span>
+            </div>
+          ))
         )}
       </div>
       <form
+        className="chat-form"
         onSubmit={(event) => {
           event.preventDefault()
           void handleSend()
@@ -127,16 +127,16 @@ function DocumentPanel() {
   }
 
   return (
-    <section className="document-panel" aria-label={strings.documentPanelTitle}>
+    <section className="panel document-panel" aria-label={strings.documentPanelTitle}>
       <h2>{strings.documentPanelTitle}</h2>
       {doc.chapters.length === 0 ? (
-        <p>{strings.documentEmpty}</p>
+        <p className="document-empty">{strings.documentEmpty}</p>
       ) : (
-        <ul>
+        <ul className="chapter-list">
           {doc.chapters.map((chapter) => {
             const { pendingDraft } = chapter
             return (
-              <li key={chapter.id}>
+              <li key={chapter.id} className="chapter-item">
                 <h3>{chapter.title}</h3>
                 <DocumentPreview content={chapter.content} />
                 {pendingDraft && (
@@ -165,10 +165,9 @@ function NewProjectButton() {
 function Workspace() {
   return (
     <>
-      <header className="workspace-header">
-        <h1>{strings.appTitle}</h1>
+      <div className="workspace-header">
         <NewProjectButton />
-      </header>
+      </div>
       <main className="workspace">
         <ChatPanel />
         <DocumentPanel />
@@ -189,6 +188,9 @@ function AuthenticatedApp() {
 
   return (
     <>
+      <header className="app-header">
+        <h1>{strings.appTitle}</h1>
+      </header>
       <nav className="tab-bar" role="tablist">
         <button
           type="button"
