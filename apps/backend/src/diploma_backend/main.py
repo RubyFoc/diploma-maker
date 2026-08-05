@@ -8,9 +8,11 @@ health check used by scripts/smoke-compose.sh and docker-compose's healthcheck.
 from fastapi import FastAPI
 
 from diploma_backend.auth.router import router as auth_router
+from diploma_backend.formatting.router import router as formatting_router
 
 app = FastAPI(title="diploma-maker backend")
 app.include_router(auth_router)
+app.include_router(formatting_router)
 
 
 @app.get("/health")

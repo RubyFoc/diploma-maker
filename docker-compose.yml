@@ -23,8 +23,11 @@ services:
     environment:
       MONGODB_URI: mongodb://mongo:27017
       QDRANT_URL: http://qdrant:6333
+      UPLOADS_DIR: /app/uploads
     ports:
       - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - uploads-data:/app/uploads
     depends_on:
       - mongo
       - qdrant
@@ -42,3 +45,4 @@ services:
 volumes:
   mongo-data:
   qdrant-data:
+  uploads-data:

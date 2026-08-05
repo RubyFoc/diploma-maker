@@ -144,3 +144,23 @@ unresolved ADR.
   finishes. Browser auto-reconnect on a dropped SSE connection loses in-flight stream state —
   the first implementation must treat a reconnect as "restart this generation's stream," not
   assume seamless resume.
+
+### ADR-0010: Embedding model
+- **Date:** 2026-08-04
+- **Status:** Accepted
+- **Decision:** Use a local, open-source embedding model via `fastembed` (Qdrant's own
+  ONNX-based embedding library, model `BAAI/bge-small-en-v1.5`, 384-dim) for RAG chunk/query
+  embeddings, rather than a DeepSeek API call. Verified against DeepSeek's public API docs before
+  deciding: DeepSeek's API is chat-completions focused and does not advertise a dedicated
+  embeddings endpoint, so ADR-0003's routing policy cannot cover this.
+  **Revised 2026-08-05:** initially implemented with `sentence-transformers`, but that pulls a
+  full CUDA-enabled `torch` (>1.5GB across `torch`/`triton`/`nvidia-*` packages) purely to run
+  CPU-only inference — impractical to install and unrelated to this MVP's needs. Switched to
+  `fastembed`: ONNX runtime only, no torch/GPU dependency, purpose-built to pair with Qdrant,
+  same 384 embedding dimension.
+- **Consequences:** Adds `fastembed` as a backend dependency (small ONNX model file downloaded
+  on first use). Embedding quality is capped by a small general-purpose model rather than a
+  larger or domain-tuned one — revisit (e.g. a larger local model, or a dedicated hosted
+  embeddings API) if retrieval quality proves insufficient once there's real usage to evaluate
+  against. Changing the embedding model later requires re-embedding all previously ingested
+  chunks (same migration cost noted under ADR-0002).
