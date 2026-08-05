@@ -116,6 +116,17 @@ uploaded a sample. See `docs/features/2026-08-05_gost-default-institution-seed.m
 | --- | --- | --- | --- | --- |
 | TASK-INT-6 | Seed a default GOST 7.32-2017 `InstitutionConfig` on startup | E05 | python-developer | done |
 
+## Phase 5.6 — University Formatting Auto-Discovery (added 2026-08-05, user-requested, not in original epic breakdown)
+
+The user asked that entering a university name should make the system TRY to automatically find
+that university's formatting requirements via web search, instead of always requiring a manual
+upload. See `docs/features/2026-08-05_auto-discovered-institution-formatting.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-7 | Web-search-based formatting auto-discovery (`POST .../auto-detect`) | E05 | python-developer | done |
+| TASK-INT-8 | Onboarding UI: "try to auto-detect" option alongside select/upload | E05 | frontend-developer | done |
+
 ## Deferred (no task yet — waiting on ADR-0007 or user input)
 - Wallet-deduction / insufficient-balance enforcement (blocked on ADR-0007 resolution).
 - Paid-tier pricing display in the frontend (blocked on ADR-0007 resolution).

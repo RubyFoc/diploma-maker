@@ -149,4 +149,51 @@ describe('Onboarding', () => {
 
     expect(await screen.findByTestId('institution-id')).toHaveTextContent('inst-2')
   })
+
+  it('auto-detecting an institution successfully sets institutionId', async () => {
+    localStorage.setItem('diploma-maker.accessToken', 'seeded-token')
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/formatting/institution-configs/auto-detect')) {
+        return Promise.resolve(jsonResponse({ institution_id: 'inst-3', institution_name: 'Auto University' }, true, 201))
+      }
+      return Promise.resolve(jsonResponse([]))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderOnboarding()
+
+    await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+    const nameInput = screen.getByLabelText(strings.onboardingInstitutionAutoDetectNameLabel)
+    fireEvent.change(nameInput, { target: { value: 'Auto University' } })
+    fireEvent.submit(nameInput.closest('form') as HTMLFormElement)
+
+    expect(await screen.findByTestId('institution-id')).toHaveTextContent('inst-3')
+  })
+
+  it('shows a calm not-found message on a 404 and leaves the dropdown/upload options usable', async () => {
+    localStorage.setItem('diploma-maker.accessToken', 'seeded-token')
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/formatting/institution-configs/auto-detect')) {
+        return Promise.resolve(
+          jsonResponse({ detail: "Could not automatically determine formatting requirements for 'Unknown University'." }, false, 404),
+        )
+      }
+      return Promise.resolve(jsonResponse([]))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderOnboarding()
+
+    await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+    const nameInput = screen.getByLabelText(strings.onboardingInstitutionAutoDetectNameLabel)
+    fireEvent.change(nameInput, { target: { value: 'Unknown University' } })
+    fireEvent.submit(nameInput.closest('form') as HTMLFormElement)
+
+    expect(await screen.findByText(strings.onboardingInstitutionAutoDetectNotFoundMessage)).toBeInTheDocument()
+    expect(screen.getByTestId('institution-id')).toHaveTextContent('none')
+
+    expect(screen.getByLabelText(strings.onboardingInstitutionSelectLabel)).toBeEnabled()
+    expect(screen.getByLabelText(strings.onboardingInstitutionNameLabel)).toBeEnabled()
+    expect(screen.getByLabelText(strings.onboardingInstitutionFileLabel)).toBeEnabled()
+  })
 })

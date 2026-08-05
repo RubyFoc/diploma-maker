@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { listInstitutions, uploadInstitutionSample } from './institutionService'
+import { autoDetectInstitution, listInstitutions, uploadInstitutionSample } from './institutionService'
 
 const BASE_URL = 'http://localhost:8010'
 
@@ -64,5 +64,38 @@ describe('institutionService', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(uploadInstitutionSample('New University', new File(['x'], 'x.docx'))).rejects.toThrow(/422/)
+  })
+
+  it('autoDetectInstitution posts the university name and returns the parsed institution on success', async () => {
+    const institution = { institution_id: 'i3', institution_name: 'Auto University' }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(institution, true, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await autoDetectInstitution('Auto University')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe(`${BASE_URL}/formatting/institution-configs/auto-detect`)
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ institution_name: 'Auto University' })
+    expect(result).toEqual(institution)
+  })
+
+  it('autoDetectInstitution resolves to null (not a thrown error) when the backend returns 404', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ detail: "Could not automatically determine formatting requirements for 'Unknown University'." }, false, 404),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await autoDetectInstitution('Unknown University')
+
+    expect(result).toBeNull()
+  })
+
+  it('autoDetectInstitution still throws on a non-404 non-2xx response (e.g. 502 search failure)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: 'search backend unavailable' }, false, 502))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(autoDetectInstitution('Some University')).rejects.toThrow(/502/)
   })
 })

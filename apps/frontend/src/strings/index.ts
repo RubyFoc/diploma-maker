@@ -38,6 +38,16 @@ export const strings = {
   onboardingInstitutionFileLabel: 'Sample document',
   onboardingInstitutionUploadButton: 'Upload',
   onboardingInstitutionUploadError: 'Failed to upload university sample. Please try again.',
+  onboardingInstitutionAutoDetectTitle: 'Or try automatic detection',
+  onboardingInstitutionAutoDetectSubtitle:
+    "We'll search the web for your university's formatting requirements. This is best-effort and may not find anything.",
+  onboardingInstitutionAutoDetectNameLabel: 'University name to search for',
+  onboardingInstitutionAutoDetectButton: 'Try to auto-detect',
+  onboardingInstitutionAutoDetectButtonPending: 'Searching...',
+  onboardingInstitutionAutoDetectNotFoundMessage:
+    "We couldn't automatically find formatting requirements for this university. Try picking it from the list above or uploading a sample document instead.",
+  onboardingInstitutionAutoDetectError:
+    'Automatic detection is unavailable right now. Please try picking from the list above or uploading a sample document instead.',
   tabWorkspaceLabel: 'Workspace',
   tabPlagiarismCheckLabel: 'Plagiarism Check',
   plagiarismCheckTitle: 'Plagiarism Check',

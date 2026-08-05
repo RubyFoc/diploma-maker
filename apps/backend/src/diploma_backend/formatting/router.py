@@ -5,12 +5,21 @@
 `GET /formatting/institution-configs/{institution_id}` expose the storage-layer listing/lookup
 from `formatting.service` (TASK-E05-1) so the onboarding flow (TASK-E10-1) can populate a
 university dropdown and fetch the selected institution's full config.
+
+`POST /formatting/institution-configs/auto-detect` is ADR-0005's 2026-08-05 addendum
+(`source="auto"`): tries to find and extract a named university's formatting requirements from
+the web (`formatting.discovery`) instead of requiring a manual upload.
 """
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel, Field
 
 from diploma_backend.db import get_database
+from diploma_backend.formatting.discovery import (
+    FormattingDiscoveryError,
+    discover_institution_config,
+)
 from diploma_backend.formatting.models import Headings, InstitutionConfig
 from diploma_backend.formatting.service import (
     create_institution_config,
@@ -24,6 +33,12 @@ from diploma_backend.formatting.upload import (
 )
 
 router = APIRouter(prefix="/formatting", tags=["formatting"])
+
+
+class AutoDetectRequest(BaseModel):
+    """Request body for `POST /formatting/institution-configs/auto-detect`."""
+
+    institution_name: str = Field(min_length=1)
 
 
 @router.post(
@@ -69,6 +84,42 @@ async def upload_institution_config(
         raw_sample_reference=file_id,
     )
     return await create_institution_config(db, config)
+
+
+@router.post(
+    "/institution-configs/auto-detect",
+    response_model=InstitutionConfig,
+    status_code=status.HTTP_201_CREATED,
+)
+async def auto_detect_institution_config(
+    request: AutoDetectRequest,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> InstitutionConfig:
+    """Try to auto-discover `request.institution_name`'s formatting requirements from the web.
+
+    Delegates to `formatting.discovery.discover_institution_config`. On a `"found"` result,
+    persists the built `source="auto"` config and returns it with `201`. Raises
+    `HTTPException(404)` if nothing could be determined (a real, expected outcome — like a
+    citation-verification rejection elsewhere in this codebase — not a server error) so the
+    frontend can fall back to prompting for a manual upload or the default GOST template.
+    Raises `HTTPException(502)` if the search step itself failed (genuine infra failure).
+    """
+    try:
+        result = await discover_institution_config(request.institution_name)
+    except FormattingDiscoveryError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    if result.status == "not_found" or result.config is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Could not automatically determine formatting requirements for "
+                f"'{request.institution_name}'. Please upload a sample document or use the "
+                f"default GOST template instead."
+            ),
+        )
+
+    return await create_institution_config(db, result.config)
 
 
 @router.get("/institution-configs", response_model=list[InstitutionConfig])

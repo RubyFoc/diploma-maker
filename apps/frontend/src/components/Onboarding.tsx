@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useDocument } from '../context/DocumentContext'
 import { login, register } from '../services/authService'
-import { listInstitutions, uploadInstitutionSample } from '../services/institutionService'
+import { autoDetectInstitution, listInstitutions, uploadInstitutionSample } from '../services/institutionService'
 import type { InstitutionSummary } from '../types/institution'
 import { strings } from '../strings'
 import './Onboarding.css'
@@ -34,6 +34,10 @@ export function Onboarding() {
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
+
+  const [autoDetectName, setAutoDetectName] = useState('')
+  const [autoDetectMessage, setAutoDetectMessage] = useState<string | null>(null)
+  const [isAutoDetecting, setIsAutoDetecting] = useState(false)
 
   const hasToken = auth.accessToken !== null
 
@@ -81,6 +85,24 @@ export function Onboarding() {
       setUploadError(strings.onboardingInstitutionUploadError)
     } finally {
       setIsUploading(false)
+    }
+  }
+
+  const handleAutoDetectSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    setIsAutoDetecting(true)
+    setAutoDetectMessage(null)
+    try {
+      const institution = await autoDetectInstitution(autoDetectName)
+      if (institution === null) {
+        setAutoDetectMessage(strings.onboardingInstitutionAutoDetectNotFoundMessage)
+        return
+      }
+      setDocument((previous) => ({ ...previous, institutionId: institution.institution_id }))
+    } catch {
+      setAutoDetectMessage(strings.onboardingInstitutionAutoDetectError)
+    } finally {
+      setIsAutoDetecting(false)
     }
   }
 
@@ -140,6 +162,32 @@ export function Onboarding() {
         <p className="onboarding-subtitle">{strings.onboardingInstitutionStepSubtitle}</p>
         {doc.institutionId !== null ? null : (
           <>
+            <h2 className="onboarding-section-title">{strings.onboardingInstitutionAutoDetectTitle}</h2>
+            <p className="onboarding-subtitle">{strings.onboardingInstitutionAutoDetectSubtitle}</p>
+            <form className="onboarding-form" onSubmit={(event) => void handleAutoDetectSubmit(event)}>
+              <label>
+                {strings.onboardingInstitutionAutoDetectNameLabel}
+                <input
+                  type="text"
+                  required
+                  value={autoDetectName}
+                  onChange={(event) => setAutoDetectName(event.target.value)}
+                />
+              </label>
+              {autoDetectMessage !== null && (
+                <p className="onboarding-error" role="alert">
+                  {autoDetectMessage}
+                </p>
+              )}
+              <button type="submit" disabled={isAutoDetecting}>
+                {isAutoDetecting
+                  ? strings.onboardingInstitutionAutoDetectButtonPending
+                  : strings.onboardingInstitutionAutoDetectButton}
+              </button>
+            </form>
+
+            <div className="onboarding-divider">{strings.onboardingOrDivider}</div>
+
             <label>
               {strings.onboardingInstitutionSelectLabel}
               <select

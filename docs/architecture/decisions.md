@@ -102,6 +102,13 @@ unresolved ADR.
 - **Consequences:** E06 (export) and E09 (weight adjustments) consume this shape directly;
   changing field names/structure later requires a migration across every stored institution
   config.
+- **Addendum, 2026-08-05:** `source` gains a third value, `"auto"`, alongside the original
+  `"upload" | "seed"` — an additive change, not a structural one, per user request to have the
+  system try to auto-discover a named university's formatting rules via web search
+  (`formatting.discovery`) rather than requiring an upload every time. `"auto"` configs get
+  `accuracy_weight=0.3` (unverified web-extracted heuristic, distinctly less trusted than a
+  `"seed"` config's `1.0` or a user's own verified upload) — see
+  `docs/features/2026-08-05_auto-discovered-institution-formatting.md`.
 
 ### ADR-0006: Billing ledger schema
 - **Date:** 2026-08-04

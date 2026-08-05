@@ -10,7 +10,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Source = Literal["upload", "seed"]
+# "auto" (ADR-0005's 2026-08-05 addendum) marks a config web-discovered by
+# `formatting.discovery` — distinct from a verified upload or the seeded GOST default, hence its
+# own, lower `accuracy_weight` (0.3, vs. an upload's 0.0-until-verified or a seed's 1.0).
+Source = Literal["upload", "seed", "auto"]
 PageSize = Literal["A4", "Letter"]
 Orientation = Literal["portrait", "landscape"]
 CitationStyle = Literal["APA", "GOST", "MLA", "custom"]
