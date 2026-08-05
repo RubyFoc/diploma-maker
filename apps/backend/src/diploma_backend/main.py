@@ -6,18 +6,31 @@ health check used by scripts/smoke-compose.sh and docker-compose's healthcheck.
 """
 
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from diploma_backend.auth.router import router as auth_router
+from diploma_backend.db import get_database
 from diploma_backend.feedback.router import router as feedback_router
 from diploma_backend.formatting.router import router as formatting_router
+from diploma_backend.formatting.seed import ensure_default_gost_config
 from diploma_backend.plagiarism.router import router as plagiarism_router
 from diploma_backend.projects.router import router as projects_router
 from diploma_backend.projects.router import versions_router
 
-app = FastAPI(title="diploma-maker backend")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Seed the default GOST 7.32-2017 institution config on startup (idempotent, see
+    `formatting.seed`), so a fresh deployment's university dropdown isn't empty before anyone
+    uploads a formatting sample."""
+    await ensure_default_gost_config(get_database())
+    yield
+
+
+app = FastAPI(title="diploma-maker backend", lifespan=_lifespan)
 
 # The frontend (Vite dev server) runs on a different origin (e.g. http://localhost:5173) than
 # this API (e.g. http://localhost:8010), so the browser enforces CORS on every fetch call unless

@@ -104,6 +104,18 @@ pieces together — see `docs/features/2026-08-05_vertical-slice-integration.md`
 | TASK-INT-1 | Project/chapter backend model + generation + accept endpoints | — | python-developer | done |
 | TASK-INT-2 | Wire frontend (chat input, project creation, real diff viewer) to TASK-INT-1's API | — | frontend-developer | done |
 
+## Phase 5.5 — Default GOST Institution Seed (added 2026-08-05, user-requested research, not in original epic breakdown)
+
+The user asked for independent research into real university formatting requirements. Web
+research confirmed GOST 7.32-2017's published margins/font/spacing values, and surfaced a real
+gap: ADR-0005's `source: "upload" | "seed"` had no actual `"seed"` producer anywhere in the
+codebase, so a fresh deployment's university dropdown (TASK-E05-3) was empty until someone
+uploaded a sample. See `docs/features/2026-08-05_gost-default-institution-seed.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-6 | Seed a default GOST 7.32-2017 `InstitutionConfig` on startup | E05 | python-developer | done |
+
 ## Deferred (no task yet — waiting on ADR-0007 or user input)
 - Wallet-deduction / insufficient-balance enforcement (blocked on ADR-0007 resolution).
 - Paid-tier pricing display in the frontend (blocked on ADR-0007 resolution).

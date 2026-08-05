@@ -32,3 +32,4 @@ Index of features below (add a row per note):
 | 2026-08-05 | Pipeline wiring (humanize + plagiarism precheck) + chapter-boundary insertion | [2026-08-05_pipeline-wiring-and-chapter-insertion.md](2026-08-05_pipeline-wiring-and-chapter-insertion.md) |
 | 2026-08-05 | Standalone plagiarism/AI-check tab | [2026-08-05_standalone-plagiarism-check-tab.md](2026-08-05_standalone-plagiarism-check-tab.md) |
 | 2026-08-05 | Feedback signal capture (approve/reject) | [2026-08-05_feedback-signal-capture.md](2026-08-05_feedback-signal-capture.md) |
+| 2026-08-05 | Default GOST 7.32-2017 institution seed | [2026-08-05_gost-default-institution-seed.md](2026-08-05_gost-default-institution-seed.md) |
