@@ -30,3 +30,4 @@ Index of features below (add a row per note):
 | 2026-08-05 | Humanizer pipeline + TOC upload + live WYSIWYG preview | [2026-08-05_humanizer-toc-upload-and-live-preview.md](2026-08-05_humanizer-toc-upload-and-live-preview.md) |
 | 2026-08-05 | Anti-plagiarism pre-check + registration/university onboarding | [2026-08-05_plagiarism-precheck-and-onboarding.md](2026-08-05_plagiarism-precheck-and-onboarding.md) |
 | 2026-08-05 | Pipeline wiring (humanize + plagiarism precheck) + chapter-boundary insertion | [2026-08-05_pipeline-wiring-and-chapter-insertion.md](2026-08-05_pipeline-wiring-and-chapter-insertion.md) |
+| 2026-08-05 | Standalone plagiarism/AI-check tab | [2026-08-05_standalone-plagiarism-check-tab.md](2026-08-05_standalone-plagiarism-check-tab.md) |

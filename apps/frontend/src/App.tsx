@@ -8,6 +8,7 @@ import { strings } from './strings'
 import { DiffViewer } from './components/DiffViewer'
 import { DocumentPreview } from './components/DocumentPreview'
 import { Onboarding } from './components/Onboarding'
+import { PlagiarismCheckPanel } from './components/PlagiarismCheckPanel'
 import { acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
 import { toDocumentState } from './utils/mapProject'
 
@@ -176,6 +177,43 @@ function Workspace() {
   )
 }
 
+type Tab = 'workspace' | 'plagiarism-check'
+
+/**
+ * Tab navigation shown once a user is past onboarding, per ADR-0008 (no routing
+ * library — local useState is enough for two sibling views). "Workspace" is the
+ * default tab so existing project/chapter flows are unaffected.
+ */
+function AuthenticatedApp() {
+  const [activeTab, setActiveTab] = useState<Tab>('workspace')
+
+  return (
+    <>
+      <nav className="tab-bar" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'workspace'}
+          className={activeTab === 'workspace' ? 'tab tab--active' : 'tab'}
+          onClick={() => setActiveTab('workspace')}
+        >
+          {strings.tabWorkspaceLabel}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'plagiarism-check'}
+          className={activeTab === 'plagiarism-check' ? 'tab tab--active' : 'tab'}
+          onClick={() => setActiveTab('plagiarism-check')}
+        >
+          {strings.tabPlagiarismCheckLabel}
+        </button>
+      </nav>
+      {activeTab === 'workspace' ? <Workspace /> : <PlagiarismCheckPanel />}
+    </>
+  )
+}
+
 function Gate() {
   const { auth } = useAuth()
   const { document: doc } = useDocument()
@@ -184,7 +222,7 @@ function Gate() {
     return <Onboarding />
   }
 
-  return <Workspace />
+  return <AuthenticatedApp />
 }
 
 function App() {

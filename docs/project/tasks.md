@@ -69,6 +69,17 @@ status in sync with GitHub issues once tasks move to execution.
 | TASK-E09-1 | Approve/reject/edit signal capture (UI + API) | E09 | frontend-developer, python-developer | blocked on TASK-E08-2 |
 | TASK-E09-2 | Template `accuracy_weight` adjustment logic | E09 | python-developer | blocked on TASK-E09-1, TASK-E05-1 |
 
+## Phase 4.5 — Standalone Plagiarism/AI-Check Tab (added 2026-08-05, user request, not in original epic breakdown)
+
+The user asked for the plagiarism/AI-fingerprint pre-check (TASK-E07-2) to also be usable
+standalone, to check their own already-written work independent of any generated chapter. See
+`docs/features/2026-08-05_standalone-plagiarism-check-tab.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-4 | `POST /plagiarism/check` standalone endpoint (reuses `run_precheck`) | E07 | python-developer | done |
+| TASK-INT-5 | Plagiarism-check tab (separate from Workspace) | E07 | frontend-developer | done |
+
 ## Phase 2.6 — Pipeline Wiring & Chapter Insertion (added 2026-08-05, not in original epic breakdown)
 
 Closes the tech debt flagged after Phase 2.5: `humanizer/pipeline.py` (TASK-E07-1) and

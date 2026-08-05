@@ -1,0 +1,45 @@
+.plagiarism-check-panel {
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.plagiarism-check-panel textarea {
+  width: 100%;
+  min-height: 200px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.plagiarism-check-result {
+  margin-top: 1rem;
+}
+
+.plagiarism-check-scores {
+  display: flex;
+  gap: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.plagiarism-check-banner {
+  display: inline-block;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-weight: bold;
+  margin-bottom: 0.75rem;
+}
+
+.plagiarism-check-banner--flagged {
+  background-color: #f8d4d4;
+  color: #7a1f1f;
+}
+
+.plagiarism-check-banner--clear {
+  background-color: #d4f8d4;
+  color: #1f5c1f;
+}
+
+.plagiarism-check-error {
+  color: #7a1f1f;
+  margin-top: 1rem;
+}

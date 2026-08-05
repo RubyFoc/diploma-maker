@@ -4,6 +4,25 @@
   padding: 1rem;
 }
 
+.tab-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.tab {
+  padding: 0.5rem 1rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.tab--active {
+  background-color: #e0e0ff;
+  font-weight: bold;
+}
+
 .workspace-header {
   display: flex;
   align-items: center;
