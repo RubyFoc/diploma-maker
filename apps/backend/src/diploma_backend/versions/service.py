@@ -47,6 +47,22 @@ async def get_current_accepted_version(
     return ChapterVersion.model_validate(document)
 
 
+async def get_latest_draft_version(
+    db: AsyncIOMotorDatabase, chapter_id: str
+) -> ChapterVersion | None:
+    """Return the draft version with the highest `version_number` for `chapter_id`.
+
+    Mirrors `get_current_accepted_version` exactly but filters `status="draft"` instead of
+    `status="accepted"`. Returns `None` if the chapter has no pending draft.
+    """
+    document = await db[_COLLECTION].find_one(
+        {"chapter_id": chapter_id, "status": "draft"}, sort=[("version_number", -1)]
+    )
+    if document is None:
+        return None
+    return ChapterVersion.model_validate(document)
+
+
 async def list_versions_for_chapter(
     db: AsyncIOMotorDatabase, chapter_id: str
 ) -> list[ChapterVersion]:

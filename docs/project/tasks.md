@@ -69,6 +69,18 @@ status in sync with GitHub issues once tasks move to execution.
 | TASK-E09-1 | Approve/reject/edit signal capture (UI + API) | E09 | frontend-developer, python-developer | blocked on TASK-E08-2 |
 | TASK-E09-2 | Template `accuracy_weight` adjustment logic | E09 | python-developer | blocked on TASK-E09-1, TASK-E05-1 |
 
+## Phase 2.5 — Vertical Slice Integration (added 2026-08-05, not in original epic breakdown)
+
+Closes the gap between the backend services built in Phases 0-3 and an actually-usable
+end-to-end flow: create a project, chat, get a chapter draft, accept/reject it. Added
+opportunistically once Phases 0-3 were complete and it became clear no task covered wiring the
+pieces together — see `docs/features/2026-08-05_vertical-slice-integration.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-1 | Project/chapter backend model + generation + accept endpoints | — | python-developer | done |
+| TASK-INT-2 | Wire frontend (chat input, project creation, real diff viewer) to TASK-INT-1's API | — | frontend-developer | done |
+
 ## Deferred (no task yet — waiting on ADR-0007 or user input)
 - Wallet-deduction / insufficient-balance enforcement (blocked on ADR-0007 resolution).
 - Paid-tier pricing display in the frontend (blocked on ADR-0007 resolution).

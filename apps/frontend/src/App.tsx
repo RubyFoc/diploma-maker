@@ -5,9 +5,53 @@ import { DocumentProvider, useDocument } from './context/DocumentContext'
 import { useNewProject } from './hooks/useNewProject'
 import { strings } from './strings'
 import { DiffViewer } from './components/DiffViewer'
+import { acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
+import { toDocumentState } from './utils/mapProject'
 
 function ChatPanel() {
-  const { chat } = useChat()
+  const { chat, appendMessage } = useChat()
+  const { document: doc, setDocument } = useDocument()
+  const [inputValue, setInputValue] = useState('')
+  const [isSending, setIsSending] = useState(false)
+
+  const handleSend = async () => {
+    const text = inputValue.trim()
+    const projectId = doc.projectId
+    if (text === '' || projectId === null || isSending) {
+      return
+    }
+
+    setInputValue('')
+    setIsSending(true)
+    appendMessage({ id: crypto.randomUUID(), role: 'user', text })
+
+    try {
+      let chapter = doc.chapters[0]
+      if (!chapter) {
+        const created = await createChapter(projectId, strings.defaultChapterTitle)
+        chapter = {
+          id: created.id,
+          title: created.title,
+          content: created.accepted_content ?? '',
+          pendingDraft: created.pending_draft,
+        }
+        setDocument((previous) => ({ ...previous, chapters: [...previous.chapters, chapter] }))
+      }
+
+      const draft = await generateChapterDraft(projectId, chapter.id, text)
+      setDocument((previous) => ({
+        ...previous,
+        chapters: previous.chapters.map((existing) =>
+          existing.id === chapter.id ? { ...existing, pendingDraft: draft } : existing,
+        ),
+      }))
+      appendMessage({ id: crypto.randomUUID(), role: 'assistant', text: strings.chatDraftReadyMessage })
+    } catch {
+      appendMessage({ id: crypto.randomUUID(), role: 'assistant', text: strings.chatGenerationErrorMessage })
+    } finally {
+      setIsSending(false)
+    }
+  }
 
   return (
     <section className="chat-panel" aria-label={strings.chatPanelTitle}>
@@ -25,23 +69,54 @@ function ChatPanel() {
           </ul>
         )}
       </div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          void handleSend()
+        }}
+      >
+        <input
+          type="text"
+          value={inputValue}
+          onChange={(event) => setInputValue(event.target.value)}
+          placeholder={strings.chatInputPlaceholder}
+          aria-label={strings.chatInputPlaceholder}
+          disabled={doc.projectId === null || isSending}
+        />
+        <button type="submit" disabled={doc.projectId === null || isSending}>
+          {strings.chatSendButton}
+        </button>
+      </form>
     </section>
   )
 }
 
-// Placeholder pending-draft simulation for TASK-E08-2. There is no backend
-// draft-fetching wired up yet (E08-1's endpoint doesn't exist), so this local
-// state stands in for "a chapter has a pending LLM-proposed draft" per
-// ADR-0004. A later integration task should replace `pendingDraft` with a
-// real fetch of the draft version for the selected chapter and replace
-// accept/reject handlers with real API calls instead of clearing local state.
 function DocumentPanel() {
-  const { document: doc } = useDocument()
-  const [pendingDraft, setPendingDraft] = useState<{ chapterId: string; content: string } | null>(
-    null,
-  )
+  const { document: doc, setDocument } = useDocument()
 
-  const draftChapter = doc.chapters.find((chapter) => chapter.id === pendingDraft?.chapterId)
+  const handleAccept = async (chapterId: string, draftId: string) => {
+    await acceptDraft(draftId)
+    if (doc.projectId !== null) {
+      const project = await getProject(doc.projectId)
+      setDocument(toDocumentState(project))
+      return
+    }
+    setDocument((previous) => ({
+      ...previous,
+      chapters: previous.chapters.map((chapter) =>
+        chapter.id === chapterId ? { ...chapter, pendingDraft: null } : chapter,
+      ),
+    }))
+  }
+
+  const handleReject = (chapterId: string) => {
+    setDocument((previous) => ({
+      ...previous,
+      chapters: previous.chapters.map((chapter) =>
+        chapter.id === chapterId ? { ...chapter, pendingDraft: null } : chapter,
+      ),
+    }))
+  }
 
   return (
     <section className="document-panel" aria-label={strings.documentPanelTitle}>
@@ -50,30 +125,24 @@ function DocumentPanel() {
         <p>{strings.documentEmpty}</p>
       ) : (
         <ul>
-          {doc.chapters.map((chapter) => (
-            <li key={chapter.id}>
-              {chapter.title}
-              {pendingDraft === null && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setPendingDraft({ chapterId: chapter.id, content: `${chapter.content}\n(draft edit)` })
-                  }
-                >
-                  {strings.simulatePendingDraftButton}
-                </button>
-              )}
-            </li>
-          ))}
+          {doc.chapters.map((chapter) => {
+            const { pendingDraft } = chapter
+            return (
+              <li key={chapter.id}>
+                <h3>{chapter.title}</h3>
+                <p>{chapter.content === '' ? strings.chapterContentEmpty : chapter.content}</p>
+                {pendingDraft && (
+                  <DiffViewer
+                    before={chapter.content}
+                    after={pendingDraft.content}
+                    onAccept={() => void handleAccept(chapter.id, pendingDraft.id)}
+                    onReject={() => handleReject(chapter.id)}
+                  />
+                )}
+              </li>
+            )
+          })}
         </ul>
-      )}
-      {pendingDraft && draftChapter && (
-        <DiffViewer
-          before={draftChapter.content}
-          after={pendingDraft.content}
-          onAccept={() => setPendingDraft(null)}
-          onReject={() => setPendingDraft(null)}
-        />
       )}
     </section>
   )
