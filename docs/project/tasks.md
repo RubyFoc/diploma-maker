@@ -127,6 +127,16 @@ upload. See `docs/features/2026-08-05_auto-discovered-institution-formatting.md`
 | TASK-INT-7 | Web-search-based formatting auto-discovery (`POST .../auto-detect`) | E05 | python-developer | done |
 | TASK-INT-8 | Onboarding UI: "try to auto-detect" option alongside select/upload | E05 | frontend-developer | done |
 
+## Phase 3.5 — Project docx Export (added 2026-08-05, not in original epic breakdown)
+
+The docx export engine (E06) existed fully built and tested since Phase 3 with no endpoint
+anywhere that reached it. See `docs/features/2026-08-05_project-docx-export.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-9 | `GET /projects/{id}/export` — assemble all chapters into one styled `.docx` | E06 | python-developer | done |
+| TASK-INT-10 | "Export" button in the workspace header, triggers a browser download | E06 | frontend-developer | done |
+
 ## Deferred (no task yet — waiting on ADR-0007 or user input)
 - Wallet-deduction / insufficient-balance enforcement (blocked on ADR-0007 resolution).
 - Paid-tier pricing display in the frontend (blocked on ADR-0007 resolution).

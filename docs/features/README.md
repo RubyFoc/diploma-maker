@@ -36,3 +36,4 @@ Index of features below (add a row per note):
 | 2026-08-05 | University formatting auto-discovery via web search | [2026-08-05_auto-discovered-institution-formatting.md](2026-08-05_auto-discovered-institution-formatting.md) |
 | 2026-08-05 | Template accuracy-weight adjustment from feedback signals | [2026-08-05_accuracy-weight-adjustment.md](2026-08-05_accuracy-weight-adjustment.md) |
 | 2026-08-05 | SSE streaming generation | [2026-08-05_sse-streaming-generation.md](2026-08-05_sse-streaming-generation.md) |
+| 2026-08-05 | Project docx export | [2026-08-05_project-docx-export.md](2026-08-05_project-docx-export.md) |

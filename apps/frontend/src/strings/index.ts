@@ -61,4 +61,7 @@ export const strings = {
   plagiarismCheckNotFlaggedMessage: 'Not flagged.',
   plagiarismCheckReasonsTitle: 'Reasons',
   plagiarismCheckErrorMessage: 'Plagiarism check failed. Please try again.',
+  exportButton: 'Export to .docx',
+  exportButtonPending: 'Exporting...',
+  exportErrorMessage: 'Export failed. Please try again.',
 } as const

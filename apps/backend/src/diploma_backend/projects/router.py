@@ -19,15 +19,20 @@ not-yet-integrated citation-verification step.
 """
 
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import datetime
+from io import BytesIO
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
 from diploma_backend.db import get_database
+from diploma_backend.export.docx import apply_institution_config, markdown_to_docx
+from diploma_backend.formatting.service import get_institution_config
 from diploma_backend.humanizer.pipeline import HumanizationError, humanize_text
 from diploma_backend.llm_routing import DeepSeekClient, LLMRequestError, generate_with_retry
 from diploma_backend.llm_routing.summary import assemble_prompt
@@ -57,6 +62,23 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 versions_router = APIRouter(prefix="/versions", tags=["projects"])
 
 _DEFAULT_PROJECT_TITLE = "Untitled Thesis"
+
+# Matches the frontend's `chapterContentEmpty` string (apps/frontend/src/strings/index.ts)
+# verbatim, so a user sees the same wording in the exported document as in the editor UI for a
+# chapter with no accepted content yet. Wrapped in `*...*` so `markdown_to_docx` renders it
+# italicized, visually distinguishing it from real chapter body text.
+_EXPORT_EMPTY_CHAPTER_NOTE = "*No accepted content yet.*"
+
+# Strips only genuinely filesystem/header-unsafe characters (path separators, control chars,
+# quotes) rather than allowlisting ASCII only — this platform's target audience (ADR-0001's GOST
+# handling, sources.geo_filter's RU/BY focus) overwhelmingly types Cyrillic project titles, and an
+# ASCII-only allowlist previously turned every such title into a string of underscores.
+_UNSAFE_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# ASCII-only fallback for the plain `filename=` Content-Disposition parameter, which older
+# clients may not correctly interpret as UTF-8; kept alongside the RFC 5987 `filename*=` parameter
+# (see `_content_disposition_header`) so both older and modern clients get a sensible name.
+_NON_ASCII_RE = re.compile(r"[^\x00-\x7f]")
+_FALLBACK_EXPORT_FILENAME = "thesis"
 
 _GENERATION_SYSTEM_PROMPT = (
     "You are an academic writing assistant helping a student draft a chapter of their thesis. "
@@ -198,6 +220,102 @@ async def get_project_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
         )
     return await _build_project_detail(db, project)
+
+
+def _sanitize_filename(title: str) -> str:
+    """Turn `title` into a filesystem-safe filename stem (no extension), preserving non-ASCII
+    letters (e.g. Cyrillic) rather than collapsing them to underscores.
+
+    Replaces only genuinely unsafe characters (path separators, control characters, quotes) with
+    `_`. Falls back to `_FALLBACK_EXPORT_FILENAME` if that leaves nothing usable (e.g. a title
+    made up entirely of unsafe characters).
+    """
+    sanitized = _UNSAFE_FILENAME_CHARS_RE.sub("_", title).strip()
+    return sanitized if sanitized else _FALLBACK_EXPORT_FILENAME
+
+
+def _content_disposition_header(filename: str) -> str:
+    """Build a `Content-Disposition` header value safe for both ASCII-only and Unicode-aware
+    clients.
+
+    `filename=` carries an ASCII-only fallback (non-ASCII characters stripped) for older clients
+    that don't correctly interpret raw UTF-8 in that parameter; `filename*=UTF-8''<percent-
+    encoded>` (RFC 5987/6266) carries the real, full Unicode filename for modern browsers, which
+    prefer `filename*` over `filename` when both are present.
+    """
+    ascii_fallback = _NON_ASCII_RE.sub("_", filename).strip("_ ")
+    if not any(char.isalnum() for char in ascii_fallback):
+        ascii_fallback = _FALLBACK_EXPORT_FILENAME
+    encoded = quote(filename, safe="")
+    return f'attachment; filename="{ascii_fallback}.docx"; filename*=UTF-8\'\'{encoded}.docx'
+
+
+async def _build_export_markdown(db: AsyncIOMotorDatabase, project: Project) -> str:
+    """Assemble one Markdown document for `project`: one `# <title>` heading per chapter (in
+    `order`), followed by its accepted content, or `_EXPORT_EMPTY_CHAPTER_NOTE` if it has none.
+    """
+    chapters = await list_chapters_for_project(db, project.id)
+    sections = []
+    for chapter in chapters:
+        accepted = await get_current_accepted_version(db, chapter.id)
+        body = accepted.content if accepted is not None else _EXPORT_EMPTY_CHAPTER_NOTE
+        sections.append(f"# {chapter.title}\n\n{body}\n")
+    return "\n".join(sections)
+
+
+@router.get("/{project_id}/export")
+async def export_project_endpoint(
+    project_id: str,
+    institution_id: str | None = None,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Response:
+    """Export `project_id`'s full accepted content as a single `.docx` file (TASK-E06 closing the
+    loop: the export engine existed with no reachable endpoint until this task).
+
+    Raises `HTTPException(404)` if `project_id` doesn't exist. Otherwise assembles one Markdown
+    document from all of the project's chapters, in `order` (see `_build_export_markdown`): each
+    chapter becomes a `# <title>` heading followed by its current accepted content, or
+    `_EXPORT_EMPTY_CHAPTER_NOTE` (matching the frontend's `chapterContentEmpty` string) if it has
+    no accepted version yet — a chapter with no content is called out explicitly, not silently
+    omitted. That Markdown is converted to a `docx.Document` via `export.docx.markdown_to_docx`.
+
+    If `institution_id` is given AND resolves to a stored `InstitutionConfig`
+    (`formatting.service.get_institution_config`), `export.docx.apply_institution_config` is
+    applied to the document before serializing, giving it that institution's page/font/heading
+    styling. If `institution_id` is omitted, or given but doesn't resolve to any stored config,
+    the export proceeds WITHOUT institution styling (plain `python-docx` defaults) rather than
+    failing — a missing or stale `institution_id` shouldn't block a user from getting their
+    document, only from getting it styled.
+
+    Returns a `Response` with `media_type="application/vnd.openxmlformats-officedocument
+    .wordprocessingml.document"` and a `Content-Disposition: attachment` header whose filename is
+    `project.title` sanitized via `_sanitize_filename`.
+    """
+    project = await get_project(db, project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
+        )
+
+    markdown_text = await _build_export_markdown(db, project)
+    document = markdown_to_docx(markdown_text)
+
+    if institution_id is not None:
+        config = await get_institution_config(db, institution_id)
+        if config is not None:
+            apply_institution_config(document, config)
+
+    buffer = BytesIO()
+    document.save(buffer)
+
+    filename = _sanitize_filename(project.title)
+    return Response(
+        content=buffer.getvalue(),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        headers={"Content-Disposition": _content_disposition_header(filename)},
+    )
 
 
 @router.post(

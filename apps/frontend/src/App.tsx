@@ -9,6 +9,7 @@ import { DiffViewer } from './components/DiffViewer'
 import { DocumentPreview } from './components/DocumentPreview'
 import { Onboarding } from './components/Onboarding'
 import { PlagiarismCheckPanel } from './components/PlagiarismCheckPanel'
+import { exportProject } from './services/exportService'
 import { recordSignal } from './services/feedbackService'
 import { acceptDraft, createChapter, getProject } from './services/projectService'
 import { streamChapterDraft } from './services/generateStream'
@@ -212,11 +213,44 @@ function NewProjectButton() {
   return <button onClick={() => void startNewProject()}>{strings.newProjectButton}</button>
 }
 
+function ExportButton() {
+  const { document: doc } = useDocument()
+  const [isExporting, setIsExporting] = useState(false)
+  const [error, setError] = useState(false)
+
+  const handleExport = async () => {
+    const projectId = doc.projectId
+    if (projectId === null || isExporting) {
+      return
+    }
+
+    setIsExporting(true)
+    setError(false)
+    try {
+      await exportProject(projectId, doc.institutionId)
+    } catch {
+      setError(true)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  return (
+    <div className="export-button">
+      <button onClick={() => void handleExport()} disabled={doc.projectId === null || isExporting}>
+        {isExporting ? strings.exportButtonPending : strings.exportButton}
+      </button>
+      {error && <span className="export-error">{strings.exportErrorMessage}</span>}
+    </div>
+  )
+}
+
 function Workspace() {
   return (
     <>
       <div className="workspace-header">
         <NewProjectButton />
+        <ExportButton />
       </div>
       <main className="workspace">
         <ChatPanel />
