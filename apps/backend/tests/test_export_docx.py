@@ -131,6 +131,33 @@ def test_unsupported_construct_renders_as_plain_text_not_dropped() -> None:
     )
 
 
+def test_figure_placeholder_renders_as_own_italicized_paragraph() -> None:
+    document = markdown_to_docx("[[figure: bar chart of quarterly revenue]]")
+
+    assert len(document.paragraphs) == 1
+    paragraph = document.paragraphs[0]
+    assert paragraph.text == "[FIGURE PLACEHOLDER: bar chart of quarterly revenue]"
+    assert len(paragraph.runs) == 1
+    assert paragraph.runs[0].italic is True
+    assert paragraph.style.name in ("Normal", "Default Paragraph Font")
+
+
+def test_figure_placeholder_flushes_surrounding_paragraph_text() -> None:
+    markdown_text = (
+        "Some text before the figure.\n"
+        "[[figure: diagram of system architecture]]\n"
+        "Some text after the figure."
+    )
+
+    document = markdown_to_docx(markdown_text)
+
+    assert len(document.paragraphs) == 3
+    assert document.paragraphs[0].text == "Some text before the figure."
+    assert document.paragraphs[1].text == "[FIGURE PLACEHOLDER: diagram of system architecture]"
+    assert document.paragraphs[1].runs[0].italic is True
+    assert document.paragraphs[2].text == "Some text after the figure."
+
+
 def test_markdown_to_docx_bytes_round_trips_via_python_docx() -> None:
     docx_bytes = markdown_to_docx_bytes("# Heading\n\nSome **bold** text.")
 

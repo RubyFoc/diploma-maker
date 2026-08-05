@@ -1,8 +1,10 @@
-"""Formatting-sample upload endpoint (TASK-E05-2).
+"""Formatting-sample upload and institution-selection endpoints (TASK-E05-2, TASK-E05-3).
 
 `POST /formatting/institution-configs/upload` turns a `.docx` formatting sample into a stored
-`InstitutionConfig` (ADR-0005). Selecting/listing institutions by name (TASK-E05-3) is a
-separate, not-yet-built endpoint.
+`InstitutionConfig` (ADR-0005). `GET /formatting/institution-configs` and
+`GET /formatting/institution-configs/{institution_id}` expose the storage-layer listing/lookup
+from `formatting.service` (TASK-E05-1) so the onboarding flow (TASK-E10-1) can populate a
+university dropdown and fetch the selected institution's full config.
 """
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -10,7 +12,11 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from diploma_backend.db import get_database
 from diploma_backend.formatting.models import Headings, InstitutionConfig
-from diploma_backend.formatting.service import create_institution_config
+from diploma_backend.formatting.service import (
+    create_institution_config,
+    get_institution_config,
+    list_institution_configs,
+)
 from diploma_backend.formatting.upload import (
     FormattingSampleParseError,
     parse_formatting_sample,
@@ -63,3 +69,37 @@ async def upload_institution_config(
         raw_sample_reference=file_id,
     )
     return await create_institution_config(db, config)
+
+
+@router.get("/institution-configs", response_model=list[InstitutionConfig])
+async def list_institution_configs_endpoint(
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> list[InstitutionConfig]:
+    """List all stored institution configs, for populating a university dropdown.
+
+    Returns full `InstitutionConfig` objects rather than a slimmer `{institution_id,
+    institution_name}` summary: the dropdown only needs those two fields, but a separate summary
+    model would duplicate ADR-0005's schema and need to stay in sync with it for no real benefit
+    (the config list is small and this isn't a hot path), so the frontend just picks the fields
+    it needs from the full object.
+    """
+    return await list_institution_configs(db)
+
+
+@router.get("/institution-configs/{institution_id}", response_model=InstitutionConfig)
+async def get_institution_config_endpoint(
+    institution_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> InstitutionConfig:
+    """Fetch a single institution config by `institution_id`.
+
+    Used after the user selects a university from the dropdown (TASK-E10-1) to load its full
+    formatting config. Raises `HTTPException(404)` if `institution_id` doesn't exist.
+    """
+    config = await get_institution_config(db, institution_id)
+    if config is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Institution config '{institution_id}' not found",
+        )
+    return config

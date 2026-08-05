@@ -21,10 +21,10 @@ status in sync with GitHub issues once tasks move to execution.
 | --- | --- | --- | --- | --- |
 | TASK-E05-1 | Institution config schema + MongoDB storage per ADR-0005 | E05 | python-developer | done |
 | TASK-E05-2 | Formatting-sample upload + parser (margins/fonts/citation style extraction) | E05 | python-developer | done |
-| TASK-E05-3 | University dropdown/selection endpoint | E05 | python-developer | ready |
+| TASK-E05-3 | University dropdown/selection endpoint | E05 | python-developer | done |
 | TASK-E03-1 | DeepSeek client wrapper (fast/heavy tier per ADR-0003) | E03 | python-developer | done |
 | TASK-E03-2 | Chapter-summary compaction + cache-friendly prompt assembly | E03 | python-developer | done |
-| TASK-E03-3 | LLM call failure-path handling (timeout/error/retry) | E03 | python-developer | ready |
+| TASK-E03-3 | LLM call failure-path handling (timeout/error/retry) | E03 | python-developer | done |
 
 ## Phase 2 — Sources & Citations
 
@@ -41,25 +41,25 @@ status in sync with GitHub issues once tasks move to execution.
 | --- | --- | --- | --- | --- |
 | TASK-E06-1 | Markdown → `.docx` mapping engine (`python-docx`) | E06 | python-developer | done |
 | TASK-E06-2 | Apply institution config styles to `.docx` output | E06 | python-developer | done |
-| TASK-E06-3 | Media placeholder insertion | E06 | python-developer | ready |
-| TASK-E08-1 | Version-snapshot data model per ADR-0004 (backend) | E08 | python-developer | blocked on TASK-E01-3 |
-| TASK-E08-2 | Diff viewer UI (accept/reject) | E08 | frontend-developer | blocked on TASK-E01-1 |
-| TASK-E08-3 | SSE streaming client for chat/generation per ADR-0009 | E08 | frontend-developer | blocked on TASK-E03-1 |
+| TASK-E06-3 | Media placeholder insertion | E06 | python-developer | done |
+| TASK-E08-1 | Version-snapshot data model per ADR-0004 (backend) | E08 | python-developer | ready |
+| TASK-E08-2 | Diff viewer UI (accept/reject) | E08 | frontend-developer | ready |
+| TASK-E08-3 | SSE streaming client for chat/generation per ADR-0009 | E08 | frontend-developer | ready |
 | TASK-E08-4 | Live WYSIWYG document preview rendering | E08 | frontend-developer | blocked on TASK-E08-1 |
 
 ## Phase 4 — Humanization & Plagiarism
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E07-1 | Humanizer pipeline (pattern-breaking post-processing) | E07 | python-developer | blocked on TASK-E03-1, TASK-E04-4 |
+| TASK-E07-1 | Humanizer pipeline (pattern-breaking post-processing) | E07 | python-developer | ready |
 | TASK-E07-2 | Anti-plagiarism/AI-detection pre-check integration | E07 | python-developer | blocked on TASK-E07-1 |
 
 ## Phase 5 — Onboarding
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E10-1 | Registration + university selection/upload onboarding flow | E10 | frontend-developer | blocked on TASK-E01-3, TASK-E05-3 |
-| TASK-E10-2 | TOC upload/parsing | E10 | python-developer | blocked on TASK-E05-1 |
+| TASK-E10-1 | Registration + university selection/upload onboarding flow | E10 | frontend-developer | ready |
+| TASK-E10-2 | TOC upload/parsing | E10 | python-developer | ready |
 | TASK-E10-3 | Chapter-boundary-aware insertion logic | E10 | python-developer | blocked on TASK-E03-1, TASK-E10-2 |
 
 ## Phase 6 — Feedback Loop

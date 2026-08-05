@@ -24,3 +24,4 @@ Index of features below (add a row per note):
 | 2026-08-05 | Source search integration + chapter-summary compaction | [2026-08-05_source-search-and-summary-compaction.md](2026-08-05_source-search-and-summary-compaction.md) |
 | 2026-08-05 | Citation verification + Markdown-to-docx export engine | [2026-08-05_citation-verification-and-docx-export.md](2026-08-05_citation-verification-and-docx-export.md) |
 | 2026-08-05 | Institution-config docx styling + RU/BY source geo-fencing | [2026-08-05_institution-styling-and-geo-fencing.md](2026-08-05_institution-styling-and-geo-fencing.md) |
+| 2026-08-05 | University selection endpoints + LLM retry policy + media placeholders (Phase 0-3 complete) | [2026-08-05_university-selection-llm-retry-and-media-placeholders.md](2026-08-05_university-selection-llm-retry-and-media-placeholders.md) |

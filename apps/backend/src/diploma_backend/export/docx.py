@@ -1,7 +1,7 @@
-"""Markdown → `.docx` mapping engine (TASK-E06-1) + institution config styling (TASK-E06-2).
+"""Markdown → `.docx` mapping engine (TASK-E06-1) + institution config styling (TASK-E06-2) +
+media placeholders (TASK-E06-3).
 
-Converts LLM-generated thesis-chapter Markdown into a `docx.Document`. `TASK-E06-3` (media
-placeholders) builds on this later; that extension is not implemented here.
+Converts LLM-generated thesis-chapter Markdown into a `docx.Document`.
 
 Supported Markdown subset (the platform's LLM content generation is expected to only ever
 produce this subset, not arbitrary web Markdown):
@@ -14,12 +14,21 @@ produce this subset, not arbitrary web Markdown):
   item.
 - Ordered lists (`1. item`, `2. item`, ...) → Word's built-in "List Number" style, one paragraph
   per item. The actual number text is not read; Word's own list numbering is used.
+- Media placeholders `[[figure: <description>]]` (own line, e.g.
+  `[[figure: bar chart comparing quarterly revenue 2023 vs 2024]]`) → a single plain paragraph
+  containing `[FIGURE PLACEHOLDER: <description>]`, entirely italicized, so a human author can
+  see at a glance where a real figure/diagram/table-of-data needs to be inserted later. This is
+  the only media/image syntax this engine recognizes; it does NOT fetch, generate, or embed any
+  actual image — the LLM generating chapter content is text-only and emits this marker wherever
+  a figure belongs, and export renders it as a visible placeholder, not a picture.
 
-Explicitly NOT supported: tables, images/media (media placeholders are TASK-E06-3), nested
-lists, links, blockquotes, code blocks, and headings beyond level 3 (`####`+). Any line matching
-none of the rules above (including all of the above) is not dropped: it is emitted as a plain
-paragraph containing the literal source text (markers and all), so worst case a document renders
-literal Markdown syntax visibly rather than silently losing content.
+Explicitly NOT supported: tables, nested lists, links, blockquotes, code blocks, headings beyond
+level 3 (`####`+), and real embedded images — standard Markdown image syntax `![alt](url)`
+implies a real image file and is NOT recognized as a placeholder; it falls through to the
+plain-text fallback below like any other unsupported construct. Any line matching none of the
+rules above (including all of the above) is not dropped: it is emitted as a plain paragraph
+containing the literal source text (markers and all), so worst case a document renders literal
+Markdown syntax visibly rather than silently losing content.
 
 `apply_institution_config` (TASK-E06-2) applies an `InstitutionConfig` (ADR-0005) to an already
 built `Document`, in place:
@@ -45,6 +54,7 @@ from diploma_backend.formatting.models import HeadingStyle, InstitutionConfig
 _HEADING_RE = re.compile(r"^(#{1,3})\s+(.*)$")
 _UNORDERED_LIST_RE = re.compile(r"^[-*]\s+(.*)$")
 _ORDERED_LIST_RE = re.compile(r"^\d+\.\s+(.*)$")
+_FIGURE_PLACEHOLDER_RE = re.compile(r"^\[\[figure:\s*(.+?)\s*\]\]$", re.IGNORECASE)
 _INLINE_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*")
 
 # Standard page sizes in mm, portrait orientation — matching `formatting/upload.py`'s
@@ -99,6 +109,14 @@ def markdown_to_docx(markdown_text: str) -> Document:
             flush_paragraph_buffer()
             paragraph = document.add_paragraph(style="List Number")
             _add_inline_runs(paragraph, ordered_match.group(1))
+            continue
+
+        figure_match = _FIGURE_PLACEHOLDER_RE.match(line)
+        if figure_match:
+            flush_paragraph_buffer()
+            paragraph = document.add_paragraph()
+            run = paragraph.add_run(f"[FIGURE PLACEHOLDER: {figure_match.group(1)}]")
+            run.italic = True
             continue
 
         # Anything else (plain text, and unsupported constructs like tables/blockquotes/code
