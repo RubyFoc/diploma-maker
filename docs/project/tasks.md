@@ -52,13 +52,13 @@ status in sync with GitHub issues once tasks move to execution.
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
 | TASK-E07-1 | Humanizer pipeline (pattern-breaking post-processing) | E07 | python-developer | done |
-| TASK-E07-2 | Anti-plagiarism/AI-detection pre-check integration | E07 | python-developer | ready |
+| TASK-E07-2 | Anti-plagiarism/AI-detection pre-check integration | E07 | python-developer | done |
 
 ## Phase 5 — Onboarding
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E10-1 | Registration + university selection/upload onboarding flow | E10 | frontend-developer | ready |
+| TASK-E10-1 | Registration + university selection/upload onboarding flow | E10 | frontend-developer | done |
 | TASK-E10-2 | TOC upload/parsing | E10 | python-developer | done |
 | TASK-E10-3 | Chapter-boundary-aware insertion logic | E10 | python-developer | ready |
 

@@ -28,4 +28,4 @@ Index of features below (add a row per note):
 | 2026-08-05 | Version-snapshot data model + diff viewer UI | [2026-08-05_version-model-and-diff-viewer.md](2026-08-05_version-model-and-diff-viewer.md) |
 | 2026-08-05 | Vertical slice integration: project → chat → draft → accept | [2026-08-05_vertical-slice-integration.md](2026-08-05_vertical-slice-integration.md) |
 | 2026-08-05 | Humanizer pipeline + TOC upload + live WYSIWYG preview | [2026-08-05_humanizer-toc-upload-and-live-preview.md](2026-08-05_humanizer-toc-upload-and-live-preview.md) |
-| 2026-08-05 | Humanizer pipeline + TOC upload + live WYSIWYG preview | [2026-08-05_humanizer-toc-upload-and-live-preview.md](2026-08-05_humanizer-toc-upload-and-live-preview.md) |
+| 2026-08-05 | Anti-plagiarism pre-check + registration/university onboarding | [2026-08-05_plagiarism-precheck-and-onboarding.md](2026-08-05_plagiarism-precheck-and-onboarding.md) |

@@ -1,0 +1,215 @@
+"""Anti-plagiarism / AI-detection pre-check (TASK-E07-2, PRD §3.3 / §6, Epic E07).
+
+Per the PRD's pipeline order (generate -> verify citations -> humanize -> scan), this is the
+final gate before a drafted chapter is considered ready to show the user: after citations are
+verified against source excerpts (ADR-0001, `citations.verification`) and the text is run
+through the humanizer (TASK-E07-1, `humanizer.pipeline`), it is scored here for (a) how much of
+it is lifted near-verbatim from the sources it was generated against, and (b) how strongly it
+reads as flatly AI-generated prose. Both scores are heuristic signals, not verdicts — `flagged`
+on `run_precheck`'s result means "a human (or a future automated regeneration step) should take
+a second look," never "this text is definitively plagiarized/AI-written."
+
+Out of scope here (explicitly deferred, not implemented), matching `citations.verification`'s
+scope boundary:
+- Any real third-party plagiarism or AI-detection vendor integration (no PRD-specified vendor,
+  no API key configured for this MVP). `score_plagiarism_risk` and `score_ai_fingerprint` are
+  local text heuristics only — see each function's docstring for its named future extension
+  point.
+- Any auto-regeneration, blocking, or retry logic in response to `flagged=True`. This module
+  only scores and flags; deciding what a caller does about a flagged result (surface a warning,
+  trigger humanizer/generation retry, etc.) is deliberately left to the caller, mirroring how
+  `citations.verification` separates "verify" from "what happens on rejection."
+- Any FastAPI router or wiring into the generation endpoint (`diploma_backend.projects.router`)
+  — this is a pure, self-contained service module other tasks compose on top of.
+"""
+
+import re
+import statistics
+from dataclasses import dataclass, field
+
+# Shingle size for the n-gram overlap heuristic in `score_plagiarism_risk`. Five words is a
+# common choice for plagiarism-style shingling: short enough to catch lifted phrases/sentences,
+# long enough that overlap isn't dominated by common short word sequences.
+_SHINGLE_SIZE = 5
+
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?]+(?:\s+|$)")
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _normalize_words(text: str) -> list[str]:
+    """Lowercase `text` and split it into alphanumeric words (apostrophes kept)."""
+    return _WORD_RE.findall(text.lower())
+
+
+def _shingles(words: list[str], size: int = _SHINGLE_SIZE) -> set[str]:
+    """Return the set of `size`-word shingles (contiguous word n-grams) from `words`.
+
+    Returns an empty set if `words` has fewer than `size` words — there is no meaningful
+    shingle overlap to compute for text shorter than one shingle.
+    """
+    if len(words) < size:
+        return set()
+    return {" ".join(words[i : i + size]) for i in range(len(words) - size + 1)}
+
+
+def score_plagiarism_risk(text: str, source_excerpts: list[str]) -> float:
+    """Score how much of `text` overlaps near-verbatim with `source_excerpts` (0.0-1.0).
+
+    Heuristic: builds `_SHINGLE_SIZE`-word shingles (contiguous word n-grams) of `text` and of
+    the concatenation of `source_excerpts` (the RAG-retrieved/uploaded source passages this
+    chapter's citations were verified against, per ADR-0001 — see `citations.verification`,
+    which this module deliberately does not import from; it only needs the excerpt strings).
+    The score is the fraction of `text`'s shingles that also appear among the sources' shingles.
+
+    A high score is not automatically bad: some direct overlap is normal and healthy for a
+    well-cited academic chapter (a verified quote is *supposed* to match its source verbatim).
+    This score alone is a signal of how much of the chapter is directly-lifted phrasing, not a
+    verdict — a caller should weigh it alongside how much of the chapter is quotation versus
+    original analysis, which this function has no visibility into.
+
+    Returns 0.0 if `text` (or the concatenated excerpts) is shorter than one shingle
+    (`_SHINGLE_SIZE` words), since no overlap ratio can be computed in that case.
+
+    Future extension point (out of scope for this MVP task): replace this local n-gram heuristic
+    with a call to an external plagiarism-detection API (no vendor is specified in the PRD for
+    this task), keeping the same `(text, source_excerpts) -> float` signature so callers
+    (including `run_precheck` below) don't need to change.
+    """
+    text_shingles = _shingles(_normalize_words(text))
+    if not text_shingles:
+        return 0.0
+
+    source_words = _normalize_words(" ".join(source_excerpts))
+    source_shingles = _shingles(source_words)
+    if not source_shingles:
+        return 0.0
+
+    overlap = text_shingles & source_shingles
+    return len(overlap) / len(text_shingles)
+
+
+def _sentences(text: str) -> list[str]:
+    """Split `text` into non-empty sentences on `.`/`!`/`?` boundaries."""
+    return [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
+
+
+def _sentence_length_uniformity(sentences: list[str]) -> float:
+    """Score (0.0-1.0) how uniform the sentences' word counts are; higher = more uniform.
+
+    Uses the coefficient of variation (population stdev / mean word count) as the spread
+    measure, since it is scale-independent (comparable across texts with different average
+    sentence lengths). A coefficient of variation of 0 (every sentence the same length) maps to
+    a uniformity score of 1.0; a coefficient of variation of 1.0 or higher (spread as large as
+    the mean itself, i.e. clearly varied sentence lengths) maps to 0.0, linearly in between.
+    Suspiciously uniform sentence lengths are a commonly-cited surface tell of flatly
+    AI-generated prose.
+
+    Returns 0.0 (no signal) if there are fewer than two sentences, since spread isn't meaningful
+    for a single sentence.
+    """
+    if len(sentences) < 2:
+        return 0.0
+    lengths = [len(_normalize_words(s)) for s in sentences]
+    mean_length = statistics.mean(lengths)
+    if mean_length == 0:
+        return 0.0
+    coefficient_of_variation = statistics.pstdev(lengths) / mean_length
+    return max(0.0, 1.0 - min(coefficient_of_variation, 1.0))
+
+
+def _repeated_starter_ratio(sentences: list[str]) -> float:
+    """Fraction of sentences whose first word is shared with at least one other sentence.
+
+    Repeatedly opening sentences with the same word/transition ("Furthermore", "Additionally",
+    ...) is a commonly-cited surface tell of flatly AI-generated prose. Returns 0.0 if there are
+    fewer than two sentences.
+    """
+    if len(sentences) < 2:
+        return 0.0
+    starters = [words[0] for s in sentences if (words := _normalize_words(s))]
+    if len(starters) < 2:
+        return 0.0
+    counts: dict[str, int] = {}
+    for starter in starters:
+        counts[starter] = counts.get(starter, 0) + 1
+    repeated = sum(1 for starter in starters if counts[starter] > 1)
+    return repeated / len(starters)
+
+
+def score_ai_fingerprint(text: str) -> float:
+    """Score how strongly `text` reads as flatly AI-generated prose (0.0-1.0).
+
+    Heuristic proxy combining two surface signals, each documented in its own helper:
+    - `_sentence_length_uniformity`: suspiciously uniform sentence lengths (low variance).
+    - `_repeated_starter_ratio`: sentences repeatedly opening with the same starting word.
+
+    The combined score is the simple average of the two sub-signals. There is no ground-truth
+    AI-detection dataset available to calibrate against in this MVP, so this combination is
+    chosen for being simple and clearly documented rather than tuned for precision; treat the
+    result as a coarse signal, not a calibrated probability.
+
+    Future extension point (out of scope for this MVP task): replace this surface-heuristic
+    combination with a call to a dedicated AI-detection API/model (no vendor is specified in the
+    PRD for this task), keeping the same `(text) -> float` signature so callers (including
+    `run_precheck` below) don't need to change.
+    """
+    sentences = _sentences(text)
+    uniformity = _sentence_length_uniformity(sentences)
+    repeated_starters = _repeated_starter_ratio(sentences)
+    return (uniformity + repeated_starters) / 2
+
+
+@dataclass(frozen=True)
+class PlagiarismCheckResult:
+    """Outcome of `run_precheck`: both heuristic scores plus a derived review flag.
+
+    `flagged` is `True` if either score exceeds its configured threshold — a signal for a caller
+    to review or regenerate the text, mirroring `citations.verification.CitationResolution`'s
+    "outcome dataclass with a status-like flag" shape. This dataclass carries no opinion on what
+    the caller should do about a flagged result; see this module's docstring for why that
+    decision is deliberately left out of scope here. `reasons` holds one human-readable note per
+    threshold that was exceeded (empty when `flagged` is `False`).
+    """
+
+    plagiarism_score: float
+    ai_fingerprint_score: float
+    flagged: bool
+    reasons: list[str] = field(default_factory=list)
+
+
+def run_precheck(
+    text: str,
+    source_excerpts: list[str],
+    *,
+    plagiarism_threshold: float = 0.6,
+    ai_fingerprint_threshold: float = 0.6,
+) -> PlagiarismCheckResult:
+    """Run both heuristic pre-checks on `text` and flag it if either exceeds its threshold.
+
+    Computes `score_plagiarism_risk(text, source_excerpts)` and `score_ai_fingerprint(text)`,
+    then sets `flagged=True` if the plagiarism score exceeds `plagiarism_threshold` and/or the
+    AI-fingerprint score exceeds `ai_fingerprint_threshold`, recording a human-readable reason
+    per threshold exceeded (e.g. `"plagiarism_score 0.72 exceeds threshold 0.6"`). This function
+    only scores and flags — it does not decide what happens next; see this module's docstring
+    for why any auto-regeneration/blocking logic is deliberately out of scope here.
+    """
+    plagiarism_score = score_plagiarism_risk(text, source_excerpts)
+    ai_fingerprint_score = score_ai_fingerprint(text)
+
+    reasons: list[str] = []
+    if plagiarism_score > plagiarism_threshold:
+        reasons.append(
+            f"plagiarism_score {plagiarism_score:.2f} exceeds threshold {plagiarism_threshold}"
+        )
+    if ai_fingerprint_score > ai_fingerprint_threshold:
+        reasons.append(
+            f"ai_fingerprint_score {ai_fingerprint_score:.2f} exceeds threshold "
+            f"{ai_fingerprint_threshold}"
+        )
+
+    return PlagiarismCheckResult(
+        plagiarism_score=plagiarism_score,
+        ai_fingerprint_score=ai_fingerprint_score,
+        flagged=bool(reasons),
+        reasons=reasons,
+    )

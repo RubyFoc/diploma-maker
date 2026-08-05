@@ -10,7 +10,7 @@ export function useNewProject(): () => Promise<void> {
 
   return useCallback(async () => {
     const project = await createProject()
-    setDocument(toDocumentState(project))
+    setDocument((previous) => toDocumentState(project, previous.institutionId))
     resetChat()
   }, [setDocument, resetChat])
 }

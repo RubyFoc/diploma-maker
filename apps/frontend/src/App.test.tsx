@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { strings } from './strings'
 
+const BASE_URL = 'http://localhost:8010'
+const ACCESS_TOKEN_STORAGE_KEY = 'diploma-maker.accessToken'
+const institution = { institution_id: 'inst-1', institution_name: 'Test University' }
+
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return {
     ok,
@@ -12,38 +16,79 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
   } as Response
 }
 
+/**
+ * Builds a fetch mock that resolves the onboarding gate's institution-list call from
+ * `institutions`, and otherwise dispatches responses from `queued` in call order —
+ * matching this codebase's existing per-test mockResolvedValueOnce style for the
+ * project/chapter/generate calls exercised once onboarding is past.
+ */
+function createFetchMock(queued: Response[] = []) {
+  const queue = [...queued]
+  return vi.fn((url: string) => {
+    if (String(url).includes('/formatting/institution-configs')) {
+      return Promise.resolve(jsonResponse([institution]))
+    }
+    const next = queue.shift()
+    return Promise.resolve(next ?? jsonResponse({ detail: 'unexpected request' }, false, 500))
+  })
+}
+
+/** Selects the seeded institution to move past the onboarding gate's step 2. */
+async function selectInstitution() {
+  const select = await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+  fireEvent.change(select, { target: { value: institution.institution_id } })
+}
+
 describe('App', () => {
   beforeEach(() => {
-    vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:8010')
+    vi.stubEnv('VITE_API_BASE_URL', BASE_URL)
+    localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'test-token')
   })
 
   afterEach(() => {
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
+    localStorage.clear()
   })
 
-  it('renders both the chat panel and the document panel', () => {
+  it('shows the onboarding gate when there is no access token', () => {
+    localStorage.clear()
     vi.stubGlobal('fetch', vi.fn())
     render(<App />)
-    expect(screen.getByLabelText(strings.chatPanelTitle)).toBeInTheDocument()
+    expect(screen.getByLabelText(strings.onboardingTitle)).toBeInTheDocument()
+  })
+
+  it('shows the institution-selection step once a token exists', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
+    render(<App />)
+    expect(await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)).toBeInTheDocument()
+  })
+
+  it('renders both the chat panel and the document panel once onboarding is complete', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
+    render(<App />)
+    await selectInstitution()
+    expect(await screen.findByLabelText(strings.chatPanelTitle)).toBeInTheDocument()
     expect(screen.getByLabelText(strings.documentPanelTitle)).toBeInTheDocument()
   })
 
-  it('starts with empty chat and document state', () => {
-    vi.stubGlobal('fetch', vi.fn())
+  it('starts with empty chat and document state', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
     render(<App />)
-    expect(screen.getByText(strings.chatEmpty)).toBeInTheDocument()
+    await selectInstitution()
+    expect(await screen.findByText(strings.chatEmpty)).toBeInTheDocument()
     expect(screen.getByText(strings.documentEmpty)).toBeInTheDocument()
   })
 
   it('resets to empty state when starting a new project', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
+    const fetchMock = createFetchMock([
       jsonResponse({ id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }, true, 201),
-    )
+    ])
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    const button = screen.getByRole('button', { name: strings.newProjectButton })
+    await selectInstitution()
+    const button = await screen.findByRole('button', { name: strings.newProjectButton })
     fireEvent.click(button)
     expect(await screen.findByText(strings.chatEmpty)).toBeInTheDocument()
     expect(await screen.findByText(strings.documentEmpty)).toBeInTheDocument()
@@ -74,15 +119,16 @@ describe('App', () => {
       parent_version_id: null,
     }
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(project, true, 201))
-      .mockResolvedValueOnce(jsonResponse(chapter, true, 201))
-      .mockResolvedValueOnce(jsonResponse(version, true, 201))
+    const fetchMock = createFetchMock([
+      jsonResponse(project, true, 201),
+      jsonResponse(chapter, true, 201),
+      jsonResponse(version, true, 201),
+    ])
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: strings.newProjectButton }))
+    await selectInstitution()
+    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
 
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
@@ -114,15 +160,16 @@ describe('App', () => {
       pending_draft: null,
     }
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(project, true, 201))
-      .mockResolvedValueOnce(jsonResponse(chapter, true, 201))
-      .mockResolvedValueOnce(jsonResponse({ detail: 'llm failed' }, false, 502))
+    const fetchMock = createFetchMock([
+      jsonResponse(project, true, 201),
+      jsonResponse(chapter, true, 201),
+      jsonResponse({ detail: 'llm failed' }, false, 502),
+    ])
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: strings.newProjectButton }))
+    await selectInstitution()
+    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
 
     fireEvent.change(input, { target: { value: 'Write the introduction' } })

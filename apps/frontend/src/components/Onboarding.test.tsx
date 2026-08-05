@@ -1,0 +1,152 @@
+import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthProvider } from '../context/AuthContext'
+import { DocumentProvider, useDocument } from '../context/DocumentContext'
+import { strings } from '../strings'
+import { Onboarding } from './Onboarding'
+
+const BASE_URL = 'http://localhost:8010'
+
+function jsonResponse(body: unknown, ok = true, status = 200) {
+  return {
+    ok,
+    status,
+    json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body)),
+  } as Response
+}
+
+function InstitutionIdProbe() {
+  const { document: doc } = useDocument()
+  return <p data-testid="institution-id">{doc.institutionId ?? 'none'}</p>
+}
+
+function renderOnboarding() {
+  render(
+    <AuthProvider>
+      <DocumentProvider>
+        <Onboarding />
+        <InstitutionIdProbe />
+      </DocumentProvider>
+    </AuthProvider>,
+  )
+}
+
+describe('Onboarding', () => {
+  beforeEach(() => {
+    vi.stubEnv('VITE_API_BASE_URL', BASE_URL)
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+    localStorage.clear()
+  })
+
+  it('registers and advances to the institution-selection step on success', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/formatting/institution-configs')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      return Promise.resolve(jsonResponse({ access_token: 'tok1', token_type: 'bearer' }, true, 201))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderOnboarding()
+
+    fireEvent.change(screen.getByLabelText(strings.onboardingEmailLabel), {
+      target: { value: 'user@example.com' },
+    })
+    fireEvent.change(screen.getByLabelText(strings.onboardingPasswordLabel), {
+      target: { value: 'password123' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: strings.onboardingRegisterButton }))
+
+    expect(await screen.findByLabelText(strings.onboardingInstitutionStepTitle)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/auth/register`,
+      expect.objectContaining({
+        body: JSON.stringify({ email: 'user@example.com', password: 'password123' }),
+      }),
+    )
+  })
+
+  it('logs in and advances to the institution-selection step on success', async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/formatting/institution-configs')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      return Promise.resolve(jsonResponse({ access_token: 'tok2', token_type: 'bearer' }, true, 200))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderOnboarding()
+
+    fireEvent.change(screen.getByLabelText(strings.onboardingEmailLabel), {
+      target: { value: 'user@example.com' },
+    })
+    fireEvent.change(screen.getByLabelText(strings.onboardingPasswordLabel), {
+      target: { value: 'password123' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: strings.onboardingLoginButton }))
+
+    expect(await screen.findByLabelText(strings.onboardingInstitutionStepTitle)).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/auth/login`, expect.anything())
+  })
+
+  it('shows an error and does not advance when registration fails', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: 'already registered' }, false, 409))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderOnboarding()
+
+    fireEvent.change(screen.getByLabelText(strings.onboardingEmailLabel), {
+      target: { value: 'user@example.com' },
+    })
+    fireEvent.change(screen.getByLabelText(strings.onboardingPasswordLabel), {
+      target: { value: 'password123' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: strings.onboardingRegisterButton }))
+
+    expect(await screen.findByText(strings.onboardingAuthError)).toBeInTheDocument()
+    expect(screen.queryByLabelText(strings.onboardingInstitutionStepTitle)).not.toBeInTheDocument()
+  })
+
+  it('selecting an existing institution from the dropdown sets institutionId', async () => {
+    const institutions = [{ institution_id: 'inst-1', institution_name: 'Test University' }]
+    localStorage.setItem('diploma-maker.accessToken', 'seeded-token')
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(institutions))
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderOnboarding()
+
+    const select = await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+    fireEvent.change(select, { target: { value: 'inst-1' } })
+
+    expect(await screen.findByTestId('institution-id')).toHaveTextContent('inst-1')
+  })
+
+  it('uploading a new institution sample sets institutionId', async () => {
+    localStorage.setItem('diploma-maker.accessToken', 'seeded-token')
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/formatting/institution-configs/upload')) {
+        return Promise.resolve(jsonResponse({ institution_id: 'inst-2', institution_name: 'New University' }, true, 201))
+      }
+      return Promise.resolve(jsonResponse([]))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderOnboarding()
+
+    await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+    fireEvent.change(screen.getByLabelText(strings.onboardingInstitutionNameLabel), {
+      target: { value: 'New University' },
+    })
+    const file = new File(['sample'], 'sample.docx')
+    const fileInput = screen.getByLabelText(strings.onboardingInstitutionFileLabel)
+    fireEvent.change(fileInput, { target: { files: [file] } })
+    fireEvent.submit(fileInput.closest('form') as HTMLFormElement)
+
+    expect(await screen.findByTestId('institution-id')).toHaveTextContent('inst-2')
+  })
+})

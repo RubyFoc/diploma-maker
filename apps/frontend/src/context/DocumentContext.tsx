@@ -12,10 +12,12 @@ export interface Chapter {
 
 export interface DocumentState {
   projectId: string | null
+  /** Selected/uploaded university config's id, per TASK-E10-1 onboarding flow. */
+  institutionId: string | null
   chapters: Chapter[]
 }
 
-export const emptyDocumentState: DocumentState = { projectId: null, chapters: [] }
+export const emptyDocumentState: DocumentState = { projectId: null, institutionId: null, chapters: [] }
 
 interface DocumentContextValue {
   document: DocumentState

@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import './App.css'
+import { AuthProvider, useAuth } from './context/AuthContext'
 import { ChatProvider, useChat } from './context/ChatContext'
 import { DocumentProvider, useDocument } from './context/DocumentContext'
 import { useNewProject } from './hooks/useNewProject'
 import { strings } from './strings'
 import { DiffViewer } from './components/DiffViewer'
 import { DocumentPreview } from './components/DocumentPreview'
+import { Onboarding } from './components/Onboarding'
 import { acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
 import { toDocumentState } from './utils/mapProject'
 
@@ -99,7 +101,7 @@ function DocumentPanel() {
     await acceptDraft(draftId)
     if (doc.projectId !== null) {
       const project = await getProject(doc.projectId)
-      setDocument(toDocumentState(project))
+      setDocument((previous) => toDocumentState(project, previous.institutionId))
       return
     }
     setDocument((previous) => ({
@@ -170,13 +172,26 @@ function Workspace() {
   )
 }
 
+function Gate() {
+  const { auth } = useAuth()
+  const { document: doc } = useDocument()
+
+  if (auth.accessToken === null || doc.institutionId === null) {
+    return <Onboarding />
+  }
+
+  return <Workspace />
+}
+
 function App() {
   return (
-    <DocumentProvider>
-      <ChatProvider>
-        <Workspace />
-      </ChatProvider>
-    </DocumentProvider>
+    <AuthProvider>
+      <DocumentProvider>
+        <ChatProvider>
+          <Gate />
+        </ChatProvider>
+      </DocumentProvider>
+    </AuthProvider>
   )
 }
 
