@@ -45,22 +45,22 @@ status in sync with GitHub issues once tasks move to execution.
 | TASK-E08-1 | Version-snapshot data model per ADR-0004 (backend) | E08 | python-developer | done |
 | TASK-E08-2 | Diff viewer UI (accept/reject) | E08 | frontend-developer | done |
 | TASK-E08-3 | SSE streaming client for chat/generation per ADR-0009 | E08 | frontend-developer | ready |
-| TASK-E08-4 | Live WYSIWYG document preview rendering | E08 | frontend-developer | ready |
+| TASK-E08-4 | Live WYSIWYG document preview rendering | E08 | frontend-developer | done |
 
 ## Phase 4 — Humanization & Plagiarism
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E07-1 | Humanizer pipeline (pattern-breaking post-processing) | E07 | python-developer | ready |
-| TASK-E07-2 | Anti-plagiarism/AI-detection pre-check integration | E07 | python-developer | blocked on TASK-E07-1 |
+| TASK-E07-1 | Humanizer pipeline (pattern-breaking post-processing) | E07 | python-developer | done |
+| TASK-E07-2 | Anti-plagiarism/AI-detection pre-check integration | E07 | python-developer | ready |
 
 ## Phase 5 — Onboarding
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
 | TASK-E10-1 | Registration + university selection/upload onboarding flow | E10 | frontend-developer | ready |
-| TASK-E10-2 | TOC upload/parsing | E10 | python-developer | ready |
-| TASK-E10-3 | Chapter-boundary-aware insertion logic | E10 | python-developer | blocked on TASK-E03-1, TASK-E10-2 |
+| TASK-E10-2 | TOC upload/parsing | E10 | python-developer | done |
+| TASK-E10-3 | Chapter-boundary-aware insertion logic | E10 | python-developer | ready |
 
 ## Phase 6 — Feedback Loop
 

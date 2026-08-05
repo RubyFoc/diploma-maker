@@ -5,6 +5,7 @@ import { DocumentProvider, useDocument } from './context/DocumentContext'
 import { useNewProject } from './hooks/useNewProject'
 import { strings } from './strings'
 import { DiffViewer } from './components/DiffViewer'
+import { DocumentPreview } from './components/DocumentPreview'
 import { acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
 import { toDocumentState } from './utils/mapProject'
 
@@ -130,7 +131,7 @@ function DocumentPanel() {
             return (
               <li key={chapter.id}>
                 <h3>{chapter.title}</h3>
-                <p>{chapter.content === '' ? strings.chapterContentEmpty : chapter.content}</p>
+                <DocumentPreview content={chapter.content} />
                 {pendingDraft && (
                   <DiffViewer
                     before={chapter.content}

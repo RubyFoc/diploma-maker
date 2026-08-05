@@ -14,7 +14,7 @@ that integration is explicitly out of scope here and belongs to a later task.
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
@@ -29,6 +29,7 @@ from diploma_backend.projects.service import (
     get_project,
     list_chapters_for_project,
 )
+from diploma_backend.toc.parser import TocParseError, parse_toc
 from diploma_backend.versions.models import ChapterVersion
 from diploma_backend.versions.service import (
     accept_draft_version,
@@ -171,6 +172,44 @@ async def create_chapter_endpoint(
         )
     chapter = await create_chapter(db, project_id, body.title)
     return await _build_chapter_detail(db, chapter)
+
+
+@router.post(
+    "/{project_id}/toc/upload", response_model=ProjectDetail, status_code=status.HTTP_201_CREATED
+)
+async def upload_toc_endpoint(
+    project_id: str,
+    file: UploadFile = File(...),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> ProjectDetail:
+    """Parse an uploaded `.docx` table of contents and create one chapter per entry, in order.
+
+    Raises `HTTPException(404)` if `project_id` doesn't exist. Parses `file` via
+    `toc.parser.parse_toc`; raises `HTTPException(422)` if it isn't a parseable TOC (fail-closed,
+    matching `formatting.router`'s upload-parse-error convention). On success, calls
+    `projects.service.create_chapter` once per parsed title, in order (so `order` assignment
+    stays centralized in that function), and returns the updated `ProjectDetail`.
+
+    Note: this only creates chapters from the parsed TOC; it does not yet insert a
+    later-generated chapter between existing ones — that's TASK-E10-3, not implemented here.
+    """
+    project = await get_project(db, project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
+        )
+
+    content = await file.read()
+    try:
+        titles = parse_toc(content)
+    except TocParseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    for title in titles:
+        await create_chapter(db, project_id, title)
+    return await _build_project_detail(db, project)
 
 
 @router.post(

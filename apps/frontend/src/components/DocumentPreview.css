@@ -1,0 +1,32 @@
+.document-preview {
+  line-height: 1.5;
+}
+
+.document-preview h1,
+.document-preview h2,
+.document-preview h3 {
+  margin: 0.75rem 0 0.5rem;
+}
+
+.document-preview p {
+  margin: 0.5rem 0;
+}
+
+.document-preview ul,
+.document-preview ol {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+}
+
+.preview-figure-placeholder {
+  font-style: italic;
+  color: #666;
+  border: 1px dashed #999;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+}
+
+.document-preview-empty {
+  color: #888;
+  font-style: italic;
+}
