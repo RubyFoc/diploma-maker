@@ -30,3 +30,17 @@ export interface ProjectDetail {
   created_at: string
   chapters: ChapterDetail[]
 }
+
+// Mirrors the backend's plagiarism.precheck.PlagiarismCheckResult dataclass, surfaced via the
+// generate endpoint's response so the UI can flag a draft for extra review.
+export interface PlagiarismCheckResult {
+  plagiarism_score: number
+  ai_fingerprint_score: number
+  flagged: boolean
+  reasons: string[]
+}
+
+export interface GenerateDraftResult {
+  version: ChapterVersion
+  precheck: PlagiarismCheckResult
+}

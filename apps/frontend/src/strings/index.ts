@@ -14,6 +14,8 @@ export const strings = {
   chatInputPlaceholder: 'Describe what you want this chapter to say...',
   chatSendButton: 'Send',
   chatDraftReadyMessage: 'Draft ready — review it in the document panel.',
+  chatDraftFlaggedMessage:
+    'Draft ready, but flagged by the plagiarism/AI-detection pre-check — review it carefully in the document panel.',
   chatGenerationErrorMessage: 'Generation failed. Please try again.',
   defaultChapterTitle: 'Chapter 1',
   chapterContentEmpty: 'No accepted content yet.',

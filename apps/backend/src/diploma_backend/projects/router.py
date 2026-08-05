@@ -2,14 +2,20 @@
 accept it.
 
 Composes `projects.service` (project/chapter storage), `versions.service` (draft/accepted
-version storage, ADR-0004) and `llm_routing` (DeepSeek client + retry + prompt assembly,
-ADR-0003) without modifying any of their internals.
+version storage, ADR-0004), `llm_routing` (DeepSeek client + retry + prompt assembly, ADR-0003),
+`humanizer.pipeline` (TASK-E07-1) and `plagiarism.precheck` (TASK-E07-2) without modifying any of
+their internals.
 
-Known simplification (MVP scope for this task): the generation endpoint calls
-`assemble_prompt` with `chapter_summaries=[]` and `rag_excerpts=[]`. Persisted chapter-summary
-accumulation (TASK-E03-2's `summarize_chapter`, wired into a session) and RAG excerpt retrieval
-(E04/Qdrant) both exist elsewhere in this codebase but are not yet threaded into this endpoint —
-that integration is explicitly out of scope here and belongs to a later task.
+Known simplification (MVP scope for this task): the generation endpoint calls `assemble_prompt`
+with `chapter_summaries=[]` and `rag_excerpts=[]`, and `run_precheck` with `source_excerpts=[]`.
+Persisted chapter-summary accumulation (TASK-E03-2's `summarize_chapter`, wired into a session)
+and RAG excerpt retrieval (E04/Qdrant) both exist elsewhere in this codebase but are not yet
+threaded into this endpoint — that integration is explicitly out of scope here and belongs to a
+later task. Citation verification (ADR-0001, `citations.verification`) is likewise not yet wired
+into this endpoint: it needs those same RAG source excerpts to verify against, so it is deferred
+to the same follow-up. As of this task, the pipeline order actually wired here is
+generate -> humanize -> plagiarism/AI-detection scan (per PRD §6), skipping the
+not-yet-integrated citation-verification step.
 """
 
 from datetime import datetime
@@ -19,8 +25,10 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
 from diploma_backend.db import get_database
+from diploma_backend.humanizer.pipeline import HumanizationError, humanize_text
 from diploma_backend.llm_routing import DeepSeekClient, LLMRequestError, generate_with_retry
 from diploma_backend.llm_routing.summary import assemble_prompt
+from diploma_backend.plagiarism.precheck import PlagiarismCheckResult, run_precheck
 from diploma_backend.projects.models import Chapter, Project
 from diploma_backend.projects.service import (
     create_chapter,
@@ -96,6 +104,42 @@ class ProjectDetail(BaseModel):
     title: str
     created_at: datetime
     chapters: list[ChapterDetail]
+
+
+class PlagiarismCheckResultResponse(BaseModel):
+    """Pydantic mirror of `plagiarism.precheck.PlagiarismCheckResult` for use as a response
+    field: FastAPI response models must be Pydantic models, and the frozen dataclass returned by
+    `run_precheck` doesn't interoperate with that automatically. Field names/meaning match the
+    dataclass exactly; see that module for what each score means and how `flagged` is derived.
+    """
+
+    plagiarism_score: float
+    ai_fingerprint_score: float
+    flagged: bool
+    reasons: list[str]
+
+    @classmethod
+    def from_result(cls, result: PlagiarismCheckResult) -> "PlagiarismCheckResultResponse":
+        return cls(
+            plagiarism_score=result.plagiarism_score,
+            ai_fingerprint_score=result.ai_fingerprint_score,
+            flagged=result.flagged,
+            reasons=result.reasons,
+        )
+
+
+class GenerateDraftResponse(BaseModel):
+    """Response body for `POST /projects/{project_id}/chapters/{chapter_id}/generate`.
+
+    Response-only: not persisted anywhere as its own document. `version` is the persisted draft
+    `ChapterVersion` (its `content` is the humanized text, not the raw generation output — see
+    `generate_chapter_draft_endpoint`). `precheck` is the anti-plagiarism/AI-detection scan
+    result run against that same humanized text, so a caller/frontend can surface a "this draft
+    was flagged, review carefully" signal alongside the draft.
+    """
+
+    version: ChapterVersion
+    precheck: PlagiarismCheckResultResponse
 
 
 async def _build_chapter_detail(db: AsyncIOMotorDatabase, chapter: Chapter) -> ChapterDetail:
@@ -214,7 +258,7 @@ async def upload_toc_endpoint(
 
 @router.post(
     "/{project_id}/chapters/{chapter_id}/generate",
-    response_model=ChapterVersion,
+    response_model=GenerateDraftResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def generate_chapter_draft_endpoint(
@@ -222,16 +266,35 @@ async def generate_chapter_draft_endpoint(
     chapter_id: str,
     body: GenerateDraftRequest,
     db: AsyncIOMotorDatabase = Depends(get_database),
-) -> ChapterVersion:
-    """Generate a chapter draft from a chat instruction and store it as a new draft version.
+) -> GenerateDraftResponse:
+    """Generate a chapter draft from a chat instruction, humanize it, scan it, and store the
+    humanized text as a new draft version.
 
     Raises `HTTPException(404)` if `chapter_id` doesn't exist or doesn't belong to `project_id`.
     Builds messages via `assemble_prompt` with `chapter_summaries=[]` and `rag_excerpts=[]` (see
     module docstring: persisted summaries and RAG retrieval are out of scope for this task), then
     calls the DeepSeek "heavy" tier (ADR-0003: chapter drafting) through `generate_with_retry`.
-    Raises `HTTPException(502)` if every retry attempt fails (`LLMRequestError`). On success,
-    persists and returns the new draft `ChapterVersion` (see `versions.service.create_draft_version`
-    for version-numbering/parent-linking behavior).
+    Raises `HTTPException(502)` if every retry attempt fails (`LLMRequestError`).
+
+    The raw generated content is then passed through `humanizer.pipeline.humanize_text` (reusing
+    the same `DeepSeekClient`, fast tier per ADR-0003) to break up repetitive LLM-sounding
+    patterns. Citation verification (ADR-0001) is not yet wired into this endpoint (see module
+    docstring), so no citation markers are formatted into the raw text today, and
+    `humanize_text`'s `guard_citations` step should find nothing to guard in practice. It is
+    still handled defensively: a `LLMRequestError` from the humanize call (the DeepSeek call
+    itself failing after retries) is a genuine infra failure and surfaces as `HTTPException(502)`,
+    same as a failed generation. A `HumanizationError` (the model dropped/mangled a citation
+    placeholder) is deliberately fail-open here: humanization is a cosmetic polishing stage, not a
+    correctness-critical one (unlike citation verification itself, which fails closed per
+    ADR-0001), so this endpoint catches it and falls back to the pre-humanization content rather
+    than blocking the user from seeing their draft at all.
+
+    The (possibly humanized, possibly raw-fallback) text is then run through
+    `plagiarism.precheck.run_precheck` with `source_excerpts=[]` (RAG excerpts aren't threaded
+    into this endpoint yet either — same simplification as `assemble_prompt`'s empty lists above).
+    That text is what gets persisted via `versions.service.create_draft_version` — the draft a
+    user reviews is the humanized version, not the raw LLM output. Returns a
+    `GenerateDraftResponse` bundling the persisted `ChapterVersion` and the precheck result.
     """
     chapter = await get_chapter(db, chapter_id)
     if chapter is None or chapter.project_id != project_id:
@@ -252,7 +315,21 @@ async def generate_chapter_draft_endpoint(
     except LLMRequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-    return await create_draft_version(db, chapter_id, content=content)
+    try:
+        humanized_content = await humanize_text(client, content)
+    except LLMRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except HumanizationError:
+        # Fail-open: a mangled citation placeholder shouldn't block the user from seeing their
+        # draft at all, since humanization is cosmetic, not correctness-critical (see docstring).
+        humanized_content = content
+
+    precheck = run_precheck(humanized_content, source_excerpts=[])
+
+    version = await create_draft_version(db, chapter_id, content=humanized_content)
+    return GenerateDraftResponse(
+        version=version, precheck=PlagiarismCheckResultResponse.from_result(precheck)
+    )
 
 
 @versions_router.post("/{version_id}/accept", response_model=ChapterVersion)

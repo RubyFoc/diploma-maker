@@ -119,10 +119,15 @@ describe('App', () => {
       parent_version_id: null,
     }
 
+    const generateResponse = {
+      version,
+      precheck: { plagiarism_score: 0, ai_fingerprint_score: 0, flagged: false, reasons: [] },
+    }
+
     const fetchMock = createFetchMock([
       jsonResponse(project, true, 201),
       jsonResponse(chapter, true, 201),
-      jsonResponse(version, true, 201),
+      jsonResponse(generateResponse, true, 201),
     ])
     vi.stubGlobal('fetch', fetchMock)
 

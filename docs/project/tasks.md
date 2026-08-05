@@ -60,7 +60,7 @@ status in sync with GitHub issues once tasks move to execution.
 | --- | --- | --- | --- | --- |
 | TASK-E10-1 | Registration + university selection/upload onboarding flow | E10 | frontend-developer | done |
 | TASK-E10-2 | TOC upload/parsing | E10 | python-developer | done |
-| TASK-E10-3 | Chapter-boundary-aware insertion logic | E10 | python-developer | ready |
+| TASK-E10-3 | Chapter-boundary-aware insertion logic | E10 | python-developer | done (partial — see Phase 2.6; HTTP endpoint still pending) |
 
 ## Phase 6 — Feedback Loop
 
@@ -68,6 +68,18 @@ status in sync with GitHub issues once tasks move to execution.
 | --- | --- | --- | --- | --- |
 | TASK-E09-1 | Approve/reject/edit signal capture (UI + API) | E09 | frontend-developer, python-developer | blocked on TASK-E08-2 |
 | TASK-E09-2 | Template `accuracy_weight` adjustment logic | E09 | python-developer | blocked on TASK-E09-1, TASK-E05-1 |
+
+## Phase 2.6 — Pipeline Wiring & Chapter Insertion (added 2026-08-05, not in original epic breakdown)
+
+Closes the tech debt flagged after Phase 2.5: `humanizer/pipeline.py` (TASK-E07-1) and
+`plagiarism/precheck.py` (TASK-E07-2) existed as fully-tested but unwired standalone modules.
+Also lands TASK-E10-3's storage-layer half. See
+`docs/features/2026-08-05_pipeline-wiring-and-chapter-insertion.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-3 | Wire humanizer + plagiarism precheck into the generation endpoint | E07 | python-developer | done |
+| TASK-E10-3 | Chapter-boundary-aware insertion logic (storage layer; HTTP wiring still pending) | E10 | python-developer | done (partial — no HTTP endpoint yet) |
 
 ## Phase 2.5 — Vertical Slice Integration (added 2026-08-05, not in original epic breakdown)
 

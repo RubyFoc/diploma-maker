@@ -36,6 +36,20 @@ def _fail_response() -> httpx.Response:
     return httpx.Response(500, json={"error": "boom"})
 
 
+def _mock_generate_and_humanize(
+    *, generated: str = "Draft chapter body.", humanized: str = "Humanized chapter body."
+) -> None:
+    """Mock both DeepSeek calls a successful generation now makes: the heavy-tier draft
+    generation and the fast-tier humanization, distinguished by the `model` field respx sees in
+    each request body (matching `client._model_for`'s tier->model mapping)."""
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=_success_response(generated)
+    )
+    respx.post(_CHAT_URL, json__model="deepseek-v4-flash").mock(
+        return_value=_success_response(humanized)
+    )
+
+
 def test_create_project_returns_empty_chapters(client: TestClient) -> None:
     response = client.post("/projects", json={"title": "My Thesis"})
 
@@ -107,7 +121,9 @@ def test_create_chapter_404s_for_unknown_project(client: TestClient) -> None:
 
 @respx.mock
 def test_generate_draft_creates_and_returns_draft_version(client: TestClient) -> None:
-    respx.post(_CHAT_URL).mock(return_value=_success_response("Draft chapter body."))
+    _mock_generate_and_humanize(
+        generated="Draft chapter body.", humanized="Humanized chapter body."
+    )
 
     project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
     chapter_id = client.post(
@@ -121,21 +137,51 @@ def test_generate_draft_creates_and_returns_draft_version(client: TestClient) ->
 
     assert response.status_code == 201
     body = response.json()
-    assert body["chapter_id"] == chapter_id
-    assert body["content"] == "Draft chapter body."
-    assert body["status"] == "draft"
-    assert body["version_number"] == 0
+    version = body["version"]
+    assert version["chapter_id"] == chapter_id
+    assert version["content"] == "Humanized chapter body."
+    assert version["status"] == "draft"
+    assert version["version_number"] == 0
+
+    precheck = body["precheck"]
+    assert set(precheck.keys()) == {
+        "plagiarism_score",
+        "ai_fingerprint_score",
+        "flagged",
+        "reasons",
+    }
 
     project_after = client.get(f"/projects/{project_id}").json()
     pending_draft = project_after["chapters"][0]["pending_draft"]
     assert pending_draft is not None
-    assert pending_draft["id"] == body["id"]
+    assert pending_draft["id"] == version["id"]
+    assert pending_draft["content"] == "Humanized chapter body."
     assert project_after["chapters"][0]["accepted_content"] is None
 
 
 @respx.mock
 def test_generate_draft_llm_failure_returns_502(client: TestClient) -> None:
     respx.post(_CHAT_URL).mock(return_value=_fail_response())
+
+    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}
+    ).json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write something."},
+    )
+
+    assert response.status_code == 502
+
+
+@respx.mock
+def test_generate_draft_humanize_llm_failure_returns_502(client: TestClient) -> None:
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=_success_response("Draft chapter body.")
+    )
+    respx.post(_CHAT_URL, json__model="deepseek-v4-flash").mock(return_value=_fail_response())
 
     project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
     chapter_id = client.post(
@@ -184,7 +230,7 @@ def test_accept_draft_404s_for_unknown_version(client: TestClient) -> None:
 
 @respx.mock
 def test_accept_already_accepted_draft_returns_409(client: TestClient) -> None:
-    respx.post(_CHAT_URL).mock(return_value=_success_response("Draft body."))
+    _mock_generate_and_humanize()
 
     project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
     chapter_id = client.post(
@@ -193,7 +239,7 @@ def test_accept_already_accepted_draft_returns_409(client: TestClient) -> None:
     draft = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write something."},
-    ).json()
+    ).json()["version"]
 
     first_accept = client.post(f"/versions/{draft['id']}/accept")
     assert first_accept.status_code == 200

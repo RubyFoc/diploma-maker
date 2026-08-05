@@ -1,4 +1,9 @@
-import type { ChapterDetail, ChapterVersion, ProjectDetail } from '../types/project'
+import type {
+  ChapterDetail,
+  ChapterVersion,
+  GenerateDraftResult,
+  ProjectDetail,
+} from '../types/project'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}${path}`, {
@@ -36,8 +41,8 @@ export function generateChapterDraft(
   projectId: string,
   chapterId: string,
   instruction: string,
-): Promise<ChapterVersion> {
-  return request<ChapterVersion>(`/projects/${projectId}/chapters/${chapterId}/generate`, {
+): Promise<GenerateDraftResult> {
+  return request<GenerateDraftResult>(`/projects/${projectId}/chapters/${chapterId}/generate`, {
     method: 'POST',
     body: JSON.stringify({ instruction }),
   })

@@ -41,14 +41,18 @@ function ChatPanel() {
         setDocument((previous) => ({ ...previous, chapters: [...previous.chapters, chapter] }))
       }
 
-      const draft = await generateChapterDraft(projectId, chapter.id, text)
+      const { version: draft, precheck } = await generateChapterDraft(projectId, chapter.id, text)
       setDocument((previous) => ({
         ...previous,
         chapters: previous.chapters.map((existing) =>
           existing.id === chapter.id ? { ...existing, pendingDraft: draft } : existing,
         ),
       }))
-      appendMessage({ id: crypto.randomUUID(), role: 'assistant', text: strings.chatDraftReadyMessage })
+      appendMessage({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        text: precheck.flagged ? strings.chatDraftFlaggedMessage : strings.chatDraftReadyMessage,
+      })
     } catch {
       appendMessage({ id: crypto.randomUUID(), role: 'assistant', text: strings.chatGenerationErrorMessage })
     } finally {
