@@ -36,9 +36,9 @@ jobs:
       - name: Sync backend dependencies
         run: uv sync --project apps/backend
       - name: Lint backend
-        run: uv run --project apps/backend ruff check .
+        run: uv run --directory apps/backend ruff check .
       - name: Test backend
-        run: uv run --project apps/backend pytest -q
+        run: uv run --directory apps/backend pytest -q
 
   frontend:
     runs-on: ubuntu-latest
