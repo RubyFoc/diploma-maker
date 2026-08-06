@@ -120,6 +120,98 @@ def test_export_with_valid_institution_id_applies_styling(client: TestClient) ->
     assert round(section.left_margin.mm) == 30
 
 
+def test_export_uses_projects_stored_institution_id(client: TestClient) -> None:
+    """TASK-INT-17: styling is applied from the project's own stored `institution_id`, with no
+    export-time query parameter needed at all."""
+    headers = _auth_headers(client)
+    project_id = client.post(
+        "/projects",
+        json={"title": "Thesis", "institution_id": "inst-1"},
+        headers=headers,
+    ).json()["id"]
+    _accept_chapter_content(client, project_id, "Introduction", "Some content.", headers)
+
+    db = app.dependency_overrides[get_database]()
+    asyncio.run(create_institution_config(db, _make_config("inst-1")))
+
+    response = client.get(f"/projects/{project_id}/export", headers=headers)
+
+    assert response.status_code == 200
+    document = Document(BytesIO(response.content))
+    normal_font = document.styles["Normal"].font
+    assert normal_font.name == "Times New Roman"
+    assert normal_font.size.pt == 14
+
+
+def test_export_stored_institution_id_takes_precedence_over_query_param(
+    client: TestClient,
+) -> None:
+    """A stored `institution_id` wins over a different one passed as an export-time query
+    parameter — the project's own configuration is the source of truth (TASK-INT-17), not
+    whatever a caller happens to pass."""
+    headers = _auth_headers(client)
+    project_id = client.post(
+        "/projects",
+        json={"title": "Thesis", "institution_id": "inst-1"},
+        headers=headers,
+    ).json()["id"]
+    _accept_chapter_content(client, project_id, "Introduction", "Some content.", headers)
+
+    db = app.dependency_overrides[get_database]()
+    other_config = _make_config("inst-2")
+    other_config.font.family = "Arial"
+    asyncio.run(create_institution_config(db, _make_config("inst-1")))
+    asyncio.run(create_institution_config(db, other_config))
+
+    response = client.get(
+        f"/projects/{project_id}/export", params={"institution_id": "inst-2"}, headers=headers
+    )
+
+    assert response.status_code == 200
+    document = Document(BytesIO(response.content))
+    normal_font = document.styles["Normal"].font
+    assert normal_font.name == "Times New Roman"
+
+
+def test_export_query_param_falls_back_for_project_with_no_stored_institution_id(
+    client: TestClient,
+) -> None:
+    """A project created before this field existed (or without an `institution_id` at creation)
+    can still be styled by passing `institution_id` as an export-time query parameter."""
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    _accept_chapter_content(client, project_id, "Introduction", "Some content.", headers)
+
+    db = app.dependency_overrides[get_database]()
+    asyncio.run(create_institution_config(db, _make_config("inst-1")))
+
+    response = client.get(
+        f"/projects/{project_id}/export", params={"institution_id": "inst-1"}, headers=headers
+    )
+
+    assert response.status_code == 200
+    document = Document(BytesIO(response.content))
+    normal_font = document.styles["Normal"].font
+    assert normal_font.name == "Times New Roman"
+
+
+def test_export_with_no_stored_or_query_institution_id_succeeds_unstyled(
+    client: TestClient,
+) -> None:
+    """Export never fails purely for lacking styling info: no stored `institution_id` and no
+    query-param fallback still returns a valid, unstyled document."""
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    _accept_chapter_content(client, project_id, "Introduction", "Some content.", headers)
+
+    response = client.get(f"/projects/{project_id}/export", headers=headers)
+
+    assert response.status_code == 200
+    document = Document(BytesIO(response.content))
+    normal_font = document.styles["Normal"].font
+    assert normal_font.name != "Times New Roman"
+
+
 def test_export_with_unknown_institution_id_falls_back_without_404(client: TestClient) -> None:
     headers = _auth_headers(client)
     project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]

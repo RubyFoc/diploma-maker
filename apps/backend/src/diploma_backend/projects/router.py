@@ -338,9 +338,17 @@ async def _finish_title_generation(
 
 class CreateProjectRequest(BaseModel):
     """Body for `POST /projects`. `title` defaults to `_DEFAULT_PROJECT_TITLE` when omitted or
-    empty."""
+    empty.
+
+    `institution_id` (TASK-INT-17) optionally names a stored `InstitutionConfig` to associate
+    with the new project up front, so a later export applies that institution's styling from the
+    project itself rather than needing it re-supplied as an export-time query parameter (see
+    `export_project_endpoint`). Not validated against `formatting.service.get_institution_config`
+    here — same fail-open posture as export itself.
+    """
 
     title: str | None = None
+    institution_id: str | None = None
 
 
 class CreateChapterRequest(BaseModel):
@@ -415,10 +423,16 @@ class ProjectSummary(BaseModel):
 class ProjectDetail(BaseModel):
     """A project plus all of its chapters, each with accepted content / pending draft filled in.
     Response-only: not persisted anywhere as its own document.
+
+    `institution_id` (TASK-INT-17) surfaces the project's stored institution association so the
+    frontend can read back which institution (if any) a project is already configured with,
+    e.g. to preselect it in an export/settings UI (TASK-INT-18) rather than asking the user to
+    re-pick it every time.
     """
 
     id: str
     title: str
+    institution_id: str | None
     created_at: datetime
     chapters: list[ChapterDetail]
 
@@ -517,6 +531,7 @@ async def _build_project_detail(db: AsyncIOMotorDatabase, project: Project) -> P
     return ProjectDetail(
         id=project.id,
         title=project.title,
+        institution_id=project.institution_id,
         created_at=project.created_at,
         chapters=chapter_details,
     )
@@ -552,7 +567,7 @@ async def create_project_endpoint(
     Raises `HTTPException(401)` (via `get_current_user_id`) if no valid bearer token is given.
     """
     title = body.title if body.title else _DEFAULT_PROJECT_TITLE
-    project = await create_project(db, title, owner_id)
+    project = await create_project(db, title, owner_id, institution_id=body.institution_id)
     return await _build_project_detail(db, project)
 
 
@@ -676,11 +691,19 @@ async def export_project_endpoint(
     no accepted version yet — a chapter with no content is called out explicitly, not silently
     omitted. That Markdown is converted to a `docx.Document` via `export.docx.markdown_to_docx`.
 
-    If `institution_id` is given AND resolves to a stored `InstitutionConfig`
+    Styling source of truth (TASK-INT-17): the project's OWN stored `institution_id`
+    (`Project.institution_id`, set at creation time via `CreateProjectRequest.institution_id`) is
+    used when present, in preference to the `institution_id` query parameter — a project should
+    export with the institution it was actually configured with, not whatever a caller happens to
+    pass at export time. The query parameter is kept ONLY as a fallback for projects created
+    before this field existed (`project.institution_id is None`), so an export for one of those
+    pre-existing projects can still be styled by passing it explicitly; once every project has
+    gone through `POST /projects` with this field, the parameter becomes dead weight and can be
+    removed. Whichever id is used, if it resolves to a stored `InstitutionConfig`
     (`formatting.service.get_institution_config`), `export.docx.apply_institution_config` is
     applied to the document before serializing, giving it that institution's page/font/heading
-    styling. If `institution_id` is omitted, or given but doesn't resolve to any stored config,
-    the export proceeds WITHOUT institution styling (plain `python-docx` defaults) rather than
+    styling. If neither source yields an id, or the id doesn't resolve to any stored config, the
+    export proceeds WITHOUT institution styling (plain `python-docx` defaults) rather than
     failing — a missing or stale `institution_id` shouldn't block a user from getting their
     document, only from getting it styled.
 
@@ -693,8 +716,9 @@ async def export_project_endpoint(
     markdown_text = await _build_export_markdown(db, project)
     document = markdown_to_docx(markdown_text)
 
-    if institution_id is not None:
-        config = await get_institution_config(db, institution_id)
+    effective_institution_id = project.institution_id or institution_id
+    if effective_institution_id is not None:
+        config = await get_institution_config(db, effective_institution_id)
         if config is not None:
             apply_institution_config(document, config)
 

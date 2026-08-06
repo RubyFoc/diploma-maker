@@ -25,10 +25,21 @@ _CHAPTER_VERSIONS_COLLECTION = "chapter_versions"
 _REQUIRED_SOURCES_COLLECTION = "required_sources"
 
 
-async def create_project(db: AsyncIOMotorDatabase, title: str, owner_id: str) -> Project:
+async def create_project(
+    db: AsyncIOMotorDatabase,
+    title: str,
+    owner_id: str,
+    institution_id: str | None = None,
+) -> Project:
     """Create and insert a new `Project` with the given `title`, owned by `owner_id` (TASK-E11-1;
-    the `sub` claim of the authenticated caller, see `auth.dependencies.get_current_user_id`)."""
-    project = Project(title=title, owner_id=owner_id)
+    the `sub` claim of the authenticated caller, see `auth.dependencies.get_current_user_id`).
+
+    `institution_id` (TASK-INT-17) is stored as-is, with no validation that it resolves to an
+    existing `formatting.models.InstitutionConfig` — `projects.router.export_project_endpoint`
+    already fails open on an unresolvable id, so rejecting it here would only add a stricter
+    failure mode than export itself has.
+    """
+    project = Project(title=title, owner_id=owner_id, institution_id=institution_id)
     await db[_PROJECTS_COLLECTION].insert_one(project.model_dump())
     return project
 

@@ -19,11 +19,19 @@ class Project(BaseModel):
     (TASK-E11-1, `auth.dependencies.get_current_user_id`); every project-scoped route in
     `projects.router` requires a valid caller and treats a project owned by someone else as
     nonexistent (404), not a 403, to avoid leaking other users' project ids.
+
+    `institution_id` (TASK-INT-17) optionally names a stored `formatting.models.InstitutionConfig`
+    to style this project's export with (`projects.router.export_project_endpoint`), set at
+    creation time (`CreateProjectRequest.institution_id`) rather than re-supplied per export.
+    `None` for projects created before this field existed, or for a project whose author never
+    picked an institution — either way export still succeeds, just unstyled (see
+    `export_project_endpoint`'s docstring).
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     owner_id: str
     title: str
+    institution_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

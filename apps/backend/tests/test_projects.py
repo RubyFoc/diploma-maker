@@ -133,6 +133,26 @@ def test_create_project_returns_empty_chapters(client: TestClient) -> None:
     assert "created_at" in body
 
 
+def test_create_project_persists_and_returns_institution_id(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    response = client.post(
+        "/projects",
+        json={"title": "My Thesis", "institution_id": "inst-1"},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["institution_id"] == "inst-1"
+
+
+def test_create_project_defaults_institution_id_to_none(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+
+    assert response.status_code == 201
+    assert response.json()["institution_id"] is None
+
+
 def test_create_project_defaults_title_when_omitted(client: TestClient) -> None:
     headers = _auth_headers(client)
     response = client.post("/projects", json={}, headers=headers)
