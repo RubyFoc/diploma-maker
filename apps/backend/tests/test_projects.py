@@ -10,6 +10,14 @@ import respx
 from fastapi.testclient import TestClient
 
 _CHAT_URL = "https://api.deepseek.com/chat/completions"
+_SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+
+
+def _mock_empty_rag_search() -> None:
+    """Mock the RAG-grounding search call (`_fetch_rag_excerpts`) every generation call now
+    makes, with an empty result — these tests don't exercise RAG grounding itself (see
+    `test_projects_rag.py` for that), just the generate/humanize/precheck/persist pipeline."""
+    respx.get(_SEMANTIC_SCHOLAR_URL).mock(return_value=httpx.Response(200, json={"data": []}))
 
 
 def _success_response(content: str = "Generated chapter text.") -> httpx.Response:
@@ -42,6 +50,7 @@ def _mock_generate_and_humanize(
     """Mock both DeepSeek calls a successful generation now makes: the heavy-tier draft
     generation and the fast-tier humanization, distinguished by the `model` field respx sees in
     each request body (matching `client._model_for`'s tier->model mapping)."""
+    _mock_empty_rag_search()
     respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
         return_value=_success_response(generated)
     )
@@ -161,6 +170,7 @@ def test_generate_draft_creates_and_returns_draft_version(client: TestClient) ->
 
 @respx.mock
 def test_generate_draft_llm_failure_returns_502(client: TestClient) -> None:
+    _mock_empty_rag_search()
     respx.post(_CHAT_URL).mock(return_value=_fail_response())
 
     project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
@@ -178,6 +188,7 @@ def test_generate_draft_llm_failure_returns_502(client: TestClient) -> None:
 
 @respx.mock
 def test_generate_draft_humanize_llm_failure_returns_502(client: TestClient) -> None:
+    _mock_empty_rag_search()
     respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
         return_value=_success_response("Draft chapter body.")
     )

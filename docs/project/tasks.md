@@ -127,6 +127,16 @@ upload. See `docs/features/2026-08-05_auto-discovered-institution-formatting.md`
 | TASK-INT-7 | Web-search-based formatting auto-discovery (`POST .../auto-detect`) | E05 | python-developer | done |
 | TASK-INT-8 | Onboarding UI: "try to auto-detect" option alongside select/upload | E05 | frontend-developer | done |
 
+## Phase 2.7 — Live RAG Grounding for Generation (added 2026-08-06, not in original epic breakdown)
+
+Closes part of the standing "citation verification/RAG not wired into generation" gap flagged
+after every earlier integration task. See
+`docs/features/2026-08-06_rag-grounding-for-generation.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-11 | Wire live external-search RAG excerpts into generation + precheck | E04 | python-developer | done |
+
 ## Phase 3.5 — Project docx Export (added 2026-08-05, not in original epic breakdown)
 
 The docx export engine (E06) existed fully built and tested since Phase 3 with no endpoint

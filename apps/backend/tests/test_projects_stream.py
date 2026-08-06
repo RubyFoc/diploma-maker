@@ -14,6 +14,13 @@ import respx
 from fastapi.testclient import TestClient
 
 _CHAT_URL = "https://api.deepseek.com/chat/completions"
+_SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+
+
+def _mock_empty_rag_search() -> None:
+    """Mock the RAG-grounding search call every generation call now makes, with an empty
+    result — these tests don't exercise RAG grounding itself."""
+    respx.get(_SEMANTIC_SCHOLAR_URL).mock(return_value=httpx.Response(200, json={"data": []}))
 
 
 def _stream_body(deltas: list[str]) -> bytes:
@@ -49,6 +56,7 @@ def _fail_response() -> httpx.Response:
 def _mock_stream_and_humanize(
     *, deltas: list[str] = ("Draft ", "chapter ", "body."), humanized: str = "Humanized body."
 ) -> None:
+    _mock_empty_rag_search()
     respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
         return_value=httpx.Response(
             200, headers={"content-type": "text/event-stream"}, content=_stream_body(list(deltas))
@@ -137,6 +145,7 @@ def test_generate_stream_multiline_chunk_is_framed_correctly(client: TestClient)
 
 @respx.mock
 def test_generate_stream_llm_failure_emits_error_event(client: TestClient) -> None:
+    _mock_empty_rag_search()
     respx.post(_CHAT_URL).mock(return_value=_fail_response())
     project_id, chapter_id = _setup_project_and_chapter(client)
 

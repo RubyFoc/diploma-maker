@@ -6,16 +6,28 @@ version storage, ADR-0004), `llm_routing` (DeepSeek client + retry + prompt asse
 `humanizer.pipeline` (TASK-E07-1) and `plagiarism.precheck` (TASK-E07-2) without modifying any of
 their internals.
 
-Known simplification (MVP scope for this task): the generation endpoint calls `assemble_prompt`
-with `chapter_summaries=[]` and `rag_excerpts=[]`, and `run_precheck` with `source_excerpts=[]`.
-Persisted chapter-summary accumulation (TASK-E03-2's `summarize_chapter`, wired into a session)
-and RAG excerpt retrieval (E04/Qdrant) both exist elsewhere in this codebase but are not yet
-threaded into this endpoint — that integration is explicitly out of scope here and belongs to a
-later task. Citation verification (ADR-0001, `citations.verification`) is likewise not yet wired
-into this endpoint: it needs those same RAG source excerpts to verify against, so it is deferred
-to the same follow-up. As of this task, the pipeline order actually wired here is
-generate -> humanize -> plagiarism/AI-detection scan (per PRD §6), skipping the
-not-yet-integrated citation-verification step.
+RAG grounding (`_fetch_rag_excerpts`): before generating, both endpoints search external academic
+literature (Semantic Scholar/CORE via `sources.search.search_sources`, TASK-E04-2) for the chat
+instruction and feed up to `_RAG_EXCERPT_LIMIT` abstracts into `assemble_prompt`'s `rag_excerpts`
+and `run_precheck`'s `source_excerpts` — real, live source grounding, not `[]` placeholders. This
+is a live substitute for a Qdrant-ingested source store (TASK-E04-1): nothing in this codebase
+yet ingests any project's own uploaded literature into Qdrant scoped to a project/chapter, so
+querying it here would always return nothing; live external search needs no prior ingestion step
+and gives real grounding today. `_fetch_rag_excerpts` fails open (`SourceSearchError` or zero
+results → `[]`) since source grounding is a quality enhancement, not a hard requirement.
+
+Known remaining simplification: `chapter_summaries=[]` is still passed to `assemble_prompt` —
+persisted chapter-summary accumulation (TASK-E03-2's `summarize_chapter`, wired into a session)
+is not yet threaded into this endpoint. Full citation verification (ADR-0001,
+`citations.verification`) is ALSO still not wired in: that needs a claim-extraction step (finding
+which sentences in the generated text assert something citable) which doesn't exist anywhere in
+this codebase yet — a materially larger follow-up than RAG grounding, since grounding only
+needed a search call, while verification needs to segment generated prose into individual claims
+first. The system prompt instructs the model to cite the provided sources by title/year when it
+draws on them, but nothing verifies those in-text citations are accurate or reformats them per
+ADR-0001's retry/reject contract — that remains future work. As of this task, the pipeline order
+wired here is generate (RAG-grounded) -> humanize -> plagiarism/AI-detection scan (per PRD §6),
+skipping the not-yet-integrated citation-verification step.
 """
 
 import json
@@ -45,6 +57,7 @@ from diploma_backend.projects.service import (
     get_project,
     list_chapters_for_project,
 )
+from diploma_backend.sources.search import SourceSearchError, search_sources
 from diploma_backend.toc.parser import TocParseError, parse_toc
 from diploma_backend.versions.models import ChapterVersion
 from diploma_backend.versions.service import (
@@ -83,8 +96,43 @@ _FALLBACK_EXPORT_FILENAME = "thesis"
 _GENERATION_SYSTEM_PROMPT = (
     "You are an academic writing assistant helping a student draft a chapter of their thesis. "
     "Write clear, well-structured, formal academic prose that directly follows the user's "
-    "instruction. Do not include meta-commentary about being an AI."
+    "instruction. Do not include meta-commentary about being an AI. If reference sources are "
+    "provided below, ground relevant claims in them and cite each one in-text as "
+    "(Author, Year) — using the source's own title/year if no author name is given — when you "
+    "draw on it directly. Never invent a citation for a source that was not provided; if none of "
+    "the provided sources are relevant to a claim, state it plainly without a citation rather "
+    "than fabricating one."
 )
+
+# Caps how many external search results become RAG excerpts per generation call — enough to
+# ground the model without bloating the prompt (and DeepSeek's cache-hit economics, ADR-0003,
+# favor a small, stable-ish context over a large one).
+_RAG_EXCERPT_LIMIT = 3
+
+
+async def _fetch_rag_excerpts(instruction: str) -> list[str]:
+    """Best-effort live RAG grounding for a generation call.
+
+    Searches external academic literature (Semantic Scholar/CORE, `sources.search`, TASK-E04-2)
+    for `instruction` and turns up to `_RAG_EXCERPT_LIMIT` results with an abstract into excerpt
+    strings (`"<title> (<year>): <abstract>"`) suitable for `assemble_prompt`'s `rag_excerpts` and
+    `run_precheck`'s `source_excerpts`. Results with no abstract are skipped (nothing useful to
+    ground on). Fails open: if every search provider is down (`SourceSearchError`) or nothing
+    relevant is found, returns `[]` rather than blocking generation — source grounding is a
+    quality enhancement for this MVP, not a hard requirement (see module docstring for why this
+    is a live-search substitute for Qdrant-ingested sources, not a replacement for one).
+    """
+    try:
+        results = await search_sources(instruction, limit=_RAG_EXCERPT_LIMIT)
+    except SourceSearchError:
+        return []
+
+    excerpts = []
+    for result in results:
+        if not result.abstract:
+            continue
+        excerpts.append(f"{result.title} ({result.year}): {result.abstract}")
+    return excerpts
 
 
 class CreateProjectRequest(BaseModel):
@@ -392,10 +440,11 @@ async def generate_chapter_draft_endpoint(
     humanized text as a new draft version.
 
     Raises `HTTPException(404)` if `chapter_id` doesn't exist or doesn't belong to `project_id`.
-    Builds messages via `assemble_prompt` with `chapter_summaries=[]` and `rag_excerpts=[]` (see
-    module docstring: persisted summaries and RAG retrieval are out of scope for this task), then
-    calls the DeepSeek "heavy" tier (ADR-0003: chapter drafting) through `generate_with_retry`.
-    Raises `HTTPException(502)` if every retry attempt fails (`LLMRequestError`).
+    Fetches live RAG excerpts via `_fetch_rag_excerpts` (external academic search, see module
+    docstring) and builds messages via `assemble_prompt` with `chapter_summaries=[]` and those
+    excerpts, then calls the DeepSeek "heavy" tier (ADR-0003: chapter drafting) through
+    `generate_with_retry`. Raises `HTTPException(502)` if every retry attempt fails
+    (`LLMRequestError`).
 
     The raw generated content is then passed through `humanizer.pipeline.humanize_text` (reusing
     the same `DeepSeekClient`, fast tier per ADR-0003) to break up repetitive LLM-sounding
@@ -411,11 +460,12 @@ async def generate_chapter_draft_endpoint(
     than blocking the user from seeing their draft at all.
 
     The (possibly humanized, possibly raw-fallback) text is then run through
-    `plagiarism.precheck.run_precheck` with `source_excerpts=[]` (RAG excerpts aren't threaded
-    into this endpoint yet either — same simplification as `assemble_prompt`'s empty lists above).
-    That text is what gets persisted via `versions.service.create_draft_version` — the draft a
-    user reviews is the humanized version, not the raw LLM output. Returns a
-    `GenerateDraftResponse` bundling the persisted `ChapterVersion` and the precheck result.
+    `plagiarism.precheck.run_precheck` with the SAME RAG excerpts fetched above as
+    `source_excerpts`, so the plagiarism-overlap score is measured against real source text
+    rather than always trivially zero. That text is what gets persisted via
+    `versions.service.create_draft_version` — the draft a user reviews is the humanized version,
+    not the raw LLM output. Returns a `GenerateDraftResponse` bundling the persisted
+    `ChapterVersion` and the precheck result.
     """
     chapter = await get_chapter(db, chapter_id)
     if chapter is None or chapter.project_id != project_id:
@@ -423,10 +473,11 @@ async def generate_chapter_draft_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Chapter '{chapter_id}' not found"
         )
 
+    rag_excerpts = await _fetch_rag_excerpts(body.instruction)
     messages = assemble_prompt(
         system_prompt=_GENERATION_SYSTEM_PROMPT,
         chapter_summaries=[],
-        rag_excerpts=[],
+        rag_excerpts=rag_excerpts,
         user_message=body.instruction,
     )
 
@@ -445,7 +496,7 @@ async def generate_chapter_draft_endpoint(
         # draft at all, since humanization is cosmetic, not correctness-critical (see docstring).
         humanized_content = content
 
-    precheck = run_precheck(humanized_content, source_excerpts=[])
+    precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
 
     version = await create_draft_version(db, chapter_id, content=humanized_content)
     return GenerateDraftResponse(
@@ -492,8 +543,9 @@ async def generate_chapter_draft_stream_endpoint(
       spec, all within the same event).
     - On successful completion of the stream: the accumulated raw text is run through the same
       `humanize_text` (fail-open on `HumanizationError`, same reasoning as the non-streaming
-      endpoint) -> `run_precheck` (with `source_excerpts=[]`) -> `create_draft_version` pipeline
-      as `generate_chapter_draft_endpoint`, then a single `event: done` whose `data:` is the JSON
+      endpoint) -> `run_precheck` (with the same live-searched RAG excerpts as `source_excerpts`,
+      see module docstring) -> `create_draft_version` pipeline as `generate_chapter_draft_endpoint`,
+      then a single `event: done` whose `data:` is the JSON
       (via `.model_dump(mode="json")`) of a `GenerateDraftResponse`-shaped payload
       (`{"version": ..., "precheck": ...}`) — same response shape as that endpoint's body.
     - On `LLMRequestError` from `generate_stream` (a non-2xx status before the stream starts, or a
@@ -508,10 +560,11 @@ async def generate_chapter_draft_stream_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Chapter '{chapter_id}' not found"
         )
 
+    rag_excerpts = await _fetch_rag_excerpts(instruction)
     messages = assemble_prompt(
         system_prompt=_GENERATION_SYSTEM_PROMPT,
         chapter_summaries=[],
-        rag_excerpts=[],
+        rag_excerpts=rag_excerpts,
         user_message=instruction,
     )
     client = DeepSeekClient()
@@ -535,7 +588,7 @@ async def generate_chapter_draft_stream_endpoint(
         except HumanizationError:
             humanized_content = content
 
-        precheck = run_precheck(humanized_content, source_excerpts=[])
+        precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
         version = await create_draft_version(db, chapter_id, content=humanized_content)
         response_payload = GenerateDraftResponse(
             version=version, precheck=PlagiarismCheckResultResponse.from_result(precheck)
