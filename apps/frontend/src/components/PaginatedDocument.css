@@ -1,0 +1,35 @@
+.paginated-document {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.document-page-content > *:first-child {
+  margin-top: 0;
+}
+
+/* Off-screen measuring pass: kept in normal layout flow (not `display: none`) so its
+   dimensions are real, but moved out of the viewport and hidden from the accessibility
+   tree so it never visually appears or announces content twice. */
+.document-page--measure {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  visibility: hidden;
+}
+
+.document-page-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background-color: var(--color-bg-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+}
+
+.document-page-nav button {
+  padding: var(--space-1) var(--space-3);
+}

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { autoDetectInstitution, listInstitutions, uploadInstitutionSample } from './institutionService'
+import {
+  autoDetectInstitution,
+  getInstitutionConfig,
+  listInstitutions,
+  uploadInstitutionSample,
+} from './institutionService'
 
 const BASE_URL = 'http://localhost:8010'
 
@@ -38,6 +43,30 @@ describe('institutionService', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(listInstitutions()).rejects.toThrow(/500/)
+  })
+
+  it('getInstitutionConfig fetches /formatting/institution-configs/{id} and returns the parsed config', async () => {
+    const config = {
+      institution_id: 'i1',
+      institution_name: 'Test University',
+      page: { size: 'A4', orientation: 'portrait', margins_mm: { top: 25, bottom: 25, left: 25, right: 25 } },
+      font: { family: 'Times New Roman', size_pt: 12, line_spacing: 1.5 },
+      headings: { h1: { font_size_pt: 16, bold: true }, h2: {}, h3: {} },
+    }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(config))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getInstitutionConfig('i1')
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE_URL}/formatting/institution-configs/i1`, expect.anything())
+    expect(result).toEqual(config)
+  })
+
+  it('getInstitutionConfig throws a clear error including status and body on a non-2xx response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: 'not found' }, false, 404))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getInstitutionConfig('unknown')).rejects.toThrow(/404/)
   })
 
   it('uploadInstitutionSample posts multipart form data without a manual Content-Type header', async () => {

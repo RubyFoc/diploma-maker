@@ -1,0 +1,32 @@
+/**
+ * Shared "paper sheet" look for anything showing formatted document content (live
+ * preview and diff view), so both read like a page from an exported .docx/PDF rather
+ * than a chat message. Page dimensions, padding (margins), and font come from
+ * `pageStyle` (computed via `utils/institutionPageStyle.ts`), applied inline, since
+ * they vary per institution — this file is only the static visual shell.
+ *
+ * The page stays a fixed white sheet with near-black text regardless of the app's
+ * light/dark theme, like Word/Google Docs always render a white page.
+ */
+.document-page {
+  box-sizing: border-box;
+  background: #ffffff;
+  color: #1f1f1f;
+  margin: 0 auto;
+  box-shadow: var(--shadow-lg);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.document-page-content {
+  height: 100%;
+  overflow: hidden;
+}
+
+@media (max-width: 640px) {
+  .document-page {
+    width: 100% !important;
+    height: auto !important;
+    padding: var(--space-5) var(--space-4) !important;
+  }
+}

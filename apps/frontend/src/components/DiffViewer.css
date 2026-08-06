@@ -10,26 +10,17 @@
   margin: 0 0 var(--space-3);
 }
 
-.diff-segments {
-  white-space: pre-wrap;
-  font-size: 0.9rem;
-  line-height: 1.5;
+/* Word-style tracked-changes coloring, rendered inline on the white page (not a chat-bubble
+   background pill) — fixed hex values rather than the app's `--color-success-text`/
+   `--color-danger-text` tokens, since those are tuned for the app's own light/dark
+   `--color-bg` and the page is always a white sheet regardless of app theme. */
+.diff-added {
+  color: #1a7f37;
+  text-decoration: underline;
 }
 
-.diff-segment {
-  margin: 0;
-  padding: 0.2rem 0.4rem;
-  border-radius: var(--radius-sm);
-}
-
-.diff-segment--added {
-  background-color: var(--color-success-bg);
-  color: var(--color-success-text);
-}
-
-.diff-segment--removed {
-  background-color: var(--color-danger-bg);
-  color: var(--color-danger-text);
+.diff-removed {
+  color: #cf222e;
   text-decoration: line-through;
 }
 

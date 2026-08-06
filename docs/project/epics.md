@@ -21,6 +21,12 @@ Students and researchers producing theses, dissertations, and term papers (PRD �
 | MongoDB institution configs + Wallet/Transaction schema | Real payment processing / external billing gateway integration |
 | Geo-fenced academic source search, user-uploaded literature | Building/licensing an actual academic search index (assume a third-party API) |
 
+## Non-Goals (E11-E17, BA-confirmed 2026-08-06)
+Real-time multi-user collaborative editing; arbitrary/deep chapter nesting beyond 2 levels
+(chapter, subchapter); free-text/inline-marker lock instructions (locks are UI-selection only, no
+inline markers); keystroke-level undo; building a new citation-verification engine (E14 only adds
+a new input to the existing ADR-0001 engine); choosing new LLM providers/payment gateways.
+
 ## Candidate Epics
 
 | ID | Epic | PRD Section | Success Criterion (one line) | Depends On |
@@ -35,6 +41,13 @@ Students and researchers producing theses, dissertations, and term papers (PRD �
 | E08 | Git-like diff viewer & live preview | §3.6 | A generated/edited passage is shown as accept/reject diff; accepted text updates the live WYSIWYG preview | E01, E03 |
 | E09 | Feedback loop & crowdsourced template weights | §3.5 | A user's formatting correction increases that university template's accuracy weight, visible on the next generation for that template | E05, E08 |
 | E10 | Onboarding & TOC-aware smart insertion | §6 | User selects/uploads a university profile and TOC; generating "Chapter 2" is inserted between existing Chapters 1 and 3 | E01, E05 |
+| E11 | Multi-project management (list/switch/delete) | §3.6 | User can list their own projects, switch between them, and delete one with cascading cleanup of its chapters/versions/vectors/files | E01, E02 |
+| E12 | Chapter/subchapter data model + sidebar navigation | §3.6 | User can open a subchapter under a chapter from a sidebar tree and work on it independently of its siblings | E11, E10 |
+| E13 | Draft ingestion & UI-driven lock/protected-range selection | §3.6 | User uploads an existing draft, selects a block in the UI to lock, and that block is rejected by any later AI edit whose anchor overlaps it | E12, E06 |
+| E14 | Required-authors/citation-grounding onboarding input | §3.2 | User supplies a required-author/work list at onboarding and generated citations for that project are boosted/required toward it, still subject to ADR-0001's verify/retry/reject contract | E04, E11 |
+| E15 | In-place AI insertion into existing draft content, respecting locks | §3.6 | An AI-proposed insertion whose anchor lands inside a locked block is rejected and rerouted to an explicit alternative anchor, never silently applied | E13, E08 |
+| E16 | Multi-granularity history & undo/redo | §3.6 | User can undo/redo at whole-document, page-range, or paragraph/line granularity, and a new edit after an undo discards the redo stack | E15, E08 |
+| E17 | Celery-based async task offloading | §3.1, §3.2, §3.3 | Parsing, humanization, plagiarism precheck, and generation run as Celery tasks; a stuck task no longer blocks the API process for unrelated requests | — |
 
 ## Build Sequence (architect-reviewed, 2026-08-04)
 Confirmed order, with parallel tracks called out:
@@ -62,6 +75,32 @@ Net effect vs. the BA draft: E01/E02 and E05/E03 are parallelizable, not strictl
 can start UI-only work much earlier than the BA draft implied — only its *done* criteria wait on
 E03.
 
+## Build Sequence — E11-E17 (architect-reviewed, 2026-08-06)
+BA's dependency list (E11 -> E12 -> E13 -> E14/E15 in parallel -> E16, E17 orthogonal) is
+overridden by the architect's tighter sequencing below, because E13/E15/E16 share the same anchor
+primitives (block_id + hash per ADR-0011/ADR-0012) and must not be built in parallel against each
+other:
+
+1. **E11** (multi-project management) — no new-epic dependency, needs only E01/E02.
+2. **E12** (chapter/subchapter model + sidebar) — needs ADR-0014 (subchapter model) resolved;
+   depends on E11.
+3. **E13** (lock/protected-range UI) — needs ADR-0011 (lock anchor) resolved; depends on E12.
+4. **E15** (in-place AI insertion respecting locks) — depends on E13's lock model directly; must
+   not run in parallel with E13 or E16.
+5. **E16** (multi-granularity undo/redo) — needs ADR-0012 (op-log) resolved; depends on E15.
+   E13 -> E15 -> E16 is a strict sequential spine, despite the BA listing E15/E16 as separate
+   parallel dependents of E13 — they share the same anchor primitives and reusing the wrong one
+   would force a rewrite.
+6. **E14** (required-authors onboarding input) — parallel track, starts once E11's ownership model
+   lands; runs alongside E12/E13 since it touches a different module (`sources`).
+7. **E17** (Celery offloading) — parallel track, gated only on ADR-0013 (Redis broker) being
+   resolved; should land **before** E15/E16 begin real work, since generation/insertion/
+   plagiarism-precheck benefit most from async offloading once those epics start producing
+   heavier work.
+
+Sequential spine: **E11 -> E12 -> E13 -> E15 -> E16**. Parallel tracks: **E14** (alongside
+E12/E13) and **E17** (land before E15/E16 start).
+
 ## Architect Non-Functional Notes by Epic
 | Epic | Key non-functional concern |
 | --- | --- |
@@ -74,6 +113,13 @@ E03.
 | E08 | Diff/version state must survive a page reload mid-review (no lost pending edits) |
 | E09 | Template weight adjustments must be auditable (which user correction changed which weight) |
 | E10 | Chapter-boundary insertion must not silently overwrite an existing chapter |
+| E11 | Cascading delete correctness (Mongo projects/chapters/versions, Qdrant vectors per ADR-0002, uploaded files) must not orphan data |
+| E12 | Parent-scoped ordering (ADR-0014) must not break E10's existing chapter-insertion tests |
+| E13 | Block-ID persistence discipline: `block_id` must never be re-derived by position/hash on read, only assigned once at block creation |
+| E14 | Must fail closed (flag unmet must-cite requirement) rather than fabricate a citation, consistent with ADR-0001 |
+| E15 | Anchor representation (ADR-0011) must be designed once and shared with E13/E16, not reinvented per epic |
+| E16 | Replay of an op whose anchor block no longer exists must reject with a clear error, not guess a new anchor |
+| E17 | A fast Celery task can finish before an SSE subscriber attaches (ADR-0013's buffered-events fix) |
 
 ## Diagram Impact
 Resolved 2026-08-04: `docs/architecture/diagrams.md` now reflects Qdrant (ADR-0002), the

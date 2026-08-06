@@ -1,4 +1,4 @@
-import type { InstitutionSummary } from '../types/institution'
+import type { InstitutionConfig, InstitutionSummary } from '../types/institution'
 
 class RequestError extends Error {
   constructor(
@@ -22,6 +22,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listInstitutions(): Promise<InstitutionSummary[]> {
   return request<InstitutionSummary[]>('/formatting/institution-configs', {
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+export function getInstitutionConfig(institutionId: string): Promise<InstitutionConfig> {
+  return request<InstitutionConfig>(`/formatting/institution-configs/${institutionId}`, {
     headers: { 'Content-Type': 'application/json' },
   })
 }

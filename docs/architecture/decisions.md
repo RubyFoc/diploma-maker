@@ -171,3 +171,69 @@ unresolved ADR.
   embeddings API) if retrieval quality proves insufficient once there's real usage to evaluate
   against. Changing the embedding model later requires re-embedding all previously ingested
   chunks (same migration cost noted under ADR-0002).
+
+### ADR-0011: Lock anchor representation for draft protected ranges
+- **Date:** 2026-08-06
+- **Status:** Accepted
+- **Decision:** A lock anchors to a persisted `block_id` (UUID assigned once at block creation,
+  never re-derived by position or content on subsequent reads) plus a `block_content_hash`
+  captured at lock time, plus an optional intra-block `char_range` for sub-block precision.
+  Enforcement recomputes the block's hash immediately before any AI edit touches it; a hash
+  mismatch means the lock is stale (the underlying content changed since the lock was set) and the
+  edit is rejected and surfaced to the user — fail-closed, same posture as ADR-0001. This requires
+  the backend to persist a block manifest (ordered `block_id` + content + hash) per chapter
+  version, rather than treating `ChapterVersion.content` (ADR-0004) as an opaque string.
+- **Consequences:** E13 (locks module) and every consumer of a chapter's content (E12 sidebar
+  nav, E08 diff viewer, E15 insertion, E16 history) must read/write through the block manifest
+  instead of raw string content. Retrofitting existing `ChapterVersion` rows without a manifest
+  means old versions have no lockable blocks until re-parsed.
+
+### ADR-0012: Fine-grained edit history data model (cross-references ADR-0004)
+- **Date:** 2026-08-06
+- **Status:** Accepted
+- **Decision:** Layer a new `Operation` op-log on top of the existing immutable `ChapterVersion`
+  snapshot chain from ADR-0004 — the snapshot chain is not extended or replaced.
+  `Operation{id, chapter_id, base_version_id, anchor(block_id + optional char_range), before_text,
+  after_text, applied_by, created_at}`. Undo/redo at paragraph/line granularity replays or reverts
+  `Operation` rows against the current draft. "Accept" still collapses all accumulated operations
+  since the last accepted version into one new `ChapterVersion`, exactly as today. "Page" is never
+  a stored backend concept — a page-level revert is resolved client-side (`PaginatedDocument`
+  already knows which block indices fall on which page) into a block-id range, then sent to the
+  backend as a batch-undo over that range.
+- **Consequences:** E16 (history module) owns the `Operation` collection; replaying an op whose
+  anchor block no longer exists must reject with a clear error rather than guess a new anchor. A
+  new edit after an undo wipes the redo stack (ADR-0012 addendum, see below) — this is a linear
+  op-log, not a branching/tree history, so no redo-stack merge logic is needed.
+- **Addendum (redo-stack semantics):** A new edit applied after an undo discards the redo stack
+  (standard editor behavior), consistent with the linear op-log above.
+
+### ADR-0013: Async task queue for long-running pipeline stages (cross-references ADR-0002,
+ADR-0009)
+- **Date:** 2026-08-06
+- **Status:** Accepted
+- **Decision:** Celery, with Redis as both broker and result backend — not a Mongo-backed broker,
+  to avoid adding extra load onto the version/ledger datastore that ADR-0002/ADR-0004/ADR-0006
+  already depend on. A new `redis` service is added to `docker-compose.yml`. The Celery worker
+  publishes progress updates to Redis Pub/Sub keyed by `task_id`; the existing SSE generators
+  (ADR-0009) subscribe to that channel and forward events to the browser over the same one-way
+  streaming connection — additive to ADR-0009, not a replacement for it. Because a fast task can
+  finish before an SSE subscriber attaches, the worker also buffers the last N events per
+  `task_id` in Redis so a late subscriber can catch up instead of hanging.
+- **Consequences:** E17 (worker package) owns `llm_routing.tasks`, `sources.tasks`,
+  `humanizer.tasks`, `formatting.tasks`. Parsing, humanization, plagiarism precheck, and
+  generation move off the request/response cycle; the API process no longer blocks on them, so a
+  stuck task can no longer take down request handling for unrelated requests.
+
+### ADR-0014: Subchapter data model (first structural change to Chapter)
+- **Date:** 2026-08-06
+- **Status:** Accepted
+- **Decision:** Subchapters are represented as a self-referential `parent_chapter_id: str | None`
+  field on the existing `Chapter` collection — not as an embedded array on the parent chapter —
+  so each subchapter keeps its own independent version history (ADR-0004) and lock/manifest state
+  (ADR-0011). Nesting is capped at two levels (chapter, subchapter); deeper nesting is explicitly
+  out of scope per `docs/project/epics.md`. `insert_chapter_at_order`/`infer_insertion_order`
+  (from E10) are rescoped from sibling-ordering within `(project_id)` to sibling-ordering within
+  `(project_id, parent_chapter_id)`.
+- **Consequences:** E12 must not break E10's existing chapter-insertion tests when ordering
+  becomes parent-scoped — existing top-level chapters are simply chapters with
+  `parent_chapter_id=None`, and their relative ordering logic is unchanged, only newly scoped.

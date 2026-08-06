@@ -18,7 +18,7 @@
  */
 import type { ReactNode } from 'react'
 
-type Block =
+export type Block =
   | { kind: 'h1' | 'h2' | 'h3'; text: string }
   | { kind: 'p'; text: string }
   | { kind: 'ul' | 'ol'; items: string[] }
@@ -30,7 +30,7 @@ const ORDERED_LIST_RE = /^\d+\.\s+(.*)$/
 const FIGURE_PLACEHOLDER_RE = /^\[\[figure:\s*(.+?)\s*\]\]$/i
 const INLINE_RE = /\*\*(.+?)\*\*|\*(.+?)\*/g
 
-function parseBlocks(markdownText: string): Block[] {
+export function parseBlocks(markdownText: string): Block[] {
   const blocks: Block[] = []
   let paragraphBuffer: string[] = []
   let listBuffer: { type: 'ul' | 'ol'; items: string[] } | null = null
@@ -137,43 +137,50 @@ function renderInline(text: string): ReactNode[] {
 }
 
 /**
+ * Renders a single parsed `Block` as its corresponding JSX element. Extracted from
+ * `renderMarkdownPreview` so pagination (`PaginatedDocument`) and the diff view
+ * (`DiffViewer`) can render/measure the same block model instead of re-parsing markdown.
+ */
+export function renderBlock(block: Block, key: number): ReactNode {
+  switch (block.kind) {
+    case 'h1':
+      return <h1 key={key}>{renderInline(block.text)}</h1>
+    case 'h2':
+      return <h2 key={key}>{renderInline(block.text)}</h2>
+    case 'h3':
+      return <h3 key={key}>{renderInline(block.text)}</h3>
+    case 'ul':
+      return (
+        <ul key={key}>
+          {block.items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderInline(item)}</li>
+          ))}
+        </ul>
+      )
+    case 'ol':
+      return (
+        <ol key={key}>
+          {block.items.map((item, itemIndex) => (
+            <li key={itemIndex}>{renderInline(item)}</li>
+          ))}
+        </ol>
+      )
+    case 'figure':
+      return (
+        <p key={key} className="preview-figure-placeholder" data-testid="preview-figure-placeholder">
+          [FIGURE PLACEHOLDER: {block.text}]
+        </p>
+      )
+    case 'p':
+      return <p key={key}>{renderInline(block.text)}</p>
+  }
+}
+
+/**
  * Parses `markdownText` (the same Markdown subset `export/docx.py` supports) and returns React
  * elements for it — headings, paragraphs, lists, and figure placeholders, with inline
  * bold/italic applied, plus a plain-text fallback for anything unsupported.
  */
 export function renderMarkdownPreview(markdownText: string): ReactNode[] {
-  return parseBlocks(markdownText).map((block, index) => {
-    switch (block.kind) {
-      case 'h1':
-        return <h1 key={index}>{renderInline(block.text)}</h1>
-      case 'h2':
-        return <h2 key={index}>{renderInline(block.text)}</h2>
-      case 'h3':
-        return <h3 key={index}>{renderInline(block.text)}</h3>
-      case 'ul':
-        return (
-          <ul key={index}>
-            {block.items.map((item, itemIndex) => (
-              <li key={itemIndex}>{renderInline(item)}</li>
-            ))}
-          </ul>
-        )
-      case 'ol':
-        return (
-          <ol key={index}>
-            {block.items.map((item, itemIndex) => (
-              <li key={itemIndex}>{renderInline(item)}</li>
-            ))}
-          </ol>
-        )
-      case 'figure':
-        return (
-          <p key={index} className="preview-figure-placeholder" data-testid="preview-figure-placeholder">
-            [FIGURE PLACEHOLDER: {block.text}]
-          </p>
-        )
-      case 'p':
-        return <p key={index}>{renderInline(block.text)}</p>
-    }
-  })
+  return parseBlocks(markdownText).map((block, index) => renderBlock(block, index))
 }
