@@ -17,6 +17,18 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+// Exposes the HTTP status alongside the message (mirrors `institutionService.ts`'s
+// `RequestError`) so callers can branch on specific statuses (e.g. TASK-E15-3's 409
+// fully-locked-chapter case) instead of re-parsing the error message string.
+export class RequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}${path}`, {
     ...init,
@@ -25,7 +37,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const body = await response.text()
-    throw new Error(`Request to ${path} failed with status ${response.status}: ${body}`)
+    throw new RequestError(`Request to ${path} failed with status ${response.status}: ${body}`, response.status)
   }
 
   // DELETE responses (e.g. deleteProject) return 204 No Content with no body to parse.
@@ -77,14 +89,24 @@ export function listSubchapters(projectId: string, chapterId: string): Promise<C
   return request<ChapterDetail[]>(`/projects/${projectId}/chapters/${chapterId}/subchapters`)
 }
 
+/**
+ * `targetBlockId`, when provided, switches the backend to "insert at anchor" mode
+ * (TASK-E15-1/2/3, ADR-0011) instead of regenerating the whole chapter. Omitted (or `null`)
+ * keeps the request body identical to the pre-E15 shape, for backward compatibility.
+ */
 export function generateChapterDraft(
   projectId: string,
   chapterId: string,
   instruction: string,
+  targetBlockId?: string | null,
 ): Promise<GenerateDraftResult> {
+  const body: { instruction: string; target_block_id?: string } = { instruction }
+  if (targetBlockId) {
+    body.target_block_id = targetBlockId
+  }
   return request<GenerateDraftResult>(`/projects/${projectId}/chapters/${chapterId}/generate`, {
     method: 'POST',
-    body: JSON.stringify({ instruction }),
+    body: JSON.stringify(body),
   })
 }
 

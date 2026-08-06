@@ -12,6 +12,15 @@ export interface Chapter {
   pendingDraft: ChapterVersion | null
   /** In-progress SSE draft text while streaming (ADR-0009); null once idle or `pendingDraft` lands. */
   streamingContent: string | null
+  /** Block chosen via `DocumentPreview`'s "insert here" toggle (TASK-E15-3) as the anchor for the
+   * next chat instruction's "insert at anchor" generation. Cleared once that generation starts
+   * (see `App.tsx`'s `ChatPanel.handleSend`). `null` means the next instruction generates the
+   * whole chapter, as before E15. */
+  selectedAnchorBlockId: string | null
+  /** Set alongside `pendingDraft` when the backend rerouted an anchor-mode generation away from
+   * a locked `target_block_id` (TASK-E15-2/3, ADR-0011) — `null` for full-chapter drafts and for
+   * anchor-mode drafts that landed on the requested block. Cleared whenever `pendingDraft` is. */
+  pendingDraftReroute: { requestedBlockId: string; usedBlockId: string } | null
 }
 
 export interface DocumentState {

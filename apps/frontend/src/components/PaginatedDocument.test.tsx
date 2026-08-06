@@ -101,4 +101,58 @@ describe('PaginatedDocument', () => {
 
     expect(page.queryByRole('button')).not.toBeInTheDocument()
   })
+
+  it('renders an "insert here" toggle per block when anchorSelection is provided, reflecting the selected block', () => {
+    const blocks: Block[] = [{ kind: 'p', text: 'First paragraph.' }, { kind: 'p', text: 'Second paragraph.' }]
+    const anchorableBlocks = [
+      { id: 'b1', content: 'First paragraph.', content_hash: 'h1', order: 0 },
+      { id: 'b2', content: 'Second paragraph.', content_hash: 'h2', order: 1 },
+    ]
+    const { container } = render(
+      <PaginatedDocument
+        blocks={blocks}
+        pageStyle={pageStyle}
+        anchorSelection={{ anchorableBlocks, selectedBlockId: 'b1', onSelect: vi.fn() }}
+      />,
+    )
+    const page = visiblePage(container)
+
+    expect(page.getByRole('button', { name: strings.documentBlockInsertHereSelectedLabel })).toBeInTheDocument()
+    expect(page.getByRole('button', { name: strings.documentBlockInsertHereLabel })).toBeInTheDocument()
+  })
+
+  it('calls onSelect with the matching manifest block when its "insert here" toggle is clicked', () => {
+    const blocks: Block[] = [{ kind: 'p', text: 'First paragraph.' }]
+    const anchorableBlocks = [{ id: 'b1', content: 'First paragraph.', content_hash: 'h1', order: 0 }]
+    const onSelect = vi.fn()
+    const { container } = render(
+      <PaginatedDocument
+        blocks={blocks}
+        pageStyle={pageStyle}
+        anchorSelection={{ anchorableBlocks, selectedBlockId: null, onSelect }}
+      />,
+    )
+    const page = visiblePage(container)
+
+    fireEvent.click(page.getByRole('button', { name: strings.documentBlockInsertHereLabel }))
+
+    expect(onSelect).toHaveBeenCalledWith(anchorableBlocks[0])
+  })
+
+  it('renders both lock and anchor toggles together when both selections are provided', () => {
+    const blocks: Block[] = [{ kind: 'p', text: 'First paragraph.' }]
+    const manifestBlocks = [{ id: 'b1', content: 'First paragraph.', content_hash: 'h1', order: 0 }]
+    const { container } = render(
+      <PaginatedDocument
+        blocks={blocks}
+        pageStyle={pageStyle}
+        lockSelection={{ lockableBlocks: manifestBlocks, lockedBlockIds: new Set(), onToggleLock: vi.fn() }}
+        anchorSelection={{ anchorableBlocks: manifestBlocks, selectedBlockId: null, onSelect: vi.fn() }}
+      />,
+    )
+    const page = visiblePage(container)
+
+    expect(page.getByRole('button', { name: strings.documentBlockLockLabel })).toBeInTheDocument()
+    expect(page.getByRole('button', { name: strings.documentBlockInsertHereLabel })).toBeInTheDocument()
+  })
 })

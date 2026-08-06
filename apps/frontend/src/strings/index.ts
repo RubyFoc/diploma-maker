@@ -96,6 +96,14 @@ export const strings = {
   chapterTreeAddSubchapterErrorMessage: 'Failed to add subchapter. Please try again.',
   documentBlockLockLabel: 'Lock this block (protect it from future AI edits)',
   documentBlockUnlockLabel: 'Unlock this block',
+  documentBlockInsertHereLabel: 'Insert new content here',
+  documentBlockInsertHereSelectedLabel: 'Selected as insertion point (click to cancel)',
+  chatInsertingAtIndicator: 'Inserting new content at the selected block.',
+  chatCancelInsertionPointButton: 'Cancel insertion point',
+  chatChapterFullyLockedMessage:
+    'This chapter is fully locked, so there is no unlocked location to insert new content. Unlock at least one block and try again.',
+  diffRerouteNoticeMessage:
+    'The requested insertion point was locked, so the AI inserted this content at a nearby unlocked location instead.',
   onboardingRequiredSourcesTitle: 'Required sources (optional)',
   onboardingRequiredSourcesSubtitle:
     'List any authors or works your thesis must cite. We will try to ground generated chapters in them.',

@@ -25,6 +25,18 @@ export interface LockSelectionProps {
   onToggleLock: (block: ManifestBlock) => void
 }
 
+/**
+ * Renders an "insert here" toggle beside each block (TASK-E15-3), matched positionally against
+ * `blocks` the same way `LockSelectionProps.lockableBlocks` is — see that interface's doc
+ * comment. Selecting a block sets it as the anchor for the next chat instruction's "insert at
+ * anchor" generation; selecting the already-selected block clears it.
+ */
+export interface AnchorSelectionProps {
+  anchorableBlocks: ManifestBlock[]
+  selectedBlockId: string | null
+  onSelect: (block: ManifestBlock) => void
+}
+
 export interface PaginatedDocumentProps {
   blocks: Block[]
   pageStyle: CSSProperties
@@ -35,6 +47,9 @@ export interface PaginatedDocumentProps {
    * entirely for read-only rendering (e.g. `DiffViewer`, where locking mid-diff-review doesn't
    * apply — see that component's doc comment). */
   lockSelection?: LockSelectionProps
+  /** Renders an "insert here" anchor-selection toggle beside each rendered block when provided
+   * (TASK-E15-3). Independent of `lockSelection` — both can be shown side by side. */
+  anchorSelection?: AnchorSelectionProps
 }
 
 function headingLevel(block: Block): 1 | 2 | 3 | null {
@@ -66,6 +81,7 @@ export function PaginatedDocument({
   renderBlock,
   emptyMessage,
   lockSelection,
+  anchorSelection,
 }: PaginatedDocumentProps) {
   const renderFn = renderBlock ?? defaultRenderBlock
   const measureRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -156,26 +172,43 @@ export function PaginatedDocument({
         <div className="document-page-content">
           {currentBlockIndices.map((blockIndex) => {
             const rendered = wrapBlock(blocks[blockIndex], blockIndex)
-            if (!lockSelection) {
+            const lockableBlock = lockSelection?.lockableBlocks[blockIndex]
+            const anchorableBlock = anchorSelection?.anchorableBlocks[blockIndex]
+            if (!lockableBlock && !anchorableBlock) {
               return rendered
             }
-            const lockableBlock = lockSelection.lockableBlocks[blockIndex]
-            if (!lockableBlock) {
-              return rendered
-            }
-            const isLocked = lockSelection.lockedBlockIds.has(lockableBlock.id)
+            const isLocked = lockableBlock ? lockSelection!.lockedBlockIds.has(lockableBlock.id) : false
+            const isSelectedAnchor = anchorableBlock ? anchorSelection!.selectedBlockId === anchorableBlock.id : false
             return (
               <div key={blockIndex} className="document-block-with-lock">
-                <button
-                  type="button"
-                  className={isLocked ? 'document-block-lock-toggle document-block-lock-toggle--locked' : 'document-block-lock-toggle'}
-                  onClick={() => lockSelection.onToggleLock(lockableBlock)}
-                  aria-pressed={isLocked}
-                  aria-label={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
-                  title={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
-                >
-                  {isLocked ? '🔒' : '🔓'}
-                </button>
+                {lockableBlock && (
+                  <button
+                    type="button"
+                    className={isLocked ? 'document-block-lock-toggle document-block-lock-toggle--locked' : 'document-block-lock-toggle'}
+                    onClick={() => lockSelection!.onToggleLock(lockableBlock)}
+                    aria-pressed={isLocked}
+                    aria-label={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
+                    title={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
+                  >
+                    {isLocked ? '🔒' : '🔓'}
+                  </button>
+                )}
+                {anchorableBlock && (
+                  <button
+                    type="button"
+                    className={
+                      isSelectedAnchor
+                        ? 'document-block-anchor-toggle document-block-anchor-toggle--selected'
+                        : 'document-block-anchor-toggle'
+                    }
+                    onClick={() => anchorSelection!.onSelect(anchorableBlock)}
+                    aria-pressed={isSelectedAnchor}
+                    aria-label={isSelectedAnchor ? strings.documentBlockInsertHereSelectedLabel : strings.documentBlockInsertHereLabel}
+                    title={isSelectedAnchor ? strings.documentBlockInsertHereSelectedLabel : strings.documentBlockInsertHereLabel}
+                  >
+                    {isSelectedAnchor ? '📍' : '➕'}
+                  </button>
+                )}
                 <div className="document-block-with-lock-content">{rendered}</div>
               </div>
             )

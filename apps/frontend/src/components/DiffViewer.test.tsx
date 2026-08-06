@@ -57,4 +57,24 @@ describe('DiffViewer', () => {
 
     expect(screen.getByText(strings.diffEmpty)).toBeInTheDocument()
   })
+
+  it('renders the reroute banner when rerouteNotice is set', () => {
+    render(
+      <DiffViewer
+        before={before}
+        after={after}
+        onAccept={vi.fn()}
+        onReject={vi.fn()}
+        rerouteNotice={{ requestedBlockId: 'b1', usedBlockId: 'b2' }}
+      />,
+    )
+
+    expect(screen.getByText(strings.diffRerouteNoticeMessage)).toBeInTheDocument()
+  })
+
+  it('does not render the reroute banner when rerouteNotice is null/omitted', () => {
+    render(<DiffViewer before={before} after={after} onAccept={vi.fn()} onReject={vi.fn()} />)
+
+    expect(screen.queryByText(strings.diffRerouteNoticeMessage)).not.toBeInTheDocument()
+  })
 })

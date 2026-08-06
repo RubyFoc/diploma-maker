@@ -498,6 +498,139 @@ describe('App', () => {
     )
   })
 
+  it('selecting an "insert here" block sends generateChapterDraft with target_block_id instead of streaming, and surfaces a reroute banner', async () => {
+    const chapter = {
+      id: 'c1',
+      project_id: 'p1',
+      parent_chapter_id: null,
+      title: 'Chapter 1',
+      order: 0,
+      created_at: 'now',
+      accepted_content: 'Existing paragraph.',
+      accepted_manifest: [{ id: 'b1', content: 'Existing paragraph.', content_hash: 'h1', order: 0 }],
+      pending_draft: null,
+    }
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [chapter] }
+    const anchorVersion = {
+      id: 'v2',
+      chapter_id: 'c1',
+      version_number: 2,
+      content: 'Existing paragraph.\nInserted sentence.',
+      created_at: 'now',
+      status: 'draft' as const,
+      parent_version_id: null,
+    }
+    const generateResponse = {
+      version: anchorVersion,
+      precheck: { plagiarism_score: 0, ai_fingerprint_score: 0, flagged: false, reasons: [] },
+      unmet_required_sources: [],
+      used_block_id: 'b2',
+      rerouted_from_block_id: 'b1',
+    }
+
+    const fetchMock = createFetchMock([
+      jsonResponse(project, true, 201),
+      jsonResponse(generateResponse, true, 201),
+      jsonResponse(project), // title-sync refetch fired after the generate call resolves
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+    await enterWorkspace()
+
+    fireEvent.click(await screen.findByRole('button', { name: strings.documentBlockInsertHereLabel }))
+    expect(await screen.findByText(strings.chatInsertingAtIndicator)).toBeInTheDocument()
+
+    const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
+    fireEvent.change(input, { target: { value: 'Insert a sentence here' } })
+    fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:8010/projects/p1/chapters/c1/generate',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ instruction: 'Insert a sentence here', target_block_id: 'b1' }),
+        }),
+      )
+    })
+    // No SSE stream was opened for anchor-mode generation (TASK-E15-3 scope: anchor mode only
+    // goes through the non-streaming `generateChapterDraft`).
+    expect(MockEventSource.instances).toHaveLength(0)
+
+    expect(await screen.findByText(strings.diffRerouteNoticeMessage)).toBeInTheDocument()
+    // The anchor selection indicator clears once generation starts.
+    expect(screen.queryByText(strings.chatInsertingAtIndicator)).not.toBeInTheDocument()
+  })
+
+  it('only offers the "insert here" toggle on the first chapter, since chat generation always targets chapters[0]', async () => {
+    const firstChapter = {
+      id: 'c1',
+      project_id: 'p1',
+      parent_chapter_id: null,
+      title: 'Chapter 1',
+      order: 0,
+      created_at: 'now',
+      accepted_content: 'First chapter paragraph.',
+      accepted_manifest: [{ id: 'b1', content: 'First chapter paragraph.', content_hash: 'h1', order: 0 }],
+      pending_draft: null,
+    }
+    const secondChapter = {
+      id: 'c2',
+      project_id: 'p1',
+      parent_chapter_id: null,
+      title: 'Chapter 2',
+      order: 1,
+      created_at: 'now',
+      accepted_content: 'Second chapter paragraph.',
+      accepted_manifest: [{ id: 'b2', content: 'Second chapter paragraph.', content_hash: 'h2', order: 0 }],
+      pending_draft: null,
+    }
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [firstChapter, secondChapter] }
+
+    vi.stubGlobal('fetch', createFetchMock([jsonResponse(project, true, 201)]))
+
+    render(<App />)
+    await enterWorkspace()
+
+    await findVisibleByText('First chapter paragraph.')
+    await findVisibleByText('Second chapter paragraph.')
+
+    expect(await screen.findAllByRole('button', { name: strings.documentBlockInsertHereLabel })).toHaveLength(1)
+  })
+
+  it('shows a distinct message when anchor-mode generation fails because the chapter is fully locked (409)', async () => {
+    const chapter = {
+      id: 'c1',
+      project_id: 'p1',
+      parent_chapter_id: null,
+      title: 'Chapter 1',
+      order: 0,
+      created_at: 'now',
+      accepted_content: 'Existing paragraph.',
+      accepted_manifest: [{ id: 'b1', content: 'Existing paragraph.', content_hash: 'h1', order: 0 }],
+      pending_draft: null,
+    }
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [chapter] }
+
+    const fetchMock = createFetchMock([
+      jsonResponse(project, true, 201),
+      jsonResponse({ detail: 'chapter fully locked' }, false, 409),
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+    await enterWorkspace()
+
+    fireEvent.click(await screen.findByRole('button', { name: strings.documentBlockInsertHereLabel }))
+    const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
+    fireEvent.change(input, { target: { value: 'Insert a sentence here' } })
+    fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+
+    expect(await screen.findByText(strings.chatChapterFullyLockedMessage)).toBeInTheDocument()
+    expect(screen.queryByText(strings.chatGenerationErrorMessage)).not.toBeInTheDocument()
+  })
+
   it('rejecting a draft records a reject feedback signal and clears the pending draft', async () => {
     const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
     const chapter = {

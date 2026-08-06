@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ACCESS_TOKEN_STORAGE_KEY } from '../context/AuthContext'
 import {
+  RequestError,
   acceptDraft,
   createChapter,
   createProject,
@@ -170,6 +171,63 @@ describe('projectService', () => {
       }),
     )
     expect(result).toEqual(version)
+  })
+
+  it('generateChapterDraft includes target_block_id in the body when provided ("insert at anchor" mode, TASK-E15-3)', async () => {
+    const version = {
+      id: 'v1',
+      chapter_id: 'c1',
+      version_number: 1,
+      content: 'Generated text',
+      created_at: 'now',
+      status: 'draft' as const,
+      parent_version_id: null,
+      used_block_id: 'b1',
+      rerouted_from_block_id: null,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(version, true, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await generateChapterDraft('p1', 'c1', 'Write the intro', 'b1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects/p1/chapters/c1/generate`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ instruction: 'Write the intro', target_block_id: 'b1' }),
+      }),
+    )
+  })
+
+  it('generateChapterDraft omits target_block_id when not provided (backward compatibility)', async () => {
+    const version = {
+      id: 'v1',
+      chapter_id: 'c1',
+      version_number: 1,
+      content: 'Generated text',
+      created_at: 'now',
+      status: 'draft' as const,
+      parent_version_id: null,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(version, true, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await generateChapterDraft('p1', 'c1', 'Write the intro')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects/p1/chapters/c1/generate`,
+      expect.objectContaining({ body: JSON.stringify({ instruction: 'Write the intro' }) }),
+    )
+  })
+
+  it('generateChapterDraft rejects with a RequestError exposing status 409 on a fully-locked chapter', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: 'chapter fully locked' }, false, 409))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(generateChapterDraft('p1', 'c1', 'Write the intro', 'b1')).rejects.toMatchObject({
+      status: 409,
+    })
+    await expect(generateChapterDraft('p1', 'c1', 'Write the intro', 'b1')).rejects.toBeInstanceOf(RequestError)
   })
 
   it('acceptDraft posts to /versions/{id}/accept', async () => {

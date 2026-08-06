@@ -18,6 +18,12 @@ export interface DocumentPreviewProps {
    * read-only, e.g. for a chapter with no accepted content yet. */
   chapterId?: string | null
   acceptedManifest?: ManifestBlock[] | null
+  /** Currently selected "insert at anchor" block id (TASK-E15-3), if any. Requires `chapterId`/
+   * `acceptedManifest` and `onSelectAnchor` together to enable the "insert here" toggle UI. */
+  selectedAnchorBlockId?: string | null
+  /** Called with the newly selected block's id, or `null` to clear the selection (re-selecting
+   * the already-selected block). Omit to render without anchor-selection toggles. */
+  onSelectAnchor?: (blockId: string | null) => void
 }
 
 /**
@@ -35,6 +41,8 @@ export function DocumentPreview({
   institutionConfig = null,
   chapterId = null,
   acceptedManifest = null,
+  selectedAnchorBlockId = null,
+  onSelectAnchor,
 }: DocumentPreviewProps) {
   const { lockedBlockIds, toggleLock } = useChapterLocks(chapterId)
 
@@ -48,6 +56,15 @@ export function DocumentPreview({
     chapterId !== null && acceptedManifest !== null
       ? { lockableBlocks: acceptedManifest, lockedBlockIds, onToggleLock: (block: ManifestBlock) => void toggleLock(block) }
       : undefined
+  const anchorSelection =
+    chapterId !== null && acceptedManifest !== null && onSelectAnchor
+      ? {
+          anchorableBlocks: acceptedManifest,
+          selectedBlockId: selectedAnchorBlockId,
+          onSelect: (block: ManifestBlock) =>
+            onSelectAnchor(selectedAnchorBlockId === block.id ? null : block.id),
+        }
+      : undefined
 
   return (
     <div className="document-preview">
@@ -57,6 +74,7 @@ export function DocumentPreview({
         headingStyle={(level) => getHeadingStyle(institutionConfig, level)}
         emptyMessage={strings.chapterContentEmpty}
         lockSelection={lockSelection}
+        anchorSelection={anchorSelection}
       />
     </div>
   )

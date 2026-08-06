@@ -115,4 +115,67 @@ describe('DocumentPreview', () => {
       })
     })
   })
+
+  describe('anchor selection', () => {
+    beforeEach(() => {
+      vi.stubEnv('VITE_API_BASE_URL', BASE_URL)
+    })
+
+    afterEach(() => {
+      vi.unstubAllEnvs()
+      vi.unstubAllGlobals()
+    })
+
+    it('renders no "insert here" toggles when onSelectAnchor is omitted', () => {
+      const acceptedManifest = [{ id: 'b1', content: 'Some prose.', content_hash: 'h1', order: 0 }]
+      const { container } = render(
+        <DocumentPreview content="Some prose." chapterId="c1" acceptedManifest={acceptedManifest} />,
+      )
+      const page = within(container.querySelector('.document-page:not(.document-page--measure)') as HTMLElement)
+
+      expect(page.queryByRole('button', { name: strings.documentBlockInsertHereLabel })).not.toBeInTheDocument()
+    })
+
+    it('calls onSelectAnchor with the block id when its "insert here" toggle is clicked', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse([])))
+      const acceptedManifest = [{ id: 'b1', content: 'Some prose.', content_hash: 'h1', order: 0 }]
+      const onSelectAnchor = vi.fn()
+
+      const { container } = render(
+        <DocumentPreview
+          content="Some prose."
+          chapterId="c1"
+          acceptedManifest={acceptedManifest}
+          selectedAnchorBlockId={null}
+          onSelectAnchor={onSelectAnchor}
+        />,
+      )
+      const page = within(container.querySelector('.document-page:not(.document-page--measure)') as HTMLElement)
+
+      fireEvent.click(await page.findByRole('button', { name: strings.documentBlockInsertHereLabel }))
+
+      expect(onSelectAnchor).toHaveBeenCalledWith('b1')
+    })
+
+    it('clicking the already-selected block clears the selection', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse([])))
+      const acceptedManifest = [{ id: 'b1', content: 'Some prose.', content_hash: 'h1', order: 0 }]
+      const onSelectAnchor = vi.fn()
+
+      const { container } = render(
+        <DocumentPreview
+          content="Some prose."
+          chapterId="c1"
+          acceptedManifest={acceptedManifest}
+          selectedAnchorBlockId="b1"
+          onSelectAnchor={onSelectAnchor}
+        />,
+      )
+      const page = within(container.querySelector('.document-page:not(.document-page--measure)') as HTMLElement)
+
+      fireEvent.click(await page.findByRole('button', { name: strings.documentBlockInsertHereSelectedLabel }))
+
+      expect(onSelectAnchor).toHaveBeenCalledWith(null)
+    })
+  })
 })

@@ -12,7 +12,7 @@ import { PlagiarismCheckPanel } from './components/PlagiarismCheckPanel'
 import { ProjectLanding } from './components/ProjectLanding'
 import { exportProject } from './services/exportService'
 import { recordSignal } from './services/feedbackService'
-import { acceptDraft, createChapter, getProject } from './services/projectService'
+import { RequestError, acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
 import { streamChapterDraft } from './services/generateStream'
 import { toDocumentState } from './utils/mapProject'
 
@@ -30,6 +30,18 @@ function ChatPanel() {
       ),
     }))
   }
+
+  const clearChapterAnchor = (chapterId: string) => {
+    setDocument((previous) => ({
+      ...previous,
+      chapters: previous.chapters.map((existing) =>
+        existing.id === chapterId ? { ...existing, selectedAnchorBlockId: null } : existing,
+      ),
+    }))
+  }
+
+  const anchorChapter = doc.chapters[0]
+  const selectedAnchorBlockId = anchorChapter?.selectedAnchorBlockId ?? null
 
   const handleSend = async () => {
     const text = inputValue.trim()
@@ -53,11 +65,60 @@ function ChatPanel() {
           acceptedManifest: created.accepted_manifest,
           pendingDraft: created.pending_draft,
           streamingContent: null,
+          selectedAnchorBlockId: null,
+          pendingDraftReroute: null,
         }
         setDocument((previous) => ({ ...previous, chapters: [...previous.chapters, chapter] }))
       }
 
       const chapterId = chapter.id
+      // "Insert at anchor" mode (TASK-E15-1/3): a block was selected via the "insert here"
+      // toggle in DocumentPreview. Clear the selection now — before generation starts, per this
+      // task's spec — rather than only on accept/reject, so a stale selection can't silently
+      // reapply to an unrelated follow-up instruction.
+      const anchorBlockId = chapter.selectedAnchorBlockId
+      if (anchorBlockId !== null) {
+        clearChapterAnchor(chapterId)
+      }
+
+      if (anchorBlockId !== null) {
+        try {
+          const result = await generateChapterDraft(projectId, chapterId, text, anchorBlockId)
+          setDocument((previous) => ({
+            ...previous,
+            chapters: previous.chapters.map((existing) =>
+              existing.id === chapterId
+                ? {
+                    ...existing,
+                    pendingDraft: result.version,
+                    pendingDraftReroute: result.rerouted_from_block_id
+                      ? { requestedBlockId: result.rerouted_from_block_id, usedBlockId: result.used_block_id ?? '' }
+                      : null,
+                    streamingContent: null,
+                  }
+                : existing,
+            ),
+          }))
+          appendMessage({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            text: result.precheck.flagged ? strings.chatDraftFlaggedMessage : strings.chatDraftReadyMessage,
+          })
+          void getProject(projectId)
+            .then((project) => {
+              setDocument((previous) => ({ ...previous, title: project.title }))
+            })
+            .catch(() => {})
+        } catch (error) {
+          const message =
+            error instanceof RequestError && error.status === 409
+              ? strings.chatChapterFullyLockedMessage
+              : strings.chatGenerationErrorMessage
+          appendMessage({ id: crypto.randomUUID(), role: 'assistant', text: message })
+        }
+        return
+      }
+
       let streamedText = ''
       setChapterStreamingContent(chapterId, '')
 
@@ -72,7 +133,7 @@ function ChatPanel() {
               ...previous,
               chapters: previous.chapters.map((existing) =>
                 existing.id === chapterId
-                  ? { ...existing, pendingDraft: draft, streamingContent: null }
+                  ? { ...existing, pendingDraft: draft, pendingDraftReroute: null, streamingContent: null }
                   : existing,
               ),
             }))
@@ -123,6 +184,14 @@ function ChatPanel() {
           ))
         )}
       </div>
+      {selectedAnchorBlockId !== null && anchorChapter && (
+        <div className="chat-anchor-indicator">
+          <span>{strings.chatInsertingAtIndicator}</span>
+          <button type="button" onClick={() => clearChapterAnchor(anchorChapter.id)}>
+            {strings.chatCancelInsertionPointButton}
+          </button>
+        </div>
+      )}
       <form
         className="chat-form"
         onSubmit={(event) => {
@@ -163,7 +232,7 @@ function DocumentPanel() {
     setDocument((previous) => ({
       ...previous,
       chapters: previous.chapters.map((chapter) =>
-        chapter.id === chapterId ? { ...chapter, pendingDraft: null } : chapter,
+        chapter.id === chapterId ? { ...chapter, pendingDraft: null, pendingDraftReroute: null } : chapter,
       ),
     }))
   }
@@ -175,7 +244,16 @@ function DocumentPanel() {
     setDocument((previous) => ({
       ...previous,
       chapters: previous.chapters.map((chapter) =>
-        chapter.id === chapterId ? { ...chapter, pendingDraft: null } : chapter,
+        chapter.id === chapterId ? { ...chapter, pendingDraft: null, pendingDraftReroute: null } : chapter,
+      ),
+    }))
+  }
+
+  const setChapterAnchor = (chapterId: string, blockId: string | null) => {
+    setDocument((previous) => ({
+      ...previous,
+      chapters: previous.chapters.map((chapter) =>
+        chapter.id === chapterId ? { ...chapter, selectedAnchorBlockId: blockId } : chapter,
       ),
     }))
   }
@@ -187,8 +265,12 @@ function DocumentPanel() {
         <p className="document-empty">{strings.documentEmpty}</p>
       ) : (
         <ul className="chapter-list">
-          {doc.chapters.map((chapter) => {
+          {doc.chapters.map((chapter, index) => {
             const { pendingDraft, streamingContent } = chapter
+            // ChatPanel.handleSend only ever generates into doc.chapters[0] (there is no
+            // chapter-picker concept yet), so the "insert here" toggle must only be offered
+            // there too — otherwise a selection on any other chapter would be inert.
+            const isChatTargetChapter = index === 0
             return (
               <li key={chapter.id} className="chapter-item">
                 <h3>{chapter.title}</h3>
@@ -197,6 +279,8 @@ function DocumentPanel() {
                   institutionConfig={institutionConfig}
                   chapterId={chapter.id}
                   acceptedManifest={chapter.acceptedManifest}
+                  selectedAnchorBlockId={chapter.selectedAnchorBlockId}
+                  onSelectAnchor={isChatTargetChapter ? (blockId) => setChapterAnchor(chapter.id, blockId) : undefined}
                 />
                 {/* Live SSE preview (ADR-0009): shown while tokens are still arriving, before
                     `pendingDraft`/`DiffViewer` take over once `done` fires. Reuses
@@ -214,6 +298,7 @@ function DocumentPanel() {
                     onAccept={() => void handleAccept(chapter.id, pendingDraft.id)}
                     onReject={() => handleReject(chapter.id, pendingDraft.id)}
                     institutionConfig={institutionConfig}
+                    rerouteNotice={chapter.pendingDraftReroute}
                   />
                 )}
               </li>

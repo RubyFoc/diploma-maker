@@ -19,6 +19,8 @@ export function toDocumentState(project: ProjectDetail, institutionId: string | 
       acceptedManifest: chapter.accepted_manifest,
       pendingDraft: chapter.pending_draft,
       streamingContent: null,
+      selectedAnchorBlockId: null,
+      pendingDraftReroute: null,
     })),
     // Always starts empty: pending required sources (TASK-E14-4) are onboarding-scoped and
     // either already flushed by `useNewProject` or belong to a project this fetch didn't create.

@@ -59,3 +59,18 @@
 .document-block-lock-toggle--locked {
   opacity: 1;
 }
+
+.document-block-anchor-toggle {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.5;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: var(--space-1);
+}
+
+.document-block-anchor-toggle--selected {
+  opacity: 1;
+}

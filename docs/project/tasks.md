@@ -254,7 +254,7 @@ E15, depends on E13 and E08; must run strictly after E13, before E16 (not in par
 | --- | --- | --- | --- | --- |
 | TASK-E15-1 | "Insert at anchor" generation mode targeting a `block_id` in the `llm_routing`/generation pipeline | E15 | python-developer | done |
 | TASK-E15-2 | Deterministic post-generation lock guard: locked spans stay in the prompt as read-only context; enforcement recomputes hash-freshness (ADR-0011) and rejects-and-reroutes with an explicit alternative anchor if the proposed anchor overlaps a lock — never trust the model's promise alone | E15 | python-developer | done |
-| TASK-E15-3 | Frontend surfacing of a reject-and-reroute outcome in the diff viewer | E15 | frontend-developer | todo |
+| TASK-E15-3 | Frontend surfacing of a reject-and-reroute outcome in the diff viewer | E15 | frontend-developer | done |
 
 ## Phase 12 — Multi-Granularity History & Undo/Redo
 

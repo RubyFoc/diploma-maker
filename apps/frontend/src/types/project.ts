@@ -95,6 +95,13 @@ export interface GenerateDraftResult {
   /** Must-cite sources (TASK-E14) this generation call couldn't ground — see backend
    * `GenerateDraftResponse.unmet_required_sources` for the fail-open rationale. */
   unmet_required_sources: string[]
+  /** The block id the draft was actually anchored to in "insert at anchor" mode (TASK-E15-1/2/3,
+   * ADR-0011); `null` in full-chapter generation mode. */
+  used_block_id: string | null
+  /** Set only when the requested `target_block_id` was locked and the backend deterministically
+   * rerouted to a different unlocked anchor (TASK-E15-2) — holds the originally-requested block
+   * id so the frontend can explain the reroute. `null` otherwise. */
+  rerouted_from_block_id: string | null
 }
 
 // Mirrors the backend's `sources.required.RequiredSource` (TASK-E14-1).

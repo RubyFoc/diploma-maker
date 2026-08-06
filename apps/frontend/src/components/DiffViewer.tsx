@@ -21,6 +21,13 @@ export interface DiffViewerProps {
   onReject: () => void
   /** The project's institution formatting config, if loaded, for page size/font/heading styling. */
   institutionConfig?: InstitutionConfig | null
+  /** Set when this pending draft was generated in "insert at anchor" mode (TASK-E15-1) and the
+   * requested anchor was locked, so the backend deterministically rerouted to a different
+   * unlocked block (TASK-E15-2, ADR-0011). `null`/omitted renders no banner — full-chapter
+   * drafts and anchor-mode drafts that landed on the requested block both fall here. Deliberately
+   * not the raw API response shape (`used_block_id`/`rerouted_from_block_id`), per this
+   * component's presentational-only contract. */
+  rerouteNotice?: { requestedBlockId: string; usedBlockId: string } | null
 }
 
 interface TaggedBlock {
@@ -61,7 +68,14 @@ function buildTaggedBlocks(before: string, after: string): TaggedBlock[] {
  * — a block a user might select here isn't a stable target to lock against. `DocumentPreview`
  * (rendering the accepted content on its own) is where lock selection lives.
  */
-export function DiffViewer({ before, after, onAccept, onReject, institutionConfig = null }: DiffViewerProps) {
+export function DiffViewer({
+  before,
+  after,
+  onAccept,
+  onReject,
+  institutionConfig = null,
+  rerouteNotice = null,
+}: DiffViewerProps) {
   const taggedBlocks = buildTaggedBlocks(before, after)
   const pageStyle = getPageStyle(institutionConfig)
 
@@ -77,6 +91,11 @@ export function DiffViewer({ before, after, onAccept, onReject, institutionConfi
   return (
     <section className="diff-viewer" aria-label={strings.diffViewerTitle}>
       <h3>{strings.diffViewerTitle}</h3>
+      {rerouteNotice && (
+        <p className="diff-reroute-notice" role="status">
+          {strings.diffRerouteNoticeMessage}
+        </p>
+      )}
       {taggedBlocks.length === 0 ? (
         <p>{strings.diffEmpty}</p>
       ) : (
