@@ -216,7 +216,7 @@ E13, depends on E12 and E06; needs ADR-0011 (lock anchor).
 | TASK-E13-2 | Persist a block manifest per `ChapterVersion` (replacing opaque string content as the sole representation) | E13 | python-developer | done |
 | TASK-E13-3 | Draft upload/ingestion endpoint that parses an uploaded draft into manifest blocks | E13 | python-developer | done |
 | TASK-E13-4 | Lock/unlock endpoints (`POST`/`DELETE /chapters/{id}/locks`) with hash-freshness check (fail-closed on stale lock) | E13 | python-developer | done |
-| TASK-E13-5 | Lock/unlock selection UI in `DiffViewer`/`PaginatedDocument` (UI-selection only, no inline markers) | E13 | frontend-developer | todo |
+| TASK-E13-5 | Lock/unlock selection UI in `DiffViewer`/`PaginatedDocument` (UI-selection only, no inline markers) | E13 | frontend-developer | done |
 
 ## Phase 10 — Required-Authors/Citation-Grounding Onboarding Input
 

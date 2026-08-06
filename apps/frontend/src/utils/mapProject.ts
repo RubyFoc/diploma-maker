@@ -16,6 +16,7 @@ export function toDocumentState(project: ProjectDetail, institutionId: string | 
       id: chapter.id,
       title: chapter.title,
       content: chapter.accepted_content ?? '',
+      acceptedManifest: chapter.accepted_manifest,
       pendingDraft: chapter.pending_draft,
       streamingContent: null,
     })),

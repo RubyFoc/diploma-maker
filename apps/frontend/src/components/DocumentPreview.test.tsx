@@ -1,7 +1,18 @@
-import { render, screen, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentPreview } from './DocumentPreview'
 import { strings } from '../strings'
+
+const BASE_URL = 'http://localhost:8010'
+
+function jsonResponse(body: unknown, ok = true, status = 200) {
+  return {
+    ok,
+    status,
+    json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body)),
+  } as Response
+}
 
 // `PaginatedDocument` renders an off-screen, `aria-hidden` measuring pass alongside the
 // visible page to compute pagination — both contain the same content, so plain
@@ -41,5 +52,67 @@ describe('DocumentPreview', () => {
     expect(page.getByTestId('preview-figure-placeholder')).toHaveTextContent(
       '[FIGURE PLACEHOLDER: quarterly revenue chart]',
     )
+  })
+
+  describe('lock selection', () => {
+    beforeEach(() => {
+      vi.stubEnv('VITE_API_BASE_URL', BASE_URL)
+    })
+
+    afterEach(() => {
+      vi.unstubAllEnvs()
+      vi.unstubAllGlobals()
+    })
+
+    it('renders lock toggles when both chapterId and acceptedManifest are provided', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse([])))
+      const acceptedManifest = [{ id: 'b1', content: 'Some prose.', content_hash: 'h1', order: 0 }]
+
+      const { container } = render(
+        <DocumentPreview content="Some prose." chapterId="c1" acceptedManifest={acceptedManifest} />,
+      )
+
+      await waitFor(() => {
+        const page = within(container.querySelector('.document-page:not(.document-page--measure)') as HTMLElement)
+        expect(page.getByRole('button', { name: strings.documentBlockLockLabel })).toBeInTheDocument()
+      })
+    })
+
+    it('renders no lock toggles when chapterId/acceptedManifest are omitted', () => {
+      const { container } = render(<DocumentPreview content="Some prose." />)
+      const page = within(container.querySelector('.document-page:not(.document-page--measure)') as HTMLElement)
+
+      expect(page.queryByRole('button')).not.toBeInTheDocument()
+    })
+
+    it('clicking a lock toggle posts a lock for that block', async () => {
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return Promise.resolve(
+            jsonResponse(
+              { id: 'l1', chapter_id: 'c1', block_id: 'b1', block_content_hash: 'h1', char_range: null, created_at: 'now' },
+              true,
+              201,
+            ),
+          )
+        }
+        return Promise.resolve(jsonResponse([]))
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const acceptedManifest = [{ id: 'b1', content: 'Some prose.', content_hash: 'h1', order: 0 }]
+
+      const { container } = render(
+        <DocumentPreview content="Some prose." chapterId="c1" acceptedManifest={acceptedManifest} />,
+      )
+      const page = within(container.querySelector('.document-page:not(.document-page--measure)') as HTMLElement)
+      fireEvent.click(await page.findByRole('button', { name: strings.documentBlockLockLabel }))
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          `${BASE_URL}/chapters/c1/locks`,
+          expect.objectContaining({ method: 'POST' }),
+        )
+      })
+    })
   })
 })

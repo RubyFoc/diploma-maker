@@ -50,6 +50,7 @@ function ChatPanel() {
           id: created.id,
           title: created.title,
           content: created.accepted_content ?? '',
+          acceptedManifest: created.accepted_manifest,
           pendingDraft: created.pending_draft,
           streamingContent: null,
         }
@@ -191,7 +192,12 @@ function DocumentPanel() {
             return (
               <li key={chapter.id} className="chapter-item">
                 <h3>{chapter.title}</h3>
-                <DocumentPreview content={chapter.content} institutionConfig={institutionConfig} />
+                <DocumentPreview
+                  content={chapter.content}
+                  institutionConfig={institutionConfig}
+                  chapterId={chapter.id}
+                  acceptedManifest={chapter.acceptedManifest}
+                />
                 {/* Live SSE preview (ADR-0009): shown while tokens are still arriving, before
                     `pendingDraft`/`DiffViewer` take over once `done` fires. Reuses
                     `DocumentPreview` rather than a new component since it already renders

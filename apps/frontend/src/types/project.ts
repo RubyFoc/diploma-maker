@@ -4,11 +4,38 @@
 
 export type ChapterVersionStatus = 'accepted' | 'draft'
 
+// Mirrors the backend's `locks.models.Block` (ADR-0011, TASK-E13-1/2): one lockable block within
+// a chapter version's content. Named `ManifestBlock` here (not `Block`) to avoid colliding with
+// `utils/renderMarkdownPreview`'s unrelated markdown-rendering `Block` type — see
+// `hooks/useChapterLocks.ts` for why the two don't line up block-for-block.
+export interface ManifestBlock {
+  id: string
+  content: string
+  content_hash: string
+  order: number
+}
+
+export interface CharRange {
+  start: number
+  end: number
+}
+
+// Mirrors the backend's `locks.models.Lock` (TASK-E13-4).
+export interface Lock {
+  id: string
+  chapter_id: string
+  block_id: string
+  block_content_hash: string
+  char_range: CharRange | null
+  created_at: string
+}
+
 export interface ChapterVersion {
   id: string
   chapter_id: string
   version_number: number
   content: string
+  manifest: ManifestBlock[] | null
   created_at: string
   status: ChapterVersionStatus
   parent_version_id: string | null
@@ -23,6 +50,9 @@ export interface ChapterDetail {
   order: number
   created_at: string
   accepted_content: string | null
+  /** The accepted version's block manifest (ADR-0011), for lock-selection UI (TASK-E13-5). `null`
+   * if there's no accepted version yet, or it predates block manifests. */
+  accepted_manifest: ManifestBlock[] | null
   pending_draft: ChapterVersion | null
 }
 

@@ -1,8 +1,10 @@
 import { parseBlocks } from '../utils/renderMarkdownPreview'
 import { getHeadingStyle, getPageStyle } from '../utils/institutionPageStyle'
+import { useChapterLocks } from '../hooks/useChapterLocks'
 import { PaginatedDocument } from './PaginatedDocument'
 import { strings } from '../strings'
 import type { InstitutionConfig } from '../types/institution'
+import type { ManifestBlock } from '../types/project'
 import './DocumentPreview.css'
 import './DocumentPage.css'
 
@@ -11,6 +13,11 @@ export interface DocumentPreviewProps {
   content: string
   /** The project's institution formatting config, if loaded, for page size/font/heading styling. */
   institutionConfig?: InstitutionConfig | null
+  /** The chapter this content belongs to, and its accepted version's block manifest — both
+   * required together to enable the lock-selection UI (TASK-E13-5); omit either to render
+   * read-only, e.g. for a chapter with no accepted content yet. */
+  chapterId?: string | null
+  acceptedManifest?: ManifestBlock[] | null
 }
 
 /**
@@ -23,13 +30,24 @@ export interface DocumentPreviewProps {
  * Accept in the diff-viewer flow updates `DocumentContext`'s state), so the preview is
  * "live" for free.
  */
-export function DocumentPreview({ content, institutionConfig = null }: DocumentPreviewProps) {
+export function DocumentPreview({
+  content,
+  institutionConfig = null,
+  chapterId = null,
+  acceptedManifest = null,
+}: DocumentPreviewProps) {
+  const { lockedBlockIds, toggleLock } = useChapterLocks(chapterId)
+
   if (content === '') {
     return <p className="document-preview-empty">{strings.chapterContentEmpty}</p>
   }
 
   const blocks = parseBlocks(content)
   const pageStyle = getPageStyle(institutionConfig)
+  const lockSelection =
+    chapterId !== null && acceptedManifest !== null
+      ? { lockableBlocks: acceptedManifest, lockedBlockIds, onToggleLock: (block: ManifestBlock) => void toggleLock(block) }
+      : undefined
 
   return (
     <div className="document-preview">
@@ -38,6 +56,7 @@ export function DocumentPreview({ content, institutionConfig = null }: DocumentP
         pageStyle={pageStyle}
         headingStyle={(level) => getHeadingStyle(institutionConfig, level)}
         emptyMessage={strings.chapterContentEmpty}
+        lockSelection={lockSelection}
       />
     </div>
   )

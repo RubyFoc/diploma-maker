@@ -94,4 +94,6 @@ export const strings = {
   chapterTreeAddSubchapterConfirmButton: 'Add',
   chapterTreeAddSubchapterCancelButton: 'Cancel',
   chapterTreeAddSubchapterErrorMessage: 'Failed to add subchapter. Please try again.',
+  documentBlockLockLabel: 'Lock this block (protect it from future AI edits)',
+  documentBlockUnlockLabel: 'Unlock this block',
 } as const

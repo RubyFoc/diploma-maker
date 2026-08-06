@@ -13,7 +13,17 @@ import type { CSSProperties, ReactNode } from 'react'
 import { renderBlock as defaultRenderBlock } from '../utils/renderMarkdownPreview'
 import type { Block } from '../utils/renderMarkdownPreview'
 import { strings } from '../strings'
+import type { ManifestBlock } from '../types/project'
 import './PaginatedDocument.css'
+
+export interface LockSelectionProps {
+  /** The chapter's block manifest (ADR-0011), in `order`. Matched positionally against the
+   * rendered `blocks` array — see `PaginatedDocument`'s doc comment for why this is only exact
+   * for list-free prose, and approximate otherwise. */
+  lockableBlocks: ManifestBlock[]
+  lockedBlockIds: Set<string>
+  onToggleLock: (block: ManifestBlock) => void
+}
 
 export interface PaginatedDocumentProps {
   blocks: Block[]
@@ -21,6 +31,10 @@ export interface PaginatedDocumentProps {
   headingStyle?: (level: 1 | 2 | 3) => CSSProperties
   renderBlock?: (block: Block, key: number) => ReactNode
   emptyMessage?: string
+  /** Renders a lock/unlock toggle beside each rendered block when provided (TASK-E13-5). Omit
+   * entirely for read-only rendering (e.g. `DiffViewer`, where locking mid-diff-review doesn't
+   * apply — see that component's doc comment). */
+  lockSelection?: LockSelectionProps
 }
 
 function headingLevel(block: Block): 1 | 2 | 3 | null {
@@ -30,12 +44,28 @@ function headingLevel(block: Block): 1 | 2 | 3 | null {
   return null
 }
 
+/**
+ * Renders `blocks` as paginated "paper sheet" pages (TASK-E10-4), optionally with a lock/unlock
+ * toggle beside each block (`lockSelection`, TASK-E13-5, ADR-0011).
+ *
+ * Lock/unlock note: `lockSelection.lockableBlocks` is the backend's block manifest — one entry
+ * per non-blank *line* of the chapter's raw content (`locks.models.split_into_blocks`) — matched
+ * here purely by array position against `blocks`, this component's semantically-parsed render
+ * blocks (headings/paragraphs/lists; see `utils/renderMarkdownPreview`). The two line up exactly
+ * for list-free prose (a heading or paragraph is always exactly one manifest line), which is the
+ * common case for thesis body text. They diverge for `ul`/`ol`: several manifest lines (one per
+ * list item) collapse into a single rendered list block, so locking that one visual block only
+ * locks the manifest block sharing its position, not every item in the list. Acceptable for this
+ * first UI-selection pass (no inline markers, per TASK-E13-5's own scope) — sub-block precision
+ * exists in the model (`ManifestBlock`/`Lock.char_range`) for a later refinement.
+ */
 export function PaginatedDocument({
   blocks,
   pageStyle,
   headingStyle,
   renderBlock,
   emptyMessage,
+  lockSelection,
 }: PaginatedDocumentProps) {
   const renderFn = renderBlock ?? defaultRenderBlock
   const measureRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -124,7 +154,32 @@ export function PaginatedDocument({
 
       <div className="document-page" style={pageStyle}>
         <div className="document-page-content">
-          {currentBlockIndices.map((blockIndex) => wrapBlock(blocks[blockIndex], blockIndex))}
+          {currentBlockIndices.map((blockIndex) => {
+            const rendered = wrapBlock(blocks[blockIndex], blockIndex)
+            if (!lockSelection) {
+              return rendered
+            }
+            const lockableBlock = lockSelection.lockableBlocks[blockIndex]
+            if (!lockableBlock) {
+              return rendered
+            }
+            const isLocked = lockSelection.lockedBlockIds.has(lockableBlock.id)
+            return (
+              <div key={blockIndex} className="document-block-with-lock">
+                <button
+                  type="button"
+                  className={isLocked ? 'document-block-lock-toggle document-block-lock-toggle--locked' : 'document-block-lock-toggle'}
+                  onClick={() => lockSelection.onToggleLock(lockableBlock)}
+                  aria-pressed={isLocked}
+                  aria-label={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
+                  title={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
+                >
+                  {isLocked ? '🔒' : '🔓'}
+                </button>
+                <div className="document-block-with-lock-content">{rendered}</div>
+              </div>
+            )
+          })}
         </div>
       </div>
 

@@ -98,6 +98,13 @@ function createFetchMock(queued: Response[] = []) {
     if (String(url).endsWith('/projects') && (!init?.method || init.method === 'GET')) {
       return Promise.resolve(jsonResponse([]))
     }
+    // `useChapterLocks` (TASK-E13-5) fetches `/chapters/{id}/locks` independently of the queued
+    // responses below whenever `DocumentPreview` renders a chapter's accepted content — respond
+    // with an empty lock list rather than consuming a queue slot, same reasoning as
+    // institution-configs/projects above.
+    if (/\/chapters\/.+\/locks$/.test(String(url)) && (!init?.method || init.method === 'GET')) {
+      return Promise.resolve(jsonResponse([]))
+    }
     const next = queue.shift()
     return Promise.resolve(next ?? jsonResponse({ detail: 'unexpected request' }, false, 500))
   })

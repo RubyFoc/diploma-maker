@@ -54,6 +54,12 @@ function buildTaggedBlocks(before: string, after: string): TaggedBlock[] {
  * controls. This component has no knowledge of versions, chapters, or APIs — it only
  * diffs two strings and calls back to whatever the caller wires up (matching the
  * hook/service split used by `useNewProject`/`projectService.ts`).
+ *
+ * Deliberately does NOT wire `PaginatedDocument`'s `lockSelection` prop (TASK-E13-5): locks
+ * anchor only to the chapter's current *accepted* content (ADR-0011, `locks.service.lock_block`),
+ * and this view mixes that accepted content with a still-pending, possibly-to-be-rejected draft
+ * — a block a user might select here isn't a stable target to lock against. `DocumentPreview`
+ * (rendering the accepted content on its own) is where lock selection lives.
  */
 export function DiffViewer({ before, after, onAccept, onReject, institutionConfig = null }: DiffViewerProps) {
   const taggedBlocks = buildTaggedBlocks(before, after)
