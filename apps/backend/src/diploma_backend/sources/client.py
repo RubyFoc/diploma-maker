@@ -214,4 +214,4 @@ def delete_project_vectors(project_id: str) -> None:
     cascade now so the call site already exists once project-scoped ingestion (and a real
     `project_id` payload field) lands.
     """
-    return None
+    return
