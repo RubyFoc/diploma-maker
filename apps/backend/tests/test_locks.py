@@ -4,7 +4,14 @@ Pure model/helper tests, no DB access — persisting a manifest (TASK-E13-2) and
 an uploaded draft (TASK-E13-3) are separate follow-up tasks with their own tests.
 """
 
-from diploma_backend.locks.models import Block, build_block, build_manifest, hash_block_content
+from diploma_backend.locks.models import (
+    Block,
+    build_block,
+    build_manifest,
+    build_manifest_from_text,
+    hash_block_content,
+    split_into_blocks,
+)
 
 
 def test_hash_block_content_is_deterministic() -> None:
@@ -50,6 +57,29 @@ def test_build_manifest_assigns_distinct_ids_to_every_block() -> None:
 
     ids = [block.id for block in manifest]
     assert len(ids) == len(set(ids))
+
+
+def test_split_into_blocks_one_block_per_nonblank_line() -> None:
+    text = "First paragraph.\n\nSecond paragraph.\n   \nThird paragraph."
+
+    assert split_into_blocks(text) == [
+        "First paragraph.",
+        "Second paragraph.",
+        "Third paragraph.",
+    ]
+
+
+def test_split_into_blocks_blank_text_returns_empty_list() -> None:
+    assert split_into_blocks("") == []
+    assert split_into_blocks("\n\n   \n") == []
+
+
+def test_build_manifest_from_text_composes_split_and_build() -> None:
+    manifest = build_manifest_from_text("Para one.\nPara two.")
+
+    assert [block.content for block in manifest] == ["Para one.", "Para two."]
+    assert manifest[0].content_hash == hash_block_content("Para one.")
+    assert manifest[1].order == 1
 
 
 def test_recomputed_hash_mismatch_signals_stale_content() -> None:

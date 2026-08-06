@@ -14,6 +14,7 @@ the lock/unlock endpoints themselves (TASK-E13-4) are separate follow-up tasks.
 
 import hashlib
 import uuid
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
@@ -62,3 +63,53 @@ def build_manifest(block_contents: list[str]) -> list[Block]:
     job — this function only needs that split already done.
     """
     return [build_block(content, order) for order, content in enumerate(block_contents)]
+
+
+def split_into_blocks(text: str) -> list[str]:
+    """Split `text` into one block per non-blank line, matching how content already flows
+    through this codebase: `humanizer`/`llm_routing` produce one paragraph per line, and
+    `plagiarism.extract.extract_text_from_docx` extracts one `.docx` paragraph per line (joined
+    with `"\\n"`, blank paragraphs already dropped) — splitting on `"\\n"` here exactly recovers
+    that paragraph structure rather than re-guessing block boundaries from scratch. Blank lines
+    (including ones that are pure whitespace) are dropped; a completely blank/whitespace-only
+    `text` returns `[]`.
+    """
+    return [line.strip() for line in text.split("\n") if line.strip()]
+
+
+def build_manifest_from_text(text: str) -> list[Block]:
+    """Convenience composition of `split_into_blocks` + `build_manifest`: the one call
+    `versions.service.create_draft_version` (TASK-E13-2) and the draft-upload endpoint
+    (TASK-E13-3) both need to turn a chapter's raw `content` string into a persisted manifest.
+    """
+    return build_manifest(split_into_blocks(text))
+
+
+class CharRange(BaseModel):
+    """An intra-block character offset range, for sub-block lock precision (ADR-0011).
+
+    `start`/`end` are character offsets into the anchored `Block.content`, `start` inclusive and
+    `end` exclusive (Python slice convention: `block.content[start:end]`). Optional on `Lock` —
+    omitting it locks the entire block.
+    """
+
+    start: int
+    end: int
+
+
+class Lock(BaseModel):
+    """A user-placed protected range, anchored to a block in `chapter_id`'s current accepted
+    content (TASK-E13-4, ADR-0011).
+
+    `block_content_hash` is captured at lock time from the anchored block's `Block.content_hash`
+    (in the chapter's current accepted `ChapterVersion.manifest`) — not recomputed here; freshness
+    enforcement (comparing this stored hash against the block's hash at the moment an AI edit
+    would touch it) is `locks.service.lock_block`'s and a later E15 task's job, not this model's.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    chapter_id: str
+    block_id: str
+    block_content_hash: str
+    char_range: CharRange | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

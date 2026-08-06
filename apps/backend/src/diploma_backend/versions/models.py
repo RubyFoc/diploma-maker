@@ -14,6 +14,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from diploma_backend.locks.models import Block
+
 VersionStatus = Literal["accepted", "draft"]
 
 
@@ -28,12 +30,21 @@ class ChapterVersion(BaseModel):
     proposed against" (ADR-0004): set for draft versions once a chapter already has an accepted
     version, and `None` for a chapter's very first version (nothing accepted yet to link against)
     or for accepted versions themselves, which don't carry a parent.
+
+    `manifest` is `content` split into lockable `Block`s (ADR-0011, TASK-E13-2) — `content`
+    remains the source of truth for text-diff/export/humanization, all of which only need a plain
+    string; `manifest` exists purely so `locks.service` has stable per-block ids/hashes to anchor
+    a `Lock` to. `versions.service.create_draft_version` populates it from `content` for every new
+    row; it defaults to `None` (not `[]`) so it's easy to tell "never parsed into blocks" (a
+    version persisted before TASK-E13-2, per ADR-0011's retrofit consequence) apart from
+    "parsed into zero blocks" (empty content).
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     chapter_id: str
     version_number: int
     content: str
+    manifest: list[Block] | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: VersionStatus
     parent_version_id: str | None = None

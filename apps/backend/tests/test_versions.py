@@ -114,6 +114,44 @@ async def test_create_draft_version_links_to_current_accepted(client: TestClient
     assert draft.version_number == 4
 
 
+async def test_create_draft_version_builds_a_block_manifest_from_content(
+    client: TestClient,
+) -> None:
+    """Per ADR-0011/TASK-E13-2: every new version gets a manifest derived from `content`, not
+    just an opaque string."""
+    db = _fake_db(client)
+
+    draft = await create_draft_version(db, "chapter-1", "First paragraph.\nSecond paragraph.")
+
+    assert draft.manifest is not None
+    assert [block.content for block in draft.manifest] == [
+        "First paragraph.",
+        "Second paragraph.",
+    ]
+    assert [block.order for block in draft.manifest] == [0, 1]
+
+
+async def test_manifest_persists_and_round_trips_through_get_version(client: TestClient) -> None:
+    db = _fake_db(client)
+    draft = await create_draft_version(db, "chapter-1", "Only paragraph.")
+
+    fetched = await get_version(db, draft.id)
+
+    assert fetched is not None
+    assert fetched.manifest is not None
+    assert [block.content for block in fetched.manifest] == ["Only paragraph."]
+
+
+async def test_version_built_directly_without_manifest_defaults_to_none(
+    client: TestClient,
+) -> None:
+    """A version constructed via `_build_version` (mirroring a pre-TASK-E13-2 legacy row) has no
+    manifest — `None`, distinguishable from "parsed into zero blocks"."""
+    version = _build_version()
+
+    assert version.manifest is None
+
+
 async def test_accept_draft_version_flips_status(client: TestClient) -> None:
     db = _fake_db(client)
     draft = await create_draft_version(db, "chapter-1", "proposed edit")

@@ -12,6 +12,7 @@ version's number.
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from diploma_backend.locks.models import build_manifest_from_text
 from diploma_backend.versions.models import ChapterVersion
 
 _COLLECTION = "chapter_versions"
@@ -80,13 +81,15 @@ async def create_draft_version(
     `parent_version_id` is set to the current accepted version's `id`, or `None` if the chapter
     has no accepted version yet. `version_number` is one past the current accepted version's
     number, or `0` if the chapter has no version at all yet (see module docstring for the
-    numbering convention).
+    numbering convention). `manifest` (ADR-0011, TASK-E13-2) is built fresh from `content` via
+    `locks.models.build_manifest_from_text` — every new version gets one, regardless of caller.
     """
     current = await get_current_accepted_version(db, chapter_id)
     draft = ChapterVersion(
         chapter_id=chapter_id,
         version_number=current.version_number + 1 if current is not None else 0,
         content=content,
+        manifest=build_manifest_from_text(content),
         status="draft",
         parent_version_id=current.id if current is not None else None,
     )
