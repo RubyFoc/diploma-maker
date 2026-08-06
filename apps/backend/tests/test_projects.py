@@ -233,6 +233,69 @@ def test_generate_draft_404s_when_chapter_belongs_to_other_project(client: TestC
     assert response.status_code == 404
 
 
+def test_insert_chapter_between_existing_chapters(client: TestClient) -> None:
+    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
+    chapter_1 = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Chapter 1"}
+    ).json()
+    chapter_3 = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Chapter 3"}
+    ).json()
+    assert chapter_1["order"] == 0
+    assert chapter_3["order"] == 1
+
+    response = client.post(
+        f"/projects/{project_id}/chapters/insert", json={"title": "Chapter 2"}
+    )
+
+    assert response.status_code == 201
+    inserted = response.json()
+    assert inserted["title"] == "Chapter 2"
+    assert inserted["project_id"] == project_id
+    assert inserted["order"] == 1
+    assert inserted["accepted_content"] is None
+    assert inserted["pending_draft"] is None
+
+    project_after = client.get(f"/projects/{project_id}").json()
+    chapters_by_id = {chapter["id"]: chapter for chapter in project_after["chapters"]}
+    assert chapters_by_id[chapter_1["id"]]["order"] == 0
+    assert chapters_by_id[inserted["id"]]["order"] == 1
+    assert chapters_by_id[chapter_3["id"]]["order"] == 2
+
+
+def test_insert_chapter_without_numeric_title_appends_at_end(client: TestClient) -> None:
+    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
+    chapter_1 = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Chapter 1"}
+    ).json()
+    chapter_2 = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Chapter 2"}
+    ).json()
+
+    response = client.post(
+        f"/projects/{project_id}/chapters/insert", json={"title": "Conclusion"}
+    )
+
+    assert response.status_code == 201
+    inserted = response.json()
+    assert inserted["title"] == "Conclusion"
+    assert inserted["order"] == 2
+
+    project_after = client.get(f"/projects/{project_id}").json()
+    chapters_by_id = {chapter["id"]: chapter for chapter in project_after["chapters"]}
+    assert chapters_by_id[chapter_1["id"]]["order"] == 0
+    assert chapters_by_id[chapter_2["id"]]["order"] == 1
+    assert chapters_by_id[inserted["id"]]["order"] == 2
+
+
+def test_insert_chapter_404s_for_unknown_project(client: TestClient) -> None:
+    response = client.post(
+        "/projects/does-not-exist/chapters/insert", json={"title": "Chapter 2"}
+    )
+
+    assert response.status_code == 404
+
+
 def test_accept_draft_404s_for_unknown_version(client: TestClient) -> None:
     response = client.post("/versions/does-not-exist/accept")
 

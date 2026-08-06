@@ -55,6 +55,8 @@ from diploma_backend.projects.service import (
     create_project,
     get_chapter,
     get_project,
+    infer_insertion_order,
+    insert_chapter_at_order,
     list_chapters_for_project,
 )
 from diploma_backend.sources.search import SourceSearchError, search_sources
@@ -144,6 +146,12 @@ class CreateProjectRequest(BaseModel):
 
 class CreateChapterRequest(BaseModel):
     """Body for `POST /projects/{project_id}/chapters`."""
+
+    title: str
+
+
+class InsertChapterRequest(BaseModel):
+    """Body for `POST /projects/{project_id}/chapters/insert`."""
 
     title: str
 
@@ -388,6 +396,37 @@ async def create_chapter_endpoint(
 
 
 @router.post(
+    "/{project_id}/chapters/insert",
+    response_model=ChapterDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def insert_chapter_endpoint(
+    project_id: str,
+    body: InsertChapterRequest,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> ChapterDetail:
+    """Insert a new chapter under `project_id` at a chapter-boundary-aware position, per
+    TASK-E10-3 (see `projects.service.infer_insertion_order` /
+    `projects.service.insert_chapter_at_order`). Raises `HTTPException(404)` if the project
+    doesn't exist.
+
+    Unlike `create_chapter_endpoint` (always appends at the end), this infers `order` from
+    `body.title`'s leading number relative to the project's existing chapters, shifting any
+    chapters at or past that position forward so the new chapter lands between the chapters its
+    number implies it belongs between (e.g. "Chapter 2" between existing Chapters 1 and 3).
+    """
+    project = await get_project(db, project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
+        )
+    existing = await list_chapters_for_project(db, project_id)
+    order = infer_insertion_order(existing, body.title)
+    chapter = await insert_chapter_at_order(db, project_id, body.title, order)
+    return await _build_chapter_detail(db, chapter)
+
+
+@router.post(
     "/{project_id}/toc/upload", response_model=ProjectDetail, status_code=status.HTTP_201_CREATED
 )
 async def upload_toc_endpoint(
@@ -403,8 +442,8 @@ async def upload_toc_endpoint(
     `projects.service.create_chapter` once per parsed title, in order (so `order` assignment
     stays centralized in that function), and returns the updated `ProjectDetail`.
 
-    Note: this only creates chapters from the parsed TOC; it does not yet insert a
-    later-generated chapter between existing ones — that's TASK-E10-3, not implemented here.
+    Note: this only creates chapters from the parsed TOC; inserting a later-generated
+    chapter between existing ones is handled separately by `insert_chapter_endpoint`.
     """
     project = await get_project(db, project_id)
     if project is None:

@@ -59,10 +59,8 @@ async def insert_chapter_at_order(
 
     Every existing chapter for `project_id` with `order >= order` is shifted up by one (via a
     single `update_many` using `$inc`) BEFORE the new chapter is inserted, so there's never a
-    moment where two chapters share an `order` value. This is TASK-E10-3's storage-layer half of
-    "chapter-boundary-aware insertion" (see docs/project/epics.md's E10 success criterion): it has
-    no HTTP route yet — `projects.router` is owned by a parallel task this round — wiring an
-    endpoint (likely calling `infer_insertion_order` then this function) is follow-up work.
+    moment where two chapters share an `order` value. Exposed via `POST
+    /projects/{project_id}/chapters/insert` in `projects.router`.
     """
     await db[_CHAPTERS_COLLECTION].update_many(
         {"project_id": project_id, "order": {"$gte": order}},

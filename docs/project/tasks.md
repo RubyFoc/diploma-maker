@@ -60,7 +60,7 @@ status in sync with GitHub issues once tasks move to execution.
 | --- | --- | --- | --- | --- |
 | TASK-E10-1 | Registration + university selection/upload onboarding flow | E10 | frontend-developer | done |
 | TASK-E10-2 | TOC upload/parsing | E10 | python-developer | done |
-| TASK-E10-3 | Chapter-boundary-aware insertion logic | E10 | python-developer | done (partial — see Phase 2.6; HTTP endpoint still pending) |
+| TASK-E10-3 | Chapter-boundary-aware insertion logic | E10 | python-developer | done |
 
 ## Phase 6 — Feedback Loop
 
@@ -90,7 +90,7 @@ Also lands TASK-E10-3's storage-layer half. See
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
 | TASK-INT-3 | Wire humanizer + plagiarism precheck into the generation endpoint | E07 | python-developer | done |
-| TASK-E10-3 | Chapter-boundary-aware insertion logic (storage layer; HTTP wiring still pending) | E10 | python-developer | done (partial — no HTTP endpoint yet) |
+| TASK-E10-3 | Chapter-boundary-aware insertion logic (storage layer; HTTP wiring still pending) | E10 | python-developer | done |
 
 ## Phase 2.5 — Vertical Slice Integration (added 2026-08-05, not in original epic breakdown)
 
