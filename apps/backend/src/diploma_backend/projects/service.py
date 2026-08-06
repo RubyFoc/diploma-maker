@@ -61,39 +61,58 @@ async def list_projects_for_user(db: AsyncIOMotorDatabase, owner_id: str) -> lis
     return [Project.model_validate(document) for document in documents]
 
 
-async def create_chapter(db: AsyncIOMotorDatabase, project_id: str, title: str) -> Chapter:
-    """Create and insert a new `Chapter` for `project_id`.
+async def create_chapter(
+    db: AsyncIOMotorDatabase,
+    project_id: str,
+    title: str,
+    parent_chapter_id: str | None = None,
+) -> Chapter:
+    """Create and insert a new `Chapter` for `project_id` (or subchapter under
+    `parent_chapter_id`, per ADR-0014).
 
-    `order` is one past the current highest `order` among the project's existing chapters, or `0`
-    if it has none yet.
+    `order` is one past the current highest `order` among its siblings — other chapters/
+    subchapters sharing the same `(project_id, parent_chapter_id)` — or `0` if it has none yet.
     """
     existing = await db[_CHAPTERS_COLLECTION].find_one(
-        {"project_id": project_id}, sort=[("order", -1)]
+        {"project_id": project_id, "parent_chapter_id": parent_chapter_id}, sort=[("order", -1)]
     )
     next_order = existing["order"] + 1 if existing is not None else 0
 
-    chapter = Chapter(project_id=project_id, title=title, order=next_order)
+    chapter = Chapter(
+        project_id=project_id, parent_chapter_id=parent_chapter_id, title=title, order=next_order
+    )
     await db[_CHAPTERS_COLLECTION].insert_one(chapter.model_dump())
     return chapter
 
 
 async def insert_chapter_at_order(
-    db: AsyncIOMotorDatabase, project_id: str, title: str, order: int
+    db: AsyncIOMotorDatabase,
+    project_id: str,
+    title: str,
+    order: int,
+    parent_chapter_id: str | None = None,
 ) -> Chapter:
-    """Create and insert a new `Chapter` for `project_id` at the given `order`, displacing any
-    existing chapters that are at or past it.
+    """Create and insert a new `Chapter` for `project_id` (or subchapter under
+    `parent_chapter_id`, per ADR-0014) at the given sibling `order`, displacing any existing
+    siblings that are at or past it.
 
-    Every existing chapter for `project_id` with `order >= order` is shifted up by one (via a
-    single `update_many` using `$inc`) BEFORE the new chapter is inserted, so there's never a
-    moment where two chapters share an `order` value. Exposed via `POST
-    /projects/{project_id}/chapters/insert` in `projects.router`.
+    Every existing sibling — sharing `(project_id, parent_chapter_id)` — with `order >= order` is
+    shifted up by one (via a single `update_many` using `$inc`) BEFORE the new chapter is
+    inserted, so there's never a moment where two siblings share an `order` value. Exposed via
+    `POST /projects/{project_id}/chapters/insert` in `projects.router`.
     """
     await db[_CHAPTERS_COLLECTION].update_many(
-        {"project_id": project_id, "order": {"$gte": order}},
+        {
+            "project_id": project_id,
+            "parent_chapter_id": parent_chapter_id,
+            "order": {"$gte": order},
+        },
         {"$inc": {"order": 1}},
     )
 
-    chapter = Chapter(project_id=project_id, title=title, order=order)
+    chapter = Chapter(
+        project_id=project_id, parent_chapter_id=parent_chapter_id, title=title, order=order
+    )
     await db[_CHAPTERS_COLLECTION].insert_one(chapter.model_dump())
     return chapter
 
@@ -102,6 +121,12 @@ def infer_insertion_order(existing_chapters: list[Chapter], title: str) -> int:
     """Decide where a new chapter titled `title` belongs among `existing_chapters`, purely from
     each title's leading number (e.g. "Chapter 2" -> `2`), per TASK-E10-3 / the E10 success
     criterion's "generating 'Chapter 2' is inserted between existing Chapters 1 and 3" example.
+
+    `existing_chapters` must already be scoped to the target's siblings — same
+    `(project_id, parent_chapter_id)`, per ADR-0014 — since this function has no DB access of its
+    own to do that filtering itself; passing a mixed set of chapters and subchapters will infer a
+    nonsensical position. `projects.router.insert_chapter_endpoint` does this filtering before
+    calling in.
 
     Returns the `order` the new chapter should be inserted at (displacing the chapter currently
     there and everything after it forward — see `insert_chapter_at_order`). This is a pure
@@ -138,8 +163,31 @@ def infer_insertion_order(existing_chapters: list[Chapter], title: str) -> int:
 async def list_chapters_for_project(
     db: AsyncIOMotorDatabase, project_id: str
 ) -> list[Chapter]:
-    """Return all chapters for `project_id`, ordered by `order`."""
+    """Return all chapters (and subchapters) for `project_id`, ordered by `order`.
+
+    Note `order` is only unique within a `(project_id, parent_chapter_id)` scope (per ADR-0014),
+    so a top-level chapter and one of its subchapters may share the same `order` value in this
+    combined list — callers displaying a flat outline should group by `parent_chapter_id` first.
+    `projects.router._build_project_detail` filters this down to top-level chapters
+    (`parent_chapter_id is None`) rather than displaying the mixed list directly.
+    """
     cursor = db[_CHAPTERS_COLLECTION].find({"project_id": project_id}).sort("order", 1)
+    documents = await cursor.to_list(length=None)
+    return [Chapter.model_validate(document) for document in documents]
+
+
+async def list_subchapters(
+    db: AsyncIOMotorDatabase, project_id: str, parent_chapter_id: str
+) -> list[Chapter]:
+    """Return the subchapters of `parent_chapter_id` within `project_id`, ordered by `order`
+    (TASK-E12-2). Does not recurse: per ADR-0014's two-level nesting cap, a subchapter never has
+    subchapters of its own, so there is no deeper level to return.
+    """
+    cursor = (
+        db[_CHAPTERS_COLLECTION]
+        .find({"project_id": project_id, "parent_chapter_id": parent_chapter_id})
+        .sort("order", 1)
+    )
     documents = await cursor.to_list(length=None)
     return [Chapter.model_validate(document) for document in documents]
 

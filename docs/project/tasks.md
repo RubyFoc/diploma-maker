@@ -201,9 +201,9 @@ E12, depends on E11 and ADR-0014 (subchapter data model).
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E12-1 | Add `parent_chapter_id: str \| None` to `Chapter`; rescope `insert_chapter_at_order`/`infer_insertion_order` from `(project_id)` to `(project_id, parent_chapter_id)` per ADR-0014 | E12 | python-developer | todo |
+| TASK-E12-1 | Add `parent_chapter_id: str \| None` to `Chapter`; rescope `insert_chapter_at_order`/`infer_insertion_order` from `(project_id)` to `(project_id, parent_chapter_id)` per ADR-0014 | E12 | python-developer | done |
 | TASK-E12-2 | Create/list-subchapters-under-a-parent endpoints | E12 | python-developer | todo |
-| TASK-E12-3 | Regression check: confirm E10's chapter-insertion tests still pass under parent-scoped ordering (top-level chapters = `parent_chapter_id=None`) | E12 | python-developer | todo |
+| TASK-E12-3 | Regression check: confirm E10's chapter-insertion tests still pass under parent-scoped ordering (top-level chapters = `parent_chapter_id=None`) | E12 | python-developer | done |
 | TASK-E12-4 | `ChapterTree` sidebar navigation component + hook | E12 | frontend-developer | todo |
 
 ## Phase 9 — Draft Ingestion & Lock/Protected-Range Selection

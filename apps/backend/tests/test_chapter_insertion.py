@@ -105,3 +105,41 @@ def test_infer_insertion_order_higher_number_than_everything_appends_at_end() ->
     ]
 
     assert infer_insertion_order(existing, "Chapter 5") == 2
+
+
+async def test_create_chapter_scopes_order_to_parent_chapter_id() -> None:
+    """Per ADR-0014, a subchapter's `order` is one past its own siblings under the same
+    `parent_chapter_id`, independent of the top-level chapters' ordering."""
+    db = _db()
+    parent = await create_chapter(db, "p1", "Chapter 1")
+    await create_chapter(db, "p1", "Chapter 2")
+
+    sub_1 = await create_chapter(db, "p1", "Section 1.1", parent_chapter_id=parent.id)
+    sub_2 = await create_chapter(db, "p1", "Section 1.2", parent_chapter_id=parent.id)
+
+    assert sub_1.order == 0
+    assert sub_2.order == 1
+    assert sub_1.parent_chapter_id == parent.id
+
+
+async def test_insert_chapter_at_order_only_shifts_siblings_under_same_parent() -> None:
+    """Inserting a subchapter must not shift top-level chapters, and vice versa, since they're
+    now scoped to `(project_id, parent_chapter_id)` rather than just `project_id`."""
+    db = _db()
+    parent = await create_chapter(db, "p1", "Chapter 1")
+    top_level_2 = await create_chapter(db, "p1", "Chapter 2")
+    sub_existing = await create_chapter(db, "p1", "Section 1.2", parent_chapter_id=parent.id)
+
+    inserted_sub = await insert_chapter_at_order(
+        db, "p1", "Section 1.1", order=0, parent_chapter_id=parent.id
+    )
+
+    top_level_chapters = await list_chapters_for_project(db, "p1")
+    by_id = {chapter.id: chapter for chapter in top_level_chapters}
+    assert by_id[parent.id].order == 0
+    assert by_id[top_level_2.id].order == 1
+
+    assert by_id[sub_existing.id].order == 1
+    assert by_id[sub_existing.id].parent_chapter_id == parent.id
+    assert inserted_sub.order == 0
+    assert inserted_sub.parent_chapter_id == parent.id

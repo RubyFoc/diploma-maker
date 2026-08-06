@@ -28,14 +28,23 @@ class Project(BaseModel):
 
 
 class Chapter(BaseModel):
-    """One chapter belonging to a `Project`, keyed by `id`.
+    """One chapter (or subchapter) belonging to a `Project`, keyed by `id`.
 
-    `order` is a zero-based position among the project's chapters, assigned by
-    `projects.service.create_chapter` (one past the current highest `order` for the project).
+    `order` is a zero-based sibling position, assigned by `projects.service.create_chapter` (one
+    past the current highest `order` among siblings). `parent_chapter_id` is `None` for a
+    top-level chapter, or another `Chapter.id` for a subchapter, per ADR-0014: subchapters are
+    plain rows in this same collection (self-referential), not an embedded array on the parent,
+    so each keeps its own independent version history (ADR-0004) and lock/manifest state
+    (ADR-0011). Nesting is capped at two levels (chapter, subchapter) per `docs/project/epics.md`
+    — a subchapter's own `parent_chapter_id` is never itself a subchapter, but that constraint is
+    enforced by callers (TASK-E12-2), not this model. Sibling `order` is scoped to
+    `(project_id, parent_chapter_id)`, not just `project_id` — see
+    `projects.service.insert_chapter_at_order`/`infer_insertion_order`.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     project_id: str
+    parent_chapter_id: str | None = None
     title: str
     order: int
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
