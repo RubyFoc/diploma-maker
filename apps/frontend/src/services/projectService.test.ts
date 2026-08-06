@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ACCESS_TOKEN_STORAGE_KEY } from '../context/AuthContext'
 import {
   acceptDraft,
   createChapter,
   createProject,
+  deleteProject,
   generateChapterDraft,
   getProject,
+  listProjects,
 } from './projectService'
 
 const BASE_URL = 'http://localhost:8010'
@@ -21,11 +24,13 @@ function jsonResponse(body: unknown, ok = true, status = 200) {
 describe('projectService', () => {
   beforeEach(() => {
     vi.stubEnv('VITE_API_BASE_URL', BASE_URL)
+    localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, 'test-token')
   })
 
   afterEach(() => {
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
+    localStorage.clear()
   })
 
   it('createProject posts to /projects with an optional title and returns the parsed project', async () => {
@@ -150,5 +155,86 @@ describe('projectService', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(generateChapterDraft('p1', 'c1', 'do it')).rejects.toThrow(/502/)
+  })
+
+  it('attaches an Authorization bearer header (using the stored access token) to project requests', async () => {
+    const project = { id: 'p1', title: 'My Thesis', created_at: 'now', chapters: [] }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(project))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getProject('p1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects/p1`,
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
+      }),
+    )
+  })
+
+  it('omits the Authorization header when there is no stored access token', async () => {
+    localStorage.clear()
+    const project = { id: 'p1', title: 'My Thesis', created_at: 'now', chapters: [] }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(project))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getProject('p1')
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.headers).not.toHaveProperty('Authorization')
+  })
+
+  it('listProjects fetches /projects and returns the parsed summary list', async () => {
+    const projects = [
+      { id: 'p1', title: 'My Thesis', created_at: 'now' },
+      { id: 'p2', title: 'Other Thesis', created_at: 'earlier' },
+    ]
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(projects))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await listProjects()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects`,
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
+      }),
+    )
+    expect(result).toEqual(projects)
+  })
+
+  it('listProjects throws a clear error including status and body on a non-2xx response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: 'server error' }, false, 500))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(listProjects()).rejects.toThrow(/500/)
+  })
+
+  it('deleteProject sends a DELETE to /projects/{id} with the auth header and resolves on 204', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      json: () => Promise.reject(new Error('204 responses have no body')),
+      text: () => Promise.resolve(''),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await deleteProject('p1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects/p1`,
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
+      }),
+    )
+    expect(result).toBeUndefined()
+  })
+
+  it('deleteProject throws a clear error including status and body on a non-2xx response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ detail: 'not found' }, false, 404))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(deleteProject('missing')).rejects.toThrow(/404/)
   })
 })

@@ -18,11 +18,15 @@ _LEADING_NUMBER_RE = re.compile(r"^\D*(\d+)")
 
 _PROJECTS_COLLECTION = "projects"
 _CHAPTERS_COLLECTION = "chapters"
+# Owned by `versions.service` (its `_COLLECTION`), duplicated here only so `delete_project` can
+# cascade into it without importing that module's storage internals across the module boundary.
+_CHAPTER_VERSIONS_COLLECTION = "chapter_versions"
 
 
-async def create_project(db: AsyncIOMotorDatabase, title: str) -> Project:
-    """Create and insert a new `Project` with the given `title`."""
-    project = Project(title=title)
+async def create_project(db: AsyncIOMotorDatabase, title: str, owner_id: str) -> Project:
+    """Create and insert a new `Project` with the given `title`, owned by `owner_id` (TASK-E11-1;
+    the `sub` claim of the authenticated caller, see `auth.dependencies.get_current_user_id`)."""
+    project = Project(title=title, owner_id=owner_id)
     await db[_PROJECTS_COLLECTION].insert_one(project.model_dump())
     return project
 
@@ -33,6 +37,28 @@ async def get_project(db: AsyncIOMotorDatabase, project_id: str) -> Project | No
     if document is None:
         return None
     return Project.model_validate(document)
+
+
+async def update_project_title(db: AsyncIOMotorDatabase, project_id: str, title: str) -> None:
+    """Set `project_id`'s stored `title` to `title` (auto-title generation, Phase 5.9).
+
+    Does nothing (no error) if `project_id` doesn't exist, matching `delete_project`'s
+    no-error-on-missing convention — callers that need existence guarantees should check with
+    `get_project` first.
+    """
+    await db[_PROJECTS_COLLECTION].update_one({"id": project_id}, {"$set": {"title": title}})
+
+
+async def list_projects_for_user(db: AsyncIOMotorDatabase, owner_id: str) -> list[Project]:
+    """Return every project owned by `owner_id` (TASK-E11-2), in no particular order.
+
+    Backs `GET /projects`, scoping the listing to the authenticated caller the same way
+    `router._get_owned_project` scopes single-project lookups — a user only ever sees their own
+    projects, never another user's.
+    """
+    cursor = db[_PROJECTS_COLLECTION].find({"owner_id": owner_id})
+    documents = await cursor.to_list(length=None)
+    return [Project.model_validate(document) for document in documents]
 
 
 async def create_chapter(db: AsyncIOMotorDatabase, project_id: str, title: str) -> Chapter:
@@ -124,3 +150,26 @@ async def get_chapter(db: AsyncIOMotorDatabase, chapter_id: str) -> Chapter | No
     if document is None:
         return None
     return Chapter.model_validate(document)
+
+
+async def delete_project(db: AsyncIOMotorDatabase, project_id: str) -> None:
+    """Cascade-delete `project_id` and everything that hangs off it (TASK-E11-3).
+
+    `ChapterVersion` has no direct `project_id` field (only `chapter_id`, see
+    `versions.service`), so its versions must be reached via the project's chapter ids first.
+    Order: `chapter_versions` for those chapter ids -> `chapters` for `project_id` -> the
+    `project` document itself. There are no FK constraints in Mongo, so this order isn't required
+    for correctness, only for leaving the least orphaned data behind if the process is
+    interrupted partway through.
+
+    Does nothing (no error) if `project_id` doesn't exist — callers that need a 404 for an
+    unknown/foreign project should check with `get_project`/`_get_owned_project` first, as
+    `projects.router`'s delete endpoint does.
+    """
+    chapters = await list_chapters_for_project(db, project_id)
+    chapter_ids = [chapter.id for chapter in chapters]
+
+    if chapter_ids:
+        await db[_CHAPTER_VERSIONS_COLLECTION].delete_many({"chapter_id": {"$in": chapter_ids}})
+    await db[_CHAPTERS_COLLECTION].delete_many({"project_id": project_id})
+    await db[_PROJECTS_COLLECTION].delete_one({"id": project_id})

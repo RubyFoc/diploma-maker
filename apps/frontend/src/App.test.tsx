@@ -50,6 +50,21 @@ class MockEventSource {
   }
 }
 
+/**
+ * `PaginatedDocument` (TASK-E10-4) renders an off-screen, `aria-hidden` measuring pass
+ * alongside the visible page — both contain the same chapter text — so a plain
+ * `findByText` would match twice once a chapter has content. Waits for the text to
+ * appear, then returns only the copy outside the hidden measuring pass.
+ */
+async function findVisibleByText(text: string): Promise<HTMLElement> {
+  const matches = await screen.findAllByText(text)
+  const visible = matches.find((element) => !element.closest('.document-page--measure'))
+  if (!visible) {
+    throw new Error(`no visible (non-measuring-pass) match found for "${text}"`)
+  }
+  return visible
+}
+
 function latestEventSource(): MockEventSource {
   const source = MockEventSource.instances[MockEventSource.instances.length - 1]
   if (!source) {
@@ -66,9 +81,22 @@ function latestEventSource(): MockEventSource {
  */
 function createFetchMock(queued: Response[] = []) {
   const queue = [...queued]
-  return vi.fn((url: string) => {
-    if (String(url).includes('/formatting/institution-configs')) {
+  return vi.fn((url: string, init?: RequestInit) => {
+    if (String(url).endsWith('/formatting/institution-configs')) {
       return Promise.resolve(jsonResponse([institution]))
+    }
+    // `useInstitutionConfig` fetches `/formatting/institution-configs/{id}` once a project's
+    // institution is set, independently of the queued project/chapter/version responses below
+    // — respond with a 404 (swallowed to a null config) rather than consuming a queue slot,
+    // so it doesn't desync the ordering the other tests assert on.
+    if (String(url).includes('/formatting/institution-configs/')) {
+      return Promise.resolve(jsonResponse({ detail: 'not found' }, false, 404))
+    }
+    // The project landing view lists projects on mount (`GET /projects`) before any test's own
+    // create/open flow runs — respond with an empty list rather than consuming a queue slot, for
+    // the same reason as institution-configs above.
+    if (String(url).endsWith('/projects') && (!init?.method || init.method === 'GET')) {
+      return Promise.resolve(jsonResponse([]))
     }
     const next = queue.shift()
     return Promise.resolve(next ?? jsonResponse({ detail: 'unexpected request' }, false, 500))
@@ -79,6 +107,18 @@ function createFetchMock(queued: Response[] = []) {
 async function selectInstitution() {
   const select = await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
   fireEvent.change(select, { target: { value: institution.institution_id } })
+}
+
+/**
+ * Moves past the new project-landing view (shown before any project is active) by clicking
+ * "New Project" there, landing the caller in the chat+preview workspace. Callers that need a
+ * created project in their fetch queue (e.g. to assert on chapter/generate calls) must include
+ * that project response as the *first* queued response.
+ */
+async function enterWorkspace() {
+  await selectInstitution()
+  fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+  await screen.findByLabelText(strings.chatPanelTitle)
 }
 
 describe('App', () => {
@@ -108,18 +148,77 @@ describe('App', () => {
     expect(await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)).toBeInTheDocument()
   })
 
-  it('renders both the chat panel and the document panel once onboarding is complete', async () => {
+  it('shows the project landing view (not the chat panel) once onboarding is complete', async () => {
     vi.stubGlobal('fetch', createFetchMock())
     render(<App />)
     await selectInstitution()
+    expect(await screen.findByLabelText(strings.projectLandingTitle)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: strings.newProjectButton })).toBeInTheDocument()
+    expect(screen.queryByLabelText(strings.chatPanelTitle)).not.toBeInTheDocument()
+  })
+
+  it('renders both the chat panel and the document panel once a project is entered', async () => {
+    const fetchMock = createFetchMock([
+      jsonResponse({ id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }, true, 201),
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
     expect(await screen.findByLabelText(strings.chatPanelTitle)).toBeInTheDocument()
     expect(screen.getByLabelText(strings.documentPanelTitle)).toBeInTheDocument()
   })
 
-  it('logging out returns to onboarding and clears the stored access token', async () => {
-    vi.stubGlobal('fetch', createFetchMock())
+  it('"My Projects" returns to the landing view without losing the active document state', async () => {
+    let projectCreated = false
+    const projectDetail = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/formatting/institution-configs')) {
+        return Promise.resolve(jsonResponse([institution]))
+      }
+      if (String(url).includes('/formatting/institution-configs/')) {
+        return Promise.resolve(jsonResponse({ detail: 'not found' }, false, 404))
+      }
+      if (String(url).endsWith('/projects') && init?.method === 'POST') {
+        projectCreated = true
+        return Promise.resolve(jsonResponse(projectDetail, true, 201))
+      }
+      if (String(url).endsWith('/projects')) {
+        return Promise.resolve(
+          jsonResponse(projectCreated ? [{ id: 'p1', title: 'Untitled', created_at: 'now' }] : []),
+        )
+      }
+      if (String(url).endsWith('/projects/p1')) {
+        return Promise.resolve(jsonResponse(projectDetail))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'unexpected request' }, false, 500))
+    })
+    vi.stubGlobal('fetch', fetchMock)
     render(<App />)
-    await selectInstitution()
+    await enterWorkspace()
+
+    // Send a chat message so there is in-progress state (chat history + a chapter) living in
+    // context, outside of ChatPanel/Workspace's own component-local state.
+    const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
+    fireEvent.change(input, { target: { value: 'Write the introduction' } })
+    fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+    expect(await screen.findByText('Write the introduction')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: strings.myProjectsButton }))
+    expect(await screen.findByLabelText(strings.projectLandingTitle)).toBeInTheDocument()
+    expect(screen.queryByLabelText(strings.chatPanelTitle)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: strings.projectLandingOpenButton }))
+    expect(await screen.findByLabelText(strings.chatPanelTitle)).toBeInTheDocument()
+    expect(await screen.findByText('Write the introduction')).toBeInTheDocument()
+  })
+
+  it('logging out returns to onboarding and clears the stored access token', async () => {
+    const fetchMock = createFetchMock([
+      jsonResponse({ id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }, true, 201),
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
     expect(await screen.findByLabelText(strings.chatPanelTitle)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: strings.logoutButton }))
@@ -129,9 +228,12 @@ describe('App', () => {
   })
 
   it('starts with empty chat and document state', async () => {
-    vi.stubGlobal('fetch', createFetchMock())
+    const fetchMock = createFetchMock([
+      jsonResponse({ id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }, true, 201),
+    ])
+    vi.stubGlobal('fetch', fetchMock)
     render(<App />)
-    await selectInstitution()
+    await enterWorkspace()
     expect(await screen.findByText(strings.chatEmpty)).toBeInTheDocument()
     expect(screen.getByText(strings.documentEmpty)).toBeInTheDocument()
   })
@@ -203,7 +305,7 @@ describe('App', () => {
     })
 
     expect(await screen.findByText(strings.chatDraftReadyMessage)).toBeInTheDocument()
-    expect(await screen.findByText('Generated introduction text')).toBeInTheDocument()
+    expect(await findVisibleByText('Generated introduction text')).toBeInTheDocument()
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:8010/projects/p1/chapters',
@@ -283,6 +385,7 @@ describe('App', () => {
     const fetchMock = createFetchMock([
       jsonResponse(project, true, 201),
       jsonResponse(chapter, true, 201),
+      jsonResponse(project), // title-sync refetch fired after generation's `done` event
       jsonResponse(acceptedVersion),
       jsonResponse(signal, true, 201),
       jsonResponse(refreshedProject),
@@ -299,7 +402,7 @@ describe('App', () => {
     act(() => {
       source.dispatch('done', JSON.stringify(generateResponse))
     })
-    await screen.findByText('Generated introduction text')
+    await findVisibleByText('Generated introduction text')
 
     fireEvent.click(screen.getByRole('button', { name: strings.diffAcceptButton }))
 
@@ -357,6 +460,7 @@ describe('App', () => {
     const fetchMock = createFetchMock([
       jsonResponse(project, true, 201),
       jsonResponse(chapter, true, 201),
+      jsonResponse(project), // title-sync refetch fired after generation's `done` event
       jsonResponse(acceptedVersion),
       jsonResponse({ detail: 'feedback service down' }, false, 500),
       jsonResponse(refreshedProject),
@@ -373,14 +477,14 @@ describe('App', () => {
     act(() => {
       source.dispatch('done', JSON.stringify(generateResponse))
     })
-    await screen.findByText('Generated introduction text')
+    await findVisibleByText('Generated introduction text')
 
     fireEvent.click(screen.getByRole('button', { name: strings.diffAcceptButton }))
 
     await waitFor(() => {
       expect(screen.queryByLabelText(strings.diffViewerTitle)).not.toBeInTheDocument()
     })
-    expect(screen.getByText('Generated introduction text')).toBeInTheDocument()
+    expect(await findVisibleByText('Generated introduction text')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:8010/versions/v1/accept',
       expect.objectContaining({ method: 'POST' }),
@@ -437,7 +541,7 @@ describe('App', () => {
     act(() => {
       source.dispatch('done', JSON.stringify(generateResponse))
     })
-    await screen.findByText('Generated introduction text')
+    await findVisibleByText('Generated introduction text')
 
     fireEvent.click(screen.getByRole('button', { name: strings.diffRejectButton }))
 

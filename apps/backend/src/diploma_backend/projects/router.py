@@ -30,6 +30,7 @@ wired here is generate (RAG-grounded) -> humanize -> plagiarism/AI-detection sca
 skipping the not-yet-integrated citation-verification step.
 """
 
+import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
@@ -42,23 +43,33 @@ from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
+from diploma_backend.auth.dependencies import get_current_user_id
 from diploma_backend.db import get_database
 from diploma_backend.export.docx import apply_institution_config, markdown_to_docx
 from diploma_backend.formatting.service import get_institution_config
 from diploma_backend.humanizer.pipeline import HumanizationError, humanize_text
-from diploma_backend.llm_routing import DeepSeekClient, LLMRequestError, generate_with_retry
+from diploma_backend.llm_routing import (
+    DeepSeekClient,
+    LLMRequestError,
+    generate_project_title,
+    generate_with_retry,
+)
 from diploma_backend.llm_routing.summary import assemble_prompt
 from diploma_backend.plagiarism.precheck import PlagiarismCheckResult, run_precheck
 from diploma_backend.projects.models import Chapter, Project
 from diploma_backend.projects.service import (
     create_chapter,
     create_project,
+    delete_project,
     get_chapter,
     get_project,
     infer_insertion_order,
     insert_chapter_at_order,
     list_chapters_for_project,
+    list_projects_for_user,
+    update_project_title,
 )
+from diploma_backend.sources.client import delete_project_vectors
 from diploma_backend.sources.search import SourceSearchError, search_sources
 from diploma_backend.toc.parser import TocParseError, parse_toc
 from diploma_backend.versions.models import ChapterVersion
@@ -137,6 +148,46 @@ async def _fetch_rag_excerpts(instruction: str) -> list[str]:
     return excerpts
 
 
+def _maybe_start_title_generation(
+    client: DeepSeekClient, project: Project | None, instruction: str
+) -> "asyncio.Task[str] | None":
+    """Kick off best-effort project-title auto-generation (user request, Phase 5.9) if `project`
+    still has the generic default title, returning `None` otherwise.
+
+    Only triggers once: once a project's title is anything other than `_DEFAULT_PROJECT_TITLE`
+    (i.e. after this has already renamed it once), this check naturally skips every later call —
+    no separate "has been titled" flag is needed.
+
+    Started as an `asyncio.create_task` here (rather than awaited inline) so it runs concurrently
+    with the endpoint's main heavy-tier draft generation instead of adding to the user's perceived
+    latency; the caller must await the returned task via `_finish_title_generation` once the main
+    generation work is done. Returns `None` immediately (no task created) if `project` is `None`
+    or already has a non-default title.
+    """
+    if project is None or project.title != _DEFAULT_PROJECT_TITLE:
+        return None
+    return asyncio.create_task(generate_project_title(client, instruction))
+
+
+async def _finish_title_generation(
+    db: AsyncIOMotorDatabase, project_id: str, title_task: "asyncio.Task[str] | None"
+) -> None:
+    """Await `title_task` (from `_maybe_start_title_generation`) and persist its result.
+
+    Fails open: title auto-generation is a cosmetic side effect of generation, not
+    correctness-critical, so an `LLMRequestError` here is caught and swallowed, leaving the
+    project's title at its current (default) value — it must never fail or delay the caller's
+    main chapter-generation response. Does nothing if `title_task` is `None`.
+    """
+    if title_task is None:
+        return
+    try:
+        title = await title_task
+    except LLMRequestError:
+        return
+    await update_project_title(db, project_id, title)
+
+
 class CreateProjectRequest(BaseModel):
     """Body for `POST /projects`. `title` defaults to `_DEFAULT_PROJECT_TITLE` when omitted or
     empty."""
@@ -174,6 +225,20 @@ class ChapterDetail(BaseModel):
     created_at: datetime
     accepted_content: str | None
     pending_draft: ChapterVersion | None
+
+
+class ProjectSummary(BaseModel):
+    """A lightweight, per-project listing entry: just `id`/`title`/`created_at`, no chapters.
+
+    Backs `GET /projects` (TASK-E11-2). Deliberately lighter than `ProjectDetail`: building a
+    full `ProjectDetail` per project fetches every chapter plus its accepted/draft versions
+    (`_build_project_detail` -> `_build_chapter_detail`), an N+1 cost that's wasted work for a
+    listing view where only the project-level fields are shown.
+    """
+
+    id: str
+    title: str
+    created_at: datetime
 
 
 class ProjectDetail(BaseModel):
@@ -237,6 +302,24 @@ async def _build_chapter_detail(db: AsyncIOMotorDatabase, chapter: Chapter) -> C
     )
 
 
+async def _get_owned_project(
+    db: AsyncIOMotorDatabase, project_id: str, owner_id: str
+) -> Project:
+    """Fetch `project_id`, scoped to `owner_id` (TASK-E11-1).
+
+    Raises `HTTPException(404)` both when `project_id` doesn't exist at all AND when it exists
+    but belongs to a different owner — deliberately the same status/detail either way, so a
+    caller can't distinguish "no such project" from "not yours" and enumerate other users'
+    project ids.
+    """
+    project = await get_project(db, project_id)
+    if project is None or project.owner_id != owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
+        )
+    return project
+
+
 async def _build_project_detail(db: AsyncIOMotorDatabase, project: Project) -> ProjectDetail:
     chapters = await list_chapters_for_project(db, project.id)
     chapter_details = [await _build_chapter_detail(db, chapter) for chapter in chapters]
@@ -252,30 +335,78 @@ async def _build_project_detail(db: AsyncIOMotorDatabase, project: Project) -> P
 async def create_project_endpoint(
     body: CreateProjectRequest,
     db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
 ) -> ProjectDetail:
-    """Create a new project, defaulting `title` to `_DEFAULT_PROJECT_TITLE` when omitted/empty.
+    """Create a new project owned by the authenticated caller (TASK-E11-1), defaulting `title`
+    to `_DEFAULT_PROJECT_TITLE` when omitted/empty.
 
     Returns a `ProjectDetail` with an empty `chapters` list (a brand-new project has none yet).
+    Raises `HTTPException(401)` (via `get_current_user_id`) if no valid bearer token is given.
     """
     title = body.title if body.title else _DEFAULT_PROJECT_TITLE
-    project = await create_project(db, title)
+    project = await create_project(db, title, owner_id)
     return await _build_project_detail(db, project)
+
+
+@router.get("", response_model=list[ProjectSummary])
+async def list_projects_endpoint(
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
+) -> list[ProjectSummary]:
+    """List every project owned by the authenticated caller (TASK-E11-2).
+
+    Raises `HTTPException(401)` (via `get_current_user_id`) if no valid bearer token is given.
+    Returns `[]` if the caller has no projects. Each entry is a lightweight `ProjectSummary`
+    (no chapters) rather than a full `ProjectDetail`, to avoid an N+1 chapter/version fetch per
+    project in what's meant to be a cheap listing view.
+    """
+    projects = await list_projects_for_user(db, owner_id)
+    return [
+        ProjectSummary(id=project.id, title=project.title, created_at=project.created_at)
+        for project in projects
+    ]
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
 async def get_project_endpoint(
     project_id: str,
     db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
 ) -> ProjectDetail:
     """Fetch a project and all of its chapters (with accepted content / pending draft filled
-    in). Raises `HTTPException(404)` if `project_id` doesn't exist.
+    in), scoped to the authenticated caller (TASK-E11-1). Raises `HTTPException(404)` if
+    `project_id` doesn't exist OR belongs to a different owner (see `_get_owned_project`).
     """
-    project = await get_project(db, project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
-        )
+    project = await _get_owned_project(db, project_id, owner_id)
     return await _build_project_detail(db, project)
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project_endpoint(
+    project_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
+) -> Response:
+    """Delete a project and everything that hangs off it (TASK-E11-3).
+
+    Scoped to the authenticated caller (TASK-E11-1): raises `HTTPException(404)` if `project_id`
+    doesn't exist or belongs to a different owner (see `_get_owned_project`), the same
+    ownership/404 check every other single-project endpoint here uses.
+
+    Cascades via `projects.service.delete_project` across Mongo's `projects`/`chapters`/
+    `chapter_versions` collections, then calls `sources.client.delete_project_vectors` — currently
+    a documented no-op (see that function's docstring: nothing ingests project-scoped content into
+    Qdrant yet, ADR-0002) kept wired in so the cascade already reaches it once that changes.
+    Uploaded-file cleanup is deliberately not attempted: there is no project-scoped uploaded-file
+    storage anywhere in this codebase today (`formatting.upload`'s `UPLOADS_DIR` is keyed by
+    institution, not project), so there is nothing on disk to delete for a project.
+
+    Returns `204 No Content` on success, with no response body.
+    """
+    await _get_owned_project(db, project_id, owner_id)
+    await delete_project(db, project_id)
+    delete_project_vectors(project_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _sanitize_filename(title: str) -> str:
@@ -324,11 +455,13 @@ async def export_project_endpoint(
     project_id: str,
     institution_id: str | None = None,
     db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
 ) -> Response:
     """Export `project_id`'s full accepted content as a single `.docx` file (TASK-E06 closing the
     loop: the export engine existed with no reachable endpoint until this task).
 
-    Raises `HTTPException(404)` if `project_id` doesn't exist. Otherwise assembles one Markdown
+    Scoped to the authenticated caller (TASK-E11-1): raises `HTTPException(404)` if `project_id`
+    doesn't exist or belongs to a different owner. Otherwise assembles one Markdown
     document from all of the project's chapters, in `order` (see `_build_export_markdown`): each
     chapter becomes a `# <title>` heading followed by its current accepted content, or
     `_EXPORT_EMPTY_CHAPTER_NOTE` (matching the frontend's `chapterContentEmpty` string) if it has
@@ -347,11 +480,7 @@ async def export_project_endpoint(
     .wordprocessingml.document"` and a `Content-Disposition: attachment` header whose filename is
     `project.title` sanitized via `_sanitize_filename`.
     """
-    project = await get_project(db, project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
-        )
+    project = await _get_owned_project(db, project_id, owner_id)
 
     markdown_text = await _build_export_markdown(db, project)
     document = markdown_to_docx(markdown_text)
@@ -381,16 +510,14 @@ async def create_chapter_endpoint(
     project_id: str,
     body: CreateChapterRequest,
     db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
 ) -> ChapterDetail:
-    """Create a new chapter under `project_id`. Raises `HTTPException(404)` if the project
-    doesn't exist. Returns a freshly created `ChapterDetail` (`accepted_content=None`,
-    `pending_draft=None` since nothing has been generated yet).
+    """Create a new chapter under `project_id`, scoped to the authenticated caller (TASK-E11-1).
+    Raises `HTTPException(404)` if the project doesn't exist or belongs to a different owner.
+    Returns a freshly created `ChapterDetail` (`accepted_content=None`, `pending_draft=None`
+    since nothing has been generated yet).
     """
-    project = await get_project(db, project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
-        )
+    await _get_owned_project(db, project_id, owner_id)
     chapter = await create_chapter(db, project_id, body.title)
     return await _build_chapter_detail(db, chapter)
 
@@ -404,22 +531,20 @@ async def insert_chapter_endpoint(
     project_id: str,
     body: InsertChapterRequest,
     db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
 ) -> ChapterDetail:
     """Insert a new chapter under `project_id` at a chapter-boundary-aware position, per
     TASK-E10-3 (see `projects.service.infer_insertion_order` /
-    `projects.service.insert_chapter_at_order`). Raises `HTTPException(404)` if the project
-    doesn't exist.
+    `projects.service.insert_chapter_at_order`). Scoped to the authenticated caller
+    (TASK-E11-1): raises `HTTPException(404)` if the project doesn't exist or belongs to a
+    different owner.
 
     Unlike `create_chapter_endpoint` (always appends at the end), this infers `order` from
     `body.title`'s leading number relative to the project's existing chapters, shifting any
     chapters at or past that position forward so the new chapter lands between the chapters its
     number implies it belongs between (e.g. "Chapter 2" between existing Chapters 1 and 3).
     """
-    project = await get_project(db, project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
-        )
+    await _get_owned_project(db, project_id, owner_id)
     existing = await list_chapters_for_project(db, project_id)
     order = infer_insertion_order(existing, body.title)
     chapter = await insert_chapter_at_order(db, project_id, body.title, order)
@@ -433,23 +558,21 @@ async def upload_toc_endpoint(
     project_id: str,
     file: UploadFile = File(...),
     db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
 ) -> ProjectDetail:
     """Parse an uploaded `.docx` table of contents and create one chapter per entry, in order.
 
-    Raises `HTTPException(404)` if `project_id` doesn't exist. Parses `file` via
-    `toc.parser.parse_toc`; raises `HTTPException(422)` if it isn't a parseable TOC (fail-closed,
-    matching `formatting.router`'s upload-parse-error convention). On success, calls
+    Scoped to the authenticated caller (TASK-E11-1): raises `HTTPException(404)` if `project_id`
+    doesn't exist or belongs to a different owner. Parses `file` via `toc.parser.parse_toc`;
+    raises `HTTPException(422)` if it isn't a parseable TOC (fail-closed, matching
+    `formatting.router`'s upload-parse-error convention). On success, calls
     `projects.service.create_chapter` once per parsed title, in order (so `order` assignment
     stays centralized in that function), and returns the updated `ProjectDetail`.
 
     Note: this only creates chapters from the parsed TOC; inserting a later-generated
     chapter between existing ones is handled separately by `insert_chapter_endpoint`.
     """
-    project = await get_project(db, project_id)
-    if project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' not found"
-        )
+    project = await _get_owned_project(db, project_id, owner_id)
 
     content = await file.read()
     try:
@@ -511,6 +634,7 @@ async def generate_chapter_draft_endpoint(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Chapter '{chapter_id}' not found"
         )
+    project = await get_project(db, project_id)
 
     rag_excerpts = await _fetch_rag_excerpts(body.instruction)
     messages = assemble_prompt(
@@ -521,23 +645,35 @@ async def generate_chapter_draft_endpoint(
     )
 
     client = DeepSeekClient()
+    title_task = _maybe_start_title_generation(client, project, body.instruction)
     try:
-        content = await generate_with_retry(client, "heavy", messages)
-    except LLMRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        try:
+            content = await generate_with_retry(client, "heavy", messages)
+        except LLMRequestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
 
-    try:
-        humanized_content = await humanize_text(client, content)
-    except LLMRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    except HumanizationError:
-        # Fail-open: a mangled citation placeholder shouldn't block the user from seeing their
-        # draft at all, since humanization is cosmetic, not correctness-critical (see docstring).
-        humanized_content = content
+        try:
+            humanized_content = await humanize_text(client, content)
+        except LLMRequestError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
+        except HumanizationError:
+            # Fail-open: a mangled citation placeholder shouldn't block the user from seeing
+            # their draft at all, humanization being cosmetic, not correctness-critical (see
+            # docstring).
+            humanized_content = content
 
-    precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
+        precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
+        version = await create_draft_version(db, chapter_id, content=humanized_content)
+    finally:
+        # Always awaited, even on an early failure above, so a slower title-generation call
+        # never becomes an unretrieved/dangling task (see `_finish_title_generation`'s
+        # fail-open contract).
+        await _finish_title_generation(db, project_id, title_task)
 
-    version = await create_draft_version(db, chapter_id, content=humanized_content)
     return GenerateDraftResponse(
         version=version, precheck=PlagiarismCheckResultResponse.from_result(precheck)
     )
@@ -598,6 +734,7 @@ async def generate_chapter_draft_stream_endpoint(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Chapter '{chapter_id}' not found"
         )
+    project = await get_project(db, project_id)
 
     rag_excerpts = await _fetch_rag_excerpts(instruction)
     messages = assemble_prompt(
@@ -607,32 +744,39 @@ async def generate_chapter_draft_stream_endpoint(
         user_message=instruction,
     )
     client = DeepSeekClient()
+    title_task = _maybe_start_title_generation(client, project, instruction)
 
     async def event_stream() -> AsyncIterator[str]:
         chunks: list[str] = []
         try:
-            async for chunk in client.generate_stream("heavy", messages):
-                chunks.append(chunk)
-                yield _sse_event("token", chunk)
-        except LLMRequestError as exc:
-            yield _sse_event("error", json.dumps({"detail": str(exc)}))
-            return
+            try:
+                async for chunk in client.generate_stream("heavy", messages):
+                    chunks.append(chunk)
+                    yield _sse_event("token", chunk)
+            except LLMRequestError as exc:
+                yield _sse_event("error", json.dumps({"detail": str(exc)}))
+                return
 
-        content = "".join(chunks)
-        try:
-            humanized_content = await humanize_text(client, content)
-        except LLMRequestError as exc:
-            yield _sse_event("error", json.dumps({"detail": str(exc)}))
-            return
-        except HumanizationError:
-            humanized_content = content
+            content = "".join(chunks)
+            try:
+                humanized_content = await humanize_text(client, content)
+            except LLMRequestError as exc:
+                yield _sse_event("error", json.dumps({"detail": str(exc)}))
+                return
+            except HumanizationError:
+                humanized_content = content
 
-        precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
-        version = await create_draft_version(db, chapter_id, content=humanized_content)
-        response_payload = GenerateDraftResponse(
-            version=version, precheck=PlagiarismCheckResultResponse.from_result(precheck)
-        )
-        yield _sse_event("done", json.dumps(response_payload.model_dump(mode="json")))
+            precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
+            version = await create_draft_version(db, chapter_id, content=humanized_content)
+            response_payload = GenerateDraftResponse(
+                version=version, precheck=PlagiarismCheckResultResponse.from_result(precheck)
+            )
+            yield _sse_event("done", json.dumps(response_payload.model_dump(mode="json")))
+        finally:
+            # Same fail-open, always-awaited contract as the non-streaming endpoint (see
+            # `_finish_title_generation`) — never leaves the title-generation task dangling,
+            # whether the stream succeeded or errored out early.
+            await _finish_title_generation(db, project_id, title_task)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

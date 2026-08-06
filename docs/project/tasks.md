@@ -172,3 +172,94 @@ AI-writing tell). See `docs/features/2026-08-06_plagiarism-sentence-flags-and-fi
 | TASK-INT-13 | Per-sentence plagiarism/AI-like flags + `originality_score` in the precheck result | E07 | python-developer | done |
 | TASK-INT-14 | `POST /plagiarism/check-file` (`.pdf`/`.docx` text extraction via `pypdf`/`python-docx`) + new upload tab | E07 | python-developer, frontend-developer | done |
 | TASK-INT-15 | Auto-normalize em-dash to en-dash in the humanizer pipeline | E07 | python-developer | done |
+
+## Phase 5.9 — Auto-Generated Project Title (added 2026-08-06, user request, not in original epic breakdown)
+
+The user asked that a project's generic "Untitled Thesis" default title be automatically replaced
+with a short, distinguishing title once the user gives their first real generation instruction,
+rather than requiring a manual rename.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-16 | Auto-generate and persist a project title from the user's first chat instruction via a fast-tier DeepSeek call, wired into both the streaming and non-streaming generate-draft endpoints (fail-open, triggers once via a title-equality check) | E11 | python-developer | done |
+
+## Phase 7 — Multi-Project Management (added 2026-08-06, BA/architect epic breakdown for large onboarding/history/async epic)
+
+E11. See `docs/project/epics.md` build sequence and `docs/project/plan.md` for sequencing —
+sequential spine, first of E11 -> E12 -> E13 -> E15 -> E16.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-E11-1 | Add `owner_id` to `Project`; scope project creation/read to the authenticated user | E11 | python-developer | done |
+| TASK-E11-2 | `GET /projects` — `list_projects_for_user` endpoint | E11 | python-developer | done |
+| TASK-E11-3 | `DELETE /projects/{id}` — cascading delete across Mongo projects/chapters/versions, Qdrant vectors (ADR-0002), and uploaded files | E11 | python-developer | done |
+| TASK-E11-4 | Project list/switch/delete UI | E11 | frontend-developer | done |
+
+## Phase 8 — Chapter/Subchapter Model & Sidebar Navigation
+
+E12, depends on E11 and ADR-0014 (subchapter data model).
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-E12-1 | Add `parent_chapter_id: str \| None` to `Chapter`; rescope `insert_chapter_at_order`/`infer_insertion_order` from `(project_id)` to `(project_id, parent_chapter_id)` per ADR-0014 | E12 | python-developer | todo |
+| TASK-E12-2 | Create/list-subchapters-under-a-parent endpoints | E12 | python-developer | todo |
+| TASK-E12-3 | Regression check: confirm E10's chapter-insertion tests still pass under parent-scoped ordering (top-level chapters = `parent_chapter_id=None`) | E12 | python-developer | todo |
+| TASK-E12-4 | `ChapterTree` sidebar navigation component + hook | E12 | frontend-developer | todo |
+
+## Phase 9 — Draft Ingestion & Lock/Protected-Range Selection
+
+E13, depends on E12 and E06; needs ADR-0011 (lock anchor).
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-E13-1 | New `locks` module: block manifest model (`block_id` + `block_content_hash`) per ADR-0011 | E13 | python-developer | todo |
+| TASK-E13-2 | Persist a block manifest per `ChapterVersion` (replacing opaque string content as the sole representation) | E13 | python-developer | todo |
+| TASK-E13-3 | Draft upload/ingestion endpoint that parses an uploaded draft into manifest blocks | E13 | python-developer | todo |
+| TASK-E13-4 | Lock/unlock endpoints (`POST`/`DELETE /chapters/{id}/locks`) with hash-freshness check (fail-closed on stale lock) | E13 | python-developer | todo |
+| TASK-E13-5 | Lock/unlock selection UI in `DiffViewer`/`PaginatedDocument` (UI-selection only, no inline markers) | E13 | frontend-developer | todo |
+
+## Phase 10 — Required-Authors/Citation-Grounding Onboarding Input
+
+E14, depends on E04 and E11 (parallel track alongside E12/E13, per `docs/project/plan.md`).
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-E14-1 | Extend `sources` module with a must-cite authors/works model | E14 | python-developer | todo |
+| TASK-E14-2 | `POST /projects/{id}/required-sources` endpoint | E14 | python-developer | todo |
+| TASK-E14-3 | Boost/require must-cite sources in the RAG query via a Qdrant payload filter (ADR-0002); fail closed (flag unmet requirement) rather than fabricate a citation, per ADR-0001 | E14 | python-developer | todo |
+| TASK-E14-4 | Onboarding UI input for the required-authors/works list | E14 | frontend-developer | todo |
+
+## Phase 11 — In-Place AI Insertion Respecting Locks
+
+E15, depends on E13 and E08; must run strictly after E13, before E16 (not in parallel with either).
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-E15-1 | "Insert at anchor" generation mode targeting a `block_id` in the `llm_routing`/generation pipeline | E15 | python-developer | todo |
+| TASK-E15-2 | Deterministic post-generation lock guard: locked spans stay in the prompt as read-only context; enforcement recomputes hash-freshness (ADR-0011) and rejects-and-reroutes with an explicit alternative anchor if the proposed anchor overlaps a lock — never trust the model's promise alone | E15 | python-developer | todo |
+| TASK-E15-3 | Frontend surfacing of a reject-and-reroute outcome in the diff viewer | E15 | frontend-developer | todo |
+
+## Phase 12 — Multi-Granularity History & Undo/Redo
+
+E16, depends on E15 and E08; needs ADR-0012 (op-log). Must not run in parallel with E13/E15 —
+shares the same anchor primitives.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-E16-1 | `Operation` op-log model per ADR-0012 (layered on the existing `ChapterVersion` chain, not replacing it) | E16 | python-developer | todo |
+| TASK-E16-2 | `POST /chapters/{id}/undo`, `/redo` endpoints: replay/revert `Operation` rows against the current draft; reject with a clear error if an op's anchor block no longer exists | E16 | python-developer | todo |
+| TASK-E16-3 | Redo-stack wipe on a new edit applied after an undo (linear op-log, no branching history) | E16 | python-developer | todo |
+| TASK-E16-4 | Client-side page-range revert resolution: `PaginatedDocument`'s per-page block indices resolved into a block-id range, sent to the backend as a batch-undo | E16 | frontend-developer | todo |
+| TASK-E16-5 | Undo/redo UI controls at whole-document/page-range/paragraph-or-line granularity | E16 | frontend-developer | todo |
+
+## Phase 13 — Celery-Based Async Task Offloading
+
+E17, orthogonal/parallel track; needs ADR-0013 (Redis broker) resolved; should land before E15/E16
+begin real work, per `docs/project/plan.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-E17-1 | New `redis` service in `docker-compose.yml` + Celery app config (broker + result backend) per ADR-0013 | E17 | python-developer | todo |
+| TASK-E17-2 | New `worker` package: task modules `llm_routing.tasks`, `sources.tasks`, `humanizer.tasks`, `formatting.tasks` | E17 | python-developer | todo |
+| TASK-E17-3 | Redis Pub/Sub progress bridge into the existing SSE generators (ADR-0009), buffering the last N events per `task_id` for late subscribers | E17 | python-developer | todo |
+| TASK-E17-4 | Migrate parsing/humanization/plagiarism-precheck/generation endpoints to enqueue Celery tasks instead of running inline | E17 | python-developer | todo |

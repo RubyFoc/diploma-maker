@@ -16,10 +16,17 @@ export interface DocumentState {
   projectId: string | null
   /** Selected/uploaded university config's id, per TASK-E10-1 onboarding flow. */
   institutionId: string | null
+  /** Active project's display title, shown in the workspace header; empty until a project is entered. */
+  title: string
   chapters: Chapter[]
 }
 
-export const emptyDocumentState: DocumentState = { projectId: null, institutionId: null, chapters: [] }
+export const emptyDocumentState: DocumentState = {
+  projectId: null,
+  institutionId: null,
+  title: '',
+  chapters: [],
+}
 
 interface DocumentContextValue {
   document: DocumentState

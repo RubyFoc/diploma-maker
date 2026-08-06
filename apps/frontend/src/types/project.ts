@@ -31,6 +31,14 @@ export interface ProjectDetail {
   chapters: ChapterDetail[]
 }
 
+// Lightweight per-project listing entry backing `GET /projects` (TASK-E11-2/E11-4): no chapters,
+// matching the backend's ProjectSummary response model.
+export interface ProjectSummary {
+  id: string
+  title: string
+  created_at: string
+}
+
 // Mirrors the backend's plagiarism.precheck.PlagiarismCheckResult dataclass, surfaced via the
 // generate endpoint's response so the UI can flag a draft for extra review.
 export interface PlagiarismSentenceFlag {

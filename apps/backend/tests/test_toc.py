@@ -13,6 +13,15 @@ from fastapi.testclient import TestClient
 from diploma_backend.toc.parser import TocParseError, parse_toc
 
 
+def _auth_headers(client: TestClient, email: str = "student@example.com") -> dict:
+    """Register a user and return an `Authorization` header, since project endpoints require
+    auth as of TASK-E11-1 (see `test_auth.py`'s `_register`)."""
+    response = client.post("/auth/register", json={"email": email, "password": "hunter22"})
+    assert response.status_code == 201
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _docx_bytes(document: Document) -> bytes:
     buffer = BytesIO()
     document.save(buffer)
@@ -86,12 +95,14 @@ def test_parse_toc_no_headings_or_numbered_lines_raises() -> None:
 
 
 def test_upload_toc_creates_chapters_in_order(client: TestClient) -> None:
-    create_response = client.post("/projects", json={"title": "My Thesis"})
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
     project_id = create_response.json()["id"]
 
     response = client.post(
         f"/projects/{project_id}/toc/upload",
         files={"file": ("toc.docx", _build_numbered_docx(), "application/vnd.openxmlformats")},
+        headers=headers,
     )
 
     assert response.status_code == 201
@@ -104,21 +115,25 @@ def test_upload_toc_creates_chapters_in_order(client: TestClient) -> None:
 
 
 def test_upload_toc_nonexistent_project_404s(client: TestClient) -> None:
+    headers = _auth_headers(client)
     response = client.post(
         "/projects/does-not-exist/toc/upload",
         files={"file": ("toc.docx", _build_numbered_docx(), "application/vnd.openxmlformats")},
+        headers=headers,
     )
 
     assert response.status_code == 404
 
 
 def test_upload_toc_invalid_file_422s(client: TestClient) -> None:
-    create_response = client.post("/projects", json={"title": "My Thesis"})
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
     project_id = create_response.json()["id"]
 
     response = client.post(
         f"/projects/{project_id}/toc/upload",
         files={"file": ("toc.docx", b"not a real docx file", "application/octet-stream")},
+        headers=headers,
     )
 
     assert response.status_code == 422

@@ -198,3 +198,20 @@ class QdrantSourceStore:
             }
             for point in results
         ]
+
+
+def delete_project_vectors(project_id: str) -> None:
+    """Forward-looking stub for cascading a project delete (TASK-E11-3) into Qdrant (ADR-0002).
+
+    Points in the shared `diploma_maker_documents` collection are payload-tagged only by
+    `document_id` (see `upsert_chunks`/`search` above) — there is no `project_id` payload field
+    anywhere yet, because nothing in this codebase ingests project-scoped content into Qdrant
+    today (RAG grounding is live external search, `sources.search`, not Qdrant-backed; see
+    `projects.router`'s module docstring). Filtering on a `project_id` that doesn't exist in any
+    point's payload would silently delete nothing, which is indistinguishable from "correctly
+    deleted zero vectors" — so this intentionally does nothing yet, and deliberately does not
+    construct a `QdrantSourceStore`/open a Qdrant connection to do it. Wired into the delete
+    cascade now so the call site already exists once project-scoped ingestion (and a real
+    `project_id` payload field) lands.
+    """
+    return None

@@ -11,6 +11,7 @@ export function toDocumentState(project: ProjectDetail, institutionId: string | 
   return {
     projectId: project.id,
     institutionId,
+    title: project.title,
     chapters: project.chapters.map((chapter) => ({
       id: chapter.id,
       title: chapter.title,

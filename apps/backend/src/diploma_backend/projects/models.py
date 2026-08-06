@@ -14,9 +14,15 @@ from pydantic import BaseModel, Field
 class Project(BaseModel):
     """One thesis/dissertation project, keyed by `id` (matching this codebase's convention of an
     explicit `id` field rather than Mongo's own `_id`, see `versions.models.ChapterVersion`).
+
+    `owner_id` is the `sub` claim (user id) of the authenticated user who created the project
+    (TASK-E11-1, `auth.dependencies.get_current_user_id`); every project-scoped route in
+    `projects.router` requires a valid caller and treats a project owned by someone else as
+    nonexistent (404), not a 403, to avoid leaking other users' project ids.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    owner_id: str
     title: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

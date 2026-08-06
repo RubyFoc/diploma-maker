@@ -12,6 +12,15 @@ _CHAT_URL = "https://api.deepseek.com/chat/completions"
 _SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 
 
+def _auth_headers(client: TestClient, email: str = "student@example.com") -> dict:
+    """Register a user and return an `Authorization` header, since project endpoints require
+    auth as of TASK-E11-1 (see `test_auth.py`'s `_register`)."""
+    response = client.post("/auth/register", json={"email": email, "password": "hunter22"})
+    assert response.status_code == 201
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _success_response(content: str) -> httpx.Response:
     return httpx.Response(
         200,
@@ -46,9 +55,10 @@ def _semantic_scholar_response(papers: list[dict]) -> httpx.Response:
 
 
 def _setup_project_and_chapter(client: TestClient) -> tuple[str, str]:
-    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
     chapter_id = client.post(
-        f"/projects/{project_id}/chapters", json={"title": "Introduction"}
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
     ).json()["id"]
     return project_id, chapter_id
 

@@ -5,7 +5,7 @@ export interface AuthState {
   accessToken: string | null
 }
 
-const ACCESS_TOKEN_STORAGE_KEY = 'diploma-maker.accessToken'
+export const ACCESS_TOKEN_STORAGE_KEY = 'diploma-maker.accessToken'
 
 export const emptyAuthState: AuthState = { accessToken: null }
 

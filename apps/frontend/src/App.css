@@ -29,8 +29,14 @@
 .workspace-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  gap: var(--space-3);
   margin-bottom: var(--space-4);
+}
+
+.workspace-project-title {
+  flex: 1 1 auto;
+  margin: 0;
 }
 
 /* Tabs */

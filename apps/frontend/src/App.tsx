@@ -1,14 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 import { AuthProvider, emptyAuthState, useAuth } from './context/AuthContext'
 import { ChatProvider, useChat } from './context/ChatContext'
 import { DocumentProvider, emptyDocumentState, useDocument } from './context/DocumentContext'
-import { useNewProject } from './hooks/useNewProject'
+import { useInstitutionConfig } from './hooks/useInstitutionConfig'
 import { strings } from './strings'
 import { DiffViewer } from './components/DiffViewer'
 import { DocumentPreview } from './components/DocumentPreview'
 import { Onboarding } from './components/Onboarding'
 import { PlagiarismCheckPanel } from './components/PlagiarismCheckPanel'
+import { ProjectLanding } from './components/ProjectLanding'
 import { exportProject } from './services/exportService'
 import { recordSignal } from './services/feedbackService'
 import { acceptDraft, createChapter, getProject } from './services/projectService'
@@ -79,6 +80,15 @@ function ChatPanel() {
               role: 'assistant',
               text: precheck.flagged ? strings.chatDraftFlaggedMessage : strings.chatDraftReadyMessage,
             })
+            // Server-side generation may retitle the project from its default (e.g. via an
+            // LLM-derived title from the user's first instruction) — refetch rather than guess
+            // the new title client-side. Best-effort, mirrors the recordSignal fire-and-forget
+            // pattern in DocumentPanel.
+            void getProject(projectId)
+              .then((project) => {
+                setDocument((previous) => ({ ...previous, title: project.title }))
+              })
+              .catch(() => {})
             cleanup()
             resolve()
           },
@@ -137,6 +147,7 @@ function ChatPanel() {
 
 function DocumentPanel() {
   const { document: doc, setDocument } = useDocument()
+  const { config: institutionConfig } = useInstitutionConfig(doc.institutionId)
 
   const handleAccept = async (chapterId: string, draftId: string) => {
     await acceptDraft(draftId)
@@ -180,14 +191,14 @@ function DocumentPanel() {
             return (
               <li key={chapter.id} className="chapter-item">
                 <h3>{chapter.title}</h3>
-                <DocumentPreview content={chapter.content} />
+                <DocumentPreview content={chapter.content} institutionConfig={institutionConfig} />
                 {/* Live SSE preview (ADR-0009): shown while tokens are still arriving, before
                     `pendingDraft`/`DiffViewer` take over once `done` fires. Reuses
                     `DocumentPreview` rather than a new component since it already renders
                     arbitrary chapter text and re-renders live as `streamingContent` grows. */}
                 {streamingContent !== null && !pendingDraft && (
                   <div className="chapter-streaming" aria-label={strings.chapterStreamingLabel}>
-                    <DocumentPreview content={streamingContent} />
+                    <DocumentPreview content={streamingContent} institutionConfig={institutionConfig} />
                   </div>
                 )}
                 {pendingDraft && (
@@ -196,6 +207,7 @@ function DocumentPanel() {
                     after={pendingDraft.content}
                     onAccept={() => void handleAccept(chapter.id, pendingDraft.id)}
                     onReject={() => handleReject(chapter.id, pendingDraft.id)}
+                    institutionConfig={institutionConfig}
                   />
                 )}
               </li>
@@ -205,12 +217,6 @@ function DocumentPanel() {
       )}
     </section>
   )
-}
-
-function NewProjectButton() {
-  const startNewProject = useNewProject()
-
-  return <button onClick={() => void startNewProject()}>{strings.newProjectButton}</button>
 }
 
 function ExportButton() {
@@ -245,11 +251,16 @@ function ExportButton() {
   )
 }
 
-function Workspace() {
+function Workspace({ onBackToLanding }: { onBackToLanding: () => void }) {
+  const { document: doc } = useDocument()
+
   return (
     <>
       <div className="workspace-header">
-        <NewProjectButton />
+        <button type="button" onClick={onBackToLanding}>
+          {strings.myProjectsButton}
+        </button>
+        <h2 className="workspace-project-title">{doc.title}</h2>
         <ExportButton />
       </div>
       <main className="workspace">
@@ -261,6 +272,7 @@ function Workspace() {
 }
 
 type Tab = 'workspace' | 'plagiarism-check'
+type WorkspaceView = 'landing' | 'workspace'
 
 /**
  * Clears all client-side session state (JWT + selected project/institution + chat history) and
@@ -291,9 +303,23 @@ function LogoutButton() {
  * Tab navigation shown once a user is past onboarding, per ADR-0008 (no routing
  * library — local useState is enough for two sibling views). "Workspace" is the
  * default tab so existing project/chapter flows are unaffected.
+ *
+ * Within the "workspace" tab, a `view` sub-state (`'landing' | 'workspace'`) decides
+ * whether the project list (`ProjectLanding`) or the chat+preview workspace shows.
+ * Landing is the default and is forced whenever there is no active project; picking
+ * "My Projects" from the workspace flips back to landing WITHOUT clearing `document`,
+ * so an in-progress project's chapters survive a round trip back to the list.
  */
 function AuthenticatedApp() {
   const [activeTab, setActiveTab] = useState<Tab>('workspace')
+  const { document: doc } = useDocument()
+  const [view, setView] = useState<WorkspaceView>(doc.projectId === null ? 'landing' : 'workspace')
+
+  useEffect(() => {
+    if (doc.projectId === null) {
+      setView('landing')
+    }
+  }, [doc.projectId])
 
   return (
     <>
@@ -321,7 +347,15 @@ function AuthenticatedApp() {
           {strings.tabPlagiarismCheckLabel}
         </button>
       </nav>
-      {activeTab === 'workspace' ? <Workspace /> : <PlagiarismCheckPanel />}
+      {activeTab === 'workspace' ? (
+        view === 'landing' ? (
+          <ProjectLanding onProjectActivated={() => setView('workspace')} />
+        ) : (
+          <Workspace onBackToLanding={() => setView('landing')} />
+        )
+      ) : (
+        <PlagiarismCheckPanel />
+      )}
     </>
   )
 }

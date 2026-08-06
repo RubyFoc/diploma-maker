@@ -26,6 +26,15 @@ _DOCX_MEDIA_TYPE = (
 )
 
 
+def _auth_headers(client: TestClient, email: str = "student@example.com") -> dict:
+    """Register a user and return an `Authorization` header, since project endpoints require
+    auth as of TASK-E11-1 (see `test_auth.py`'s `_register`)."""
+    response = client.post("/auth/register", json={"email": email, "password": "hunter22"})
+    assert response.status_code == 201
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _make_config(institution_id: str = "inst-1") -> InstitutionConfig:
     return InstitutionConfig(
         institution_id=institution_id,
@@ -44,13 +53,15 @@ def _make_config(institution_id: str = "inst-1") -> InstitutionConfig:
     )
 
 
-def _accept_chapter_content(client: TestClient, project_id: str, title: str, content: str) -> str:
+def _accept_chapter_content(
+    client: TestClient, project_id: str, title: str, content: str, headers: dict
+) -> str:
     """Create a chapter under `project_id` and give it accepted `content`, bypassing the
     LLM-backed `/generate` endpoint by calling `versions.service` directly against the same
     in-memory fake DB the `client` fixture wires up.
     """
     chapter_id = client.post(
-        f"/projects/{project_id}/chapters", json={"title": title}
+        f"/projects/{project_id}/chapters", json={"title": title}, headers=headers
     ).json()["id"]
 
     from diploma_backend.versions.service import accept_draft_version, create_draft_version
@@ -66,11 +77,12 @@ def _accept_chapter_content(client: TestClient, project_id: str, title: str, con
 
 
 def test_export_with_and_without_content_returns_valid_docx(client: TestClient) -> None:
-    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
-    _accept_chapter_content(client, project_id, "Introduction", "This chapter is done.")
-    client.post(f"/projects/{project_id}/chapters", json={"title": "Conclusion"})
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    _accept_chapter_content(client, project_id, "Introduction", "This chapter is done.", headers)
+    client.post(f"/projects/{project_id}/chapters", json={"title": "Conclusion"}, headers=headers)
 
-    response = client.get(f"/projects/{project_id}/export")
+    response = client.get(f"/projects/{project_id}/export", headers=headers)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == _DOCX_MEDIA_TYPE
@@ -87,13 +99,16 @@ def test_export_with_and_without_content_returns_valid_docx(client: TestClient) 
 
 
 def test_export_with_valid_institution_id_applies_styling(client: TestClient) -> None:
-    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
-    _accept_chapter_content(client, project_id, "Introduction", "Some content.")
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    _accept_chapter_content(client, project_id, "Introduction", "Some content.", headers)
 
     db = app.dependency_overrides[get_database]()
     asyncio.run(create_institution_config(db, _make_config("inst-1")))
 
-    response = client.get(f"/projects/{project_id}/export", params={"institution_id": "inst-1"})
+    response = client.get(
+        f"/projects/{project_id}/export", params={"institution_id": "inst-1"}, headers=headers
+    )
 
     assert response.status_code == 200
     document = Document(BytesIO(response.content))
@@ -106,11 +121,14 @@ def test_export_with_valid_institution_id_applies_styling(client: TestClient) ->
 
 
 def test_export_with_unknown_institution_id_falls_back_without_404(client: TestClient) -> None:
-    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
-    _accept_chapter_content(client, project_id, "Introduction", "Some content.")
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    _accept_chapter_content(client, project_id, "Introduction", "Some content.", headers)
 
     response = client.get(
-        f"/projects/{project_id}/export", params={"institution_id": "does-not-exist"}
+        f"/projects/{project_id}/export",
+        params={"institution_id": "does-not-exist"},
+        headers=headers,
     )
 
     assert response.status_code == 200
@@ -120,17 +138,19 @@ def test_export_with_unknown_institution_id_falls_back_without_404(client: TestC
 
 
 def test_export_404s_for_unknown_project(client: TestClient) -> None:
-    response = client.get("/projects/does-not-exist/export")
+    headers = _auth_headers(client)
+    response = client.get("/projects/does-not-exist/export", headers=headers)
 
     assert response.status_code == 404
 
 
 def test_export_sanitizes_unsafe_characters_in_filename(client: TestClient) -> None:
+    headers = _auth_headers(client)
     project_id = client.post(
-        "/projects", json={"title": "My Thesis: Chapter 1/2?"}
+        "/projects", json={"title": "My Thesis: Chapter 1/2?"}, headers=headers
     ).json()["id"]
 
-    response = client.get(f"/projects/{project_id}/export")
+    response = client.get(f"/projects/{project_id}/export", headers=headers)
 
     assert response.status_code == 200
     disposition = response.headers["content-disposition"]
@@ -144,11 +164,12 @@ def test_export_preserves_cyrillic_title_in_filename(client: TestClient) -> None
     """Regression test: an earlier version of `_sanitize_filename` allowlisted ASCII only, so a
     Cyrillic title (this platform's actual target audience per ADR-0001/sources.geo_filter) was
     turned into a string of underscores instead of a readable filename."""
+    headers = _auth_headers(client)
     project_id = client.post(
-        "/projects", json={"title": "Экспорт: Тест/Проверка?"}
+        "/projects", json={"title": "Экспорт: Тест/Проверка?"}, headers=headers
     ).json()["id"]
 
-    response = client.get(f"/projects/{project_id}/export")
+    response = client.get(f"/projects/{project_id}/export", headers=headers)
 
     assert response.status_code == 200
     disposition = response.headers["content-disposition"]

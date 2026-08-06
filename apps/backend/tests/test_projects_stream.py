@@ -17,6 +17,15 @@ _CHAT_URL = "https://api.deepseek.com/chat/completions"
 _SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 
 
+def _auth_headers(client: TestClient, email: str = "student@example.com") -> dict:
+    """Register a user and return an `Authorization` header, since project endpoints require
+    auth as of TASK-E11-1 (see `test_auth.py`'s `_register`)."""
+    response = client.post("/auth/register", json={"email": email, "password": "hunter22"})
+    assert response.status_code == 201
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _mock_empty_rag_search() -> None:
     """Mock the RAG-grounding search call every generation call now makes, with an empty
     result — these tests don't exercise RAG grounding itself."""
@@ -67,6 +76,44 @@ def _mock_stream_and_humanize(
     )
 
 
+_TITLE_PROMPT_MARKER = "thesis title"
+"""Substring unique to `llm_routing.title`'s system prompt, mirroring `test_projects.py`'s
+constant of the same name — used to tell the fast-tier title-generation call apart from the
+fast-tier humanization call in respx mocks."""
+
+
+def _is_title_request(request: httpx.Request) -> bool:
+    body = json.loads(request.content)
+    return _TITLE_PROMPT_MARKER in body["messages"][0]["content"]
+
+
+def _mock_stream_humanize_and_title(
+    *,
+    deltas: list[str] = ("Draft ", "chapter ", "body."),
+    humanized: str = "Humanized body.",
+    title_response: httpx.Response | None = None,
+) -> None:
+    """Like `_mock_stream_and_humanize`, plus a mock for the fast-tier project-title
+    auto-generation call (Phase 5.9), distinguished from humanization by request content via
+    `side_effect` (see `test_projects.py`'s `_mock_generate_humanize_and_title`)."""
+    _mock_empty_rag_search()
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=_stream_body(list(deltas))
+        )
+    )
+    resolved_title_response = (
+        title_response if title_response is not None else _success_response("Generated Title")
+    )
+
+    def side_effect(request: httpx.Request) -> httpx.Response:
+        return resolved_title_response if _is_title_request(request) else _success_response(
+            humanized
+        )
+
+    respx.post(_CHAT_URL, json__model="deepseek-v4-flash").mock(side_effect=side_effect)
+
+
 def _parse_sse(text: str) -> list[tuple[str, str]]:
     """Parse raw SSE text into `(event, data)` pairs, joining multi-line `data:` blocks."""
     events: list[tuple[str, str]] = []
@@ -85,18 +132,30 @@ def _parse_sse(text: str) -> list[tuple[str, str]]:
     return events
 
 
-def _setup_project_and_chapter(client: TestClient) -> tuple[str, str]:
-    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
+def _setup_default_titled_project_and_chapter(client: TestClient) -> tuple[str, str, dict]:
+    """Like `_setup_project_and_chapter`, but leaves the project at its default title (rather
+    than "Thesis") so title auto-generation (Phase 5.9) is actually exercised."""
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={}, headers=headers).json()["id"]
     chapter_id = client.post(
-        f"/projects/{project_id}/chapters", json={"title": "Introduction"}
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
     ).json()["id"]
-    return project_id, chapter_id
+    return project_id, chapter_id, headers
+
+
+def _setup_project_and_chapter(client: TestClient) -> tuple[str, str, dict]:
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+    return project_id, chapter_id, headers
 
 
 @respx.mock
 def test_generate_stream_emits_tokens_and_done(client: TestClient) -> None:
     _mock_stream_and_humanize(deltas=["Draft ", "chapter ", "body."], humanized="Humanized body.")
-    project_id, chapter_id = _setup_project_and_chapter(client)
+    project_id, chapter_id, headers = _setup_project_and_chapter(client)
 
     response = client.get(
         f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
@@ -122,7 +181,7 @@ def test_generate_stream_emits_tokens_and_done(client: TestClient) -> None:
         "reasons",
     }
 
-    project_after = client.get(f"/projects/{project_id}").json()
+    project_after = client.get(f"/projects/{project_id}", headers=headers).json()
     pending_draft = project_after["chapters"][0]["pending_draft"]
     assert pending_draft is not None
     assert pending_draft["content"] == "Humanized body."
@@ -131,7 +190,7 @@ def test_generate_stream_emits_tokens_and_done(client: TestClient) -> None:
 @respx.mock
 def test_generate_stream_multiline_chunk_is_framed_correctly(client: TestClient) -> None:
     _mock_stream_and_humanize(deltas=["line one\nline two"], humanized="Humanized body.")
-    project_id, chapter_id = _setup_project_and_chapter(client)
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
 
     response = client.get(
         f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
@@ -147,7 +206,7 @@ def test_generate_stream_multiline_chunk_is_framed_correctly(client: TestClient)
 def test_generate_stream_llm_failure_emits_error_event(client: TestClient) -> None:
     _mock_empty_rag_search()
     respx.post(_CHAT_URL).mock(return_value=_fail_response())
-    project_id, chapter_id = _setup_project_and_chapter(client)
+    project_id, chapter_id, headers = _setup_project_and_chapter(client)
 
     response = client.get(
         f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
@@ -161,12 +220,65 @@ def test_generate_stream_llm_failure_emits_error_event(client: TestClient) -> No
     assert event == "error"
     assert "detail" in json.loads(data)
 
-    project_after = client.get(f"/projects/{project_id}").json()
+    project_after = client.get(f"/projects/{project_id}", headers=headers).json()
     assert project_after["chapters"][0]["pending_draft"] is None
 
 
+@respx.mock
+def test_generate_stream_auto_titles_a_default_titled_project(client: TestClient) -> None:
+    """First streamed generation on a still-default-titled project (Phase 5.9) results in the
+    project's title being replaced with the LLM-generated one, mirroring
+    `test_projects.py`'s non-streaming equivalent."""
+    _mock_stream_humanize_and_title(title_response=_success_response("Renewable Energy Policy"))
+    project_id, chapter_id, headers = _setup_default_titled_project_and_chapter(client)
+    assert client.get(f"/projects/{project_id}", headers=headers).json()["title"] == (
+        "Untitled Thesis"
+    )
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write an introduction about renewable energy."},
+    )
+
+    assert response.status_code == 200
+    project_after = client.get(f"/projects/{project_id}", headers=headers).json()
+    assert project_after["title"] == "Renewable Energy Policy"
+
+    title_calls = [
+        call
+        for call in respx.calls
+        if call.request.url == _CHAT_URL and _is_title_request(call.request)
+    ]
+    assert len(title_calls) == 1
+
+
+@respx.mock
+def test_generate_stream_title_generation_failure_does_not_break_main_flow(
+    client: TestClient,
+) -> None:
+    """A failing title-generation call must not break the streamed draft response, and must leave
+    the project's title at its default (fail-open)."""
+    _mock_stream_humanize_and_title(title_response=_fail_response())
+    project_id, chapter_id, headers = _setup_default_titled_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write an introduction about renewable energy."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done_events = [data for event, data in events if event == "done"]
+    assert len(done_events) == 1
+    assert json.loads(done_events[0])["version"]["content"] == "Humanized body."
+
+    project_after = client.get(f"/projects/{project_id}", headers=headers).json()
+    assert project_after["title"] == "Untitled Thesis"
+
+
 def test_generate_stream_404s_for_unknown_chapter(client: TestClient) -> None:
-    project_id = client.post("/projects", json={"title": "Thesis"}).json()["id"]
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
 
     response = client.get(
         f"/projects/{project_id}/chapters/does-not-exist/generate/stream",
@@ -177,10 +289,11 @@ def test_generate_stream_404s_for_unknown_chapter(client: TestClient) -> None:
 
 
 def test_generate_stream_404s_when_chapter_belongs_to_other_project(client: TestClient) -> None:
-    project_a = client.post("/projects", json={"title": "Thesis A"}).json()["id"]
-    project_b = client.post("/projects", json={"title": "Thesis B"}).json()["id"]
+    headers = _auth_headers(client)
+    project_a = client.post("/projects", json={"title": "Thesis A"}, headers=headers).json()["id"]
+    project_b = client.post("/projects", json={"title": "Thesis B"}, headers=headers).json()["id"]
     chapter_id = client.post(
-        f"/projects/{project_a}/chapters", json={"title": "Introduction"}
+        f"/projects/{project_a}/chapters", json={"title": "Introduction"}, headers=headers
     ).json()["id"]
 
     response = client.get(
