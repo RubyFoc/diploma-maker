@@ -69,6 +69,13 @@ from diploma_backend.llm_routing import (
 )
 from diploma_backend.llm_routing.summary import assemble_prompt
 from diploma_backend.locks.models import Block
+from diploma_backend.locks.service import (
+    AnchorResolution,
+    AnchorResolutionError,
+    find_valid_anchor,
+    list_locks_for_chapter,
+    reverify_anchor_resolution,
+)
 from diploma_backend.plagiarism.precheck import PlagiarismCheckResult, run_precheck
 from diploma_backend.projects.models import Chapter, Project
 from diploma_backend.projects.service import (
@@ -247,11 +254,21 @@ async def _humanize_and_precheck(
     return humanized_content, precheck
 
 
-def _anchor_context_excerpts(manifest: list[Block], anchor_block_id: str) -> list[str]:
+def _anchor_context_excerpts(
+    manifest: list[Block], anchor_block_id: str, locked_block_ids: frozenset[str] = frozenset()
+) -> list[str]:
     """Build read-only "surrounding context" excerpts for "insert at anchor" generation
     (TASK-E15-1): the content of the block immediately before and immediately after the anchor
     block in `manifest`, if they exist, each labeled so the model can tell it's orientation, not
     something to reproduce.
+
+    `locked_block_ids` (TASK-E15-2, ADR-0011) is the set of block ids currently covered by an
+    active `Lock` (`locks.service.list_locks_for_chapter`) — when a neighbor block is one of
+    these, its excerpt uses an explicit "protected, read-only, must not be modified" label
+    instead of the generic before/after one, so the model is told in-prompt not to touch it. This
+    is advisory context only: the actual enforcement that a generation never lands inside a
+    locked block is `locks.service.find_valid_anchor`, run in code before this function is even
+    called, never the model's own restraint.
 
     Raises `ValueError` (message containing "not found") if no block in `manifest` has
     `id == anchor_block_id`, matching `locks.models.insert_blocks_after`'s convention — callers
@@ -263,15 +280,19 @@ def _anchor_context_excerpts(manifest: list[Block], anchor_block_id: str) -> lis
     if anchor_index is None:
         raise ValueError(f"block {anchor_block_id!r} not found in manifest")
 
+    def _label(position: str, block: Block) -> str:
+        if block.id in locked_block_ids:
+            return (
+                f"Protected, read-only text {position} the insertion point — this content is "
+                f"locked and must NOT be modified, repeated, or overwritten: {block.content}"
+            )
+        return f"Text immediately {position} the insertion point: {block.content}"
+
     excerpts = []
     if anchor_index > 0:
-        excerpts.append(
-            f"Text immediately before the insertion point: {manifest[anchor_index - 1].content}"
-        )
+        excerpts.append(_label("before", manifest[anchor_index - 1]))
     if anchor_index < len(manifest) - 1:
-        excerpts.append(
-            f"Text immediately after the insertion point: {manifest[anchor_index + 1].content}"
-        )
+        excerpts.append(_label("after", manifest[anchor_index + 1]))
     return excerpts
 
 
@@ -438,11 +459,21 @@ class GenerateDraftResponse(BaseModel):
     `_fetch_required_source_excerpts` could not ground this generation call in — empty when the
     project has no required sources, or all of them were found. Never blocks generation itself;
     purely informational, per ADR-0001's "one bad citation must never block the document" posture.
+
+    `used_block_id`/`rerouted_from_block_id` (TASK-E15-2, ADR-0011) describe "insert at anchor"
+    mode's deterministic lock guard (`locks.service.find_valid_anchor`). Both are `None` in
+    full-chapter mode (`target_block_id` omitted). In anchor mode, `used_block_id` is the anchor
+    the new content was actually spliced after; `rerouted_from_block_id` is `None` unless the
+    originally requested `target_block_id` was locked and this generation was rerouted to a
+    different, nearby unlocked anchor instead — in which case it holds that originally requested
+    id, so a caller can surface "we moved your insertion point because it was locked".
     """
 
     version: ChapterVersion
     precheck: PlagiarismCheckResultResponse
     unmet_required_sources: list[str] = []
+    used_block_id: str | None = None
+    rerouted_from_block_id: str | None = None
 
 
 async def _build_chapter_detail(db: AsyncIOMotorDatabase, chapter: Chapter) -> ChapterDetail:
@@ -869,17 +900,31 @@ async def generate_chapter_draft_endpoint(
     `ChapterVersion` and the precheck result.
 
     If `body.target_block_id` is set (TASK-E15-1, ADR-0011), generation switches to "insert at
-    anchor" mode instead: the chapter's current accepted manifest is fetched up front and the
-    anchor block is located in it BEFORE any LLM call (raising `HTTPException(404)` immediately
-    if there's no accepted version, no manifest, or the anchor isn't found — mirroring this
-    endpoint's chapter-not-found 404 check's placement, so a bad anchor never wastes a generation
-    call). The model is switched to `_ANCHOR_GENERATION_SYSTEM_PROMPT` and given the anchor's
-    immediate neighboring block content as read-only context (`_anchor_context_excerpts`), told to
-    output only the new material to splice in — not a full-chapter rewrite. The same humanize ->
-    precheck pipeline runs either way (`_humanize_and_precheck`); only persistence differs, via
-    `versions.service.create_draft_version_at_anchor` instead of `create_draft_version`. Lock
-    freshness enforcement over the anchor (rejecting/rerouting a generation that would touch a
-    locked, stale block) is TASK-E15-2's job, not this one's.
+    anchor" mode instead. Before any LLM call, `locks.service.find_valid_anchor` (TASK-E15-2)
+    deterministically resolves the requested anchor against the chapter's current accepted
+    manifest and its active locks: if the requested block doesn't exist at all (no accepted
+    version, no manifest, or the block id isn't found), this raises `HTTPException(404)`,
+    mirroring this endpoint's chapter-not-found 404 check's placement so a bad anchor never
+    wastes a generation call. If the requested block IS locked but a nearby unlocked block
+    exists, generation proceeds against that alternative anchor instead — never trusting the
+    model to respect a lock on its own — and the response's `rerouted_from_block_id` surfaces the
+    reroute. If the requested block is locked and the ENTIRE chapter is locked (no valid anchor
+    exists at all), this raises `HTTPException(409)`: the chapter/anchor exist, the request just
+    cannot be fulfilled right now.
+
+    The model is switched to `_ANCHOR_GENERATION_SYSTEM_PROMPT` and given the (possibly
+    rerouted) anchor's immediate neighboring block content as read-only context
+    (`_anchor_context_excerpts`) — any neighbor that is itself locked is explicitly labeled
+    protected/read-only, purely as advisory orientation for the model, never the actual
+    enforcement — told to output only the new material to splice in, not a full-chapter rewrite.
+    The same humanize -> precheck pipeline runs either way (`_humanize_and_precheck`); only
+    persistence differs, via `versions.service.create_draft_version_at_anchor` instead of
+    `create_draft_version`. Immediately before that persistence call,
+    `locks.service.reverify_anchor_resolution` re-runs the same deterministic check against the
+    resolution captured before the LLM call — closing the TOCTOU gap where a lock gets placed, or
+    the anchor block's content changes, during the LLM round-trip — and raises
+    `HTTPException(409)` instead of persisting if the previously-resolved anchor is no longer
+    valid.
     """
     chapter = await get_chapter(db, chapter_id)
     if chapter is None or chapter.project_id != project_id:
@@ -888,24 +933,27 @@ async def generate_chapter_draft_endpoint(
         )
     project = await get_project(db, project_id)
 
-    # TASK-E15-1: "insert at anchor" mode. Checked before any LLM call, mirroring the
-    # chapter-not-found 404 check above — a bad anchor should never cost a wasted generation
-    # call. Note the lock/reject-and-reroute enforcement over a *stale* anchor (ADR-0011's
-    # freshness check) is TASK-E15-2's job, not this one's.
+    # TASK-E15-2: "insert at anchor" mode's deterministic lock guard, run before any LLM call so
+    # a request that will definitely be rejected/rerouted doesn't burn context on the wrong
+    # anchor. `anchor_resolution` (used again just before persistence, below) is the single
+    # source of truth for which block the prompt/persistence are actually built around.
     anchor_context_excerpts: list[str] = []
+    anchor_resolution: AnchorResolution | None = None
     if body.target_block_id is not None:
-        accepted = await get_current_accepted_version(db, chapter_id)
-        if accepted is None or accepted.manifest is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Chapter '{chapter_id}' has no accepted content to insert into",
-            )
         try:
-            anchor_context_excerpts = _anchor_context_excerpts(
-                accepted.manifest, body.target_block_id
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            anchor_resolution = await find_valid_anchor(db, chapter_id, body.target_block_id)
+        except AnchorResolutionError as exc:
+            message = str(exc)
+            if "no unlocked block available" in message:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message) from exc
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message) from exc
+
+        accepted = await get_current_accepted_version(db, chapter_id)
+        locks = await list_locks_for_chapter(db, chapter_id)
+        locked_block_ids = frozenset(lock.block_id for lock in locks)
+        anchor_context_excerpts = _anchor_context_excerpts(
+            accepted.manifest, anchor_resolution.used_block_id, locked_block_ids
+        )
 
     required_excerpts, unmet_required_sources = await _fetch_required_source_excerpts(
         db, project_id
@@ -936,10 +984,21 @@ async def generate_chapter_draft_endpoint(
 
         humanized_content, precheck = await _humanize_and_precheck(client, content, rag_excerpts)
 
-        if body.target_block_id is not None:
+        if anchor_resolution is not None:
+            # TASK-E15-2: re-verify right before persistence, closing the TOCTOU gap between
+            # resolving the anchor above and persisting into it now — a lock could have been
+            # placed, or the anchor block's content changed, during the LLM round-trip.
+            try:
+                await reverify_anchor_resolution(db, chapter_id, anchor_resolution)
+            except AnchorResolutionError as exc:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
             try:
                 version = await create_draft_version_at_anchor(
-                    db, chapter_id, body.target_block_id, generated_content=humanized_content
+                    db,
+                    chapter_id,
+                    anchor_resolution.used_block_id,
+                    generated_content=humanized_content,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -955,6 +1014,10 @@ async def generate_chapter_draft_endpoint(
         version=version,
         precheck=PlagiarismCheckResultResponse.from_result(precheck),
         unmet_required_sources=unmet_required_sources,
+        used_block_id=anchor_resolution.used_block_id if anchor_resolution is not None else None,
+        rerouted_from_block_id=(
+            anchor_resolution.rerouted_from_block_id if anchor_resolution is not None else None
+        ),
     )
 
 
