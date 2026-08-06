@@ -38,3 +38,4 @@ Index of features below (add a row per note):
 | 2026-08-05 | SSE streaming generation | [2026-08-05_sse-streaming-generation.md](2026-08-05_sse-streaming-generation.md) |
 | 2026-08-05 | Project docx export | [2026-08-05_project-docx-export.md](2026-08-05_project-docx-export.md) |
 | 2026-08-06 | Live RAG grounding for generation | [2026-08-06_rag-grounding-for-generation.md](2026-08-06_rag-grounding-for-generation.md) |
+| 2026-08-06 | Logout button | [2026-08-06_logout-button.md](2026-08-06_logout-button.md) |

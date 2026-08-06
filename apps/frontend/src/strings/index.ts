@@ -2,6 +2,7 @@
 // keeps literal copy out of JSX so swapping in a real i18n library later is a small change.
 export const strings = {
   appTitle: 'diploma-maker',
+  logoutButton: 'Log out',
   chatPanelTitle: 'AI Chat',
   chatEmpty: 'No messages yet.',
   documentPanelTitle: 'Document',

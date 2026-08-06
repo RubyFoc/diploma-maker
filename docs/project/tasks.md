@@ -127,6 +127,14 @@ upload. See `docs/features/2026-08-05_auto-discovered-institution-formatting.md`
 | TASK-INT-7 | Web-search-based formatting auto-discovery (`POST .../auto-detect`) | E05 | python-developer | done |
 | TASK-INT-8 | Onboarding UI: "try to auto-detect" option alongside select/upload | E05 | frontend-developer | done |
 
+## Phase 5.7 — Logout (added 2026-08-06, user request, not in original epic breakdown)
+
+The user asked for a way to log out. See `docs/features/2026-08-06_logout-button.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-12 | Logout button (clears session state, no server-side session to invalidate) | E10 | frontend-developer | done |
+
 ## Phase 2.7 — Live RAG Grounding for Generation (added 2026-08-06, not in original epic breakdown)
 
 Closes part of the standing "citation verification/RAG not wired into generation" gap flagged

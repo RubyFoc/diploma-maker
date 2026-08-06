@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import './App.css'
-import { AuthProvider, useAuth } from './context/AuthContext'
+import { AuthProvider, emptyAuthState, useAuth } from './context/AuthContext'
 import { ChatProvider, useChat } from './context/ChatContext'
-import { DocumentProvider, useDocument } from './context/DocumentContext'
+import { DocumentProvider, emptyDocumentState, useDocument } from './context/DocumentContext'
 import { useNewProject } from './hooks/useNewProject'
 import { strings } from './strings'
 import { DiffViewer } from './components/DiffViewer'
@@ -263,6 +263,31 @@ function Workspace() {
 type Tab = 'workspace' | 'plagiarism-check'
 
 /**
+ * Clears all client-side session state (JWT + selected project/institution + chat history) and
+ * lets `Gate` fall back to rendering `Onboarding` on the next render, since it re-checks
+ * `auth.accessToken === null`. There is no server-side session to invalidate — this app has no
+ * logout endpoint (or, notably, any auth-gated endpoint at all yet) — so logging out is purely
+ * this local reset.
+ */
+function LogoutButton() {
+  const { setAuth } = useAuth()
+  const { setDocument } = useDocument()
+  const { resetChat } = useChat()
+
+  const handleLogout = () => {
+    setAuth(emptyAuthState)
+    setDocument(emptyDocumentState)
+    resetChat()
+  }
+
+  return (
+    <button type="button" className="logout-button" onClick={handleLogout}>
+      {strings.logoutButton}
+    </button>
+  )
+}
+
+/**
  * Tab navigation shown once a user is past onboarding, per ADR-0008 (no routing
  * library — local useState is enough for two sibling views). "Workspace" is the
  * default tab so existing project/chapter flows are unaffected.
@@ -274,6 +299,7 @@ function AuthenticatedApp() {
     <>
       <header className="app-header">
         <h1>{strings.appTitle}</h1>
+        <LogoutButton />
       </header>
       <nav className="tab-bar" role="tablist">
         <button

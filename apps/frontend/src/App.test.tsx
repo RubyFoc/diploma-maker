@@ -116,6 +116,18 @@ describe('App', () => {
     expect(screen.getByLabelText(strings.documentPanelTitle)).toBeInTheDocument()
   })
 
+  it('logging out returns to onboarding and clears the stored access token', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
+    render(<App />)
+    await selectInstitution()
+    expect(await screen.findByLabelText(strings.chatPanelTitle)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: strings.logoutButton }))
+
+    expect(await screen.findByLabelText(strings.onboardingTitle)).toBeInTheDocument()
+    expect(localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)).toBeNull()
+  })
+
   it('starts with empty chat and document state', async () => {
     vi.stubGlobal('fetch', createFetchMock())
     render(<App />)
