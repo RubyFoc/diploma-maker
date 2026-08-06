@@ -14,6 +14,7 @@ from diploma_backend.humanizer.pipeline import (
     HumanizationError,
     guard_citations,
     humanize_text,
+    normalize_dashes,
     restore_citations,
 )
 from diploma_backend.llm_routing import DeepSeekClient, LLMRequestError
@@ -48,6 +49,21 @@ def _success_response(content: str) -> httpx.Response:
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         },
     )
+
+
+def test_normalize_dashes_replaces_em_dash_with_en_dash() -> None:
+    text = "This is one point—and this is another."
+
+    result = normalize_dashes(text)
+
+    assert "—" not in result
+    assert result == "This is one point–and this is another."
+
+
+def test_normalize_dashes_leaves_text_without_em_dash_unchanged() -> None:
+    text = "No em dashes here at all, only a hyphen-word."
+
+    assert normalize_dashes(text) == text
 
 
 def test_guard_citations_replaces_apa_and_gost_markers() -> None:
@@ -91,6 +107,19 @@ async def test_humanize_text_happy_path_restores_citations() -> None:
     assert "(Smith, 2020)" in result
     assert "[3]" in result
     assert "__CITATION_" not in result
+
+
+@respx.mock
+async def test_humanize_text_normalizes_em_dashes_in_response() -> None:
+    text = _APA_TEXT
+    guarded = guard_citations(text)
+    rewritten = f"Rewritten—with an em dash. {guarded.text}"
+    respx.post(_CHAT_URL).mock(return_value=_success_response(rewritten))
+
+    result = await humanize_text(_client(), text)
+
+    assert "—" not in result
+    assert "–" in result
 
 
 @respx.mock

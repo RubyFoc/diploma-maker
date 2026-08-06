@@ -4,6 +4,7 @@ Pure unit tests: `plagiarism.precheck` makes no network/DB calls, so there is no
 """
 
 from diploma_backend.plagiarism.precheck import (
+    flag_sentences,
     run_precheck,
     score_ai_fingerprint,
     score_plagiarism_risk,
@@ -97,3 +98,34 @@ def test_run_precheck_flags_both_when_both_exceed_thresholds() -> None:
     assert result.flagged is True
     assert any("plagiarism" in reason for reason in result.reasons)
     assert any("ai_fingerprint" in reason for reason in result.reasons)
+
+
+def test_run_precheck_originality_score_is_inverse_of_plagiarism_score() -> None:
+    result = run_precheck(_SOURCE_EXCERPT, [_SOURCE_EXCERPT])
+
+    assert result.originality_score == 1.0 - result.plagiarism_score
+
+
+def test_flag_sentences_lifted_sentence_is_flagged_plagiarized() -> None:
+    text = f"{_SOURCE_EXCERPT} This next sentence is entirely my own original commentary."
+
+    flags = flag_sentences(text, [_SOURCE_EXCERPT], plagiarism_threshold=0.5)
+
+    assert len(flags) == 2
+    lifted, original = flags
+    assert lifted.text.startswith("The mitochondria")
+    assert lifted.is_plagiarized is True
+    assert lifted.plagiarism_score > 0.5
+    assert original.is_plagiarized is False
+
+
+def test_flag_sentences_repeated_starter_is_flagged_ai_like() -> None:
+    flags = flag_sentences(_UNIFORM_AI_TEXT, [])
+
+    assert all(flag.is_ai_like for flag in flags)
+
+
+def test_flag_sentences_varied_starters_are_not_flagged_ai_like() -> None:
+    flags = flag_sentences(_VARIED_HUMAN_TEXT, [])
+
+    assert all(flag.is_ai_like is False for flag in flags)

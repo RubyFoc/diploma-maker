@@ -52,6 +52,21 @@ def _shingles(words: list[str], size: int = _SHINGLE_SIZE) -> set[str]:
     return {" ".join(words[i : i + size]) for i in range(len(words) - size + 1)}
 
 
+def _shingle_overlap_ratio(text: str, source_shingles: set[str]) -> float:
+    """Fraction of `text`'s `_SHINGLE_SIZE`-word shingles that also appear in `source_shingles`.
+
+    Shared core of the overlap-ratio computation used both whole-text (`score_plagiarism_risk`)
+    and per-sentence (`flag_sentences`), so both scopes agree on exactly what "overlap" means.
+    Returns 0.0 if either `text` or `source_shingles` yields no shingles (text shorter than one
+    shingle, or no source material to compare against).
+    """
+    text_shingles = _shingles(_normalize_words(text))
+    if not text_shingles or not source_shingles:
+        return 0.0
+    overlap = text_shingles & source_shingles
+    return len(overlap) / len(text_shingles)
+
+
 def score_plagiarism_risk(text: str, source_excerpts: list[str]) -> float:
     """Score how much of `text` overlaps near-verbatim with `source_excerpts` (0.0-1.0).
 
@@ -59,7 +74,8 @@ def score_plagiarism_risk(text: str, source_excerpts: list[str]) -> float:
     the concatenation of `source_excerpts` (the RAG-retrieved/uploaded source passages this
     chapter's citations were verified against, per ADR-0001 — see `citations.verification`,
     which this module deliberately does not import from; it only needs the excerpt strings).
-    The score is the fraction of `text`'s shingles that also appear among the sources' shingles.
+    The score is the fraction of `text`'s shingles that also appear among the sources' shingles
+    (see `_shingle_overlap_ratio`).
 
     A high score is not automatically bad: some direct overlap is normal and healthy for a
     well-cited academic chapter (a verified quote is *supposed* to match its source verbatim).
@@ -75,17 +91,8 @@ def score_plagiarism_risk(text: str, source_excerpts: list[str]) -> float:
     this task), keeping the same `(text, source_excerpts) -> float` signature so callers
     (including `run_precheck` below) don't need to change.
     """
-    text_shingles = _shingles(_normalize_words(text))
-    if not text_shingles:
-        return 0.0
-
-    source_words = _normalize_words(" ".join(source_excerpts))
-    source_shingles = _shingles(source_words)
-    if not source_shingles:
-        return 0.0
-
-    overlap = text_shingles & source_shingles
-    return len(overlap) / len(text_shingles)
+    source_shingles = _shingles(_normalize_words(" ".join(source_excerpts)))
+    return _shingle_overlap_ratio(text, source_shingles)
 
 
 def _sentences(text: str) -> list[str]:
@@ -117,6 +124,32 @@ def _sentence_length_uniformity(sentences: list[str]) -> float:
     return max(0.0, 1.0 - min(coefficient_of_variation, 1.0))
 
 
+def _sentence_starters(sentences: list[str]) -> list[str | None]:
+    """First normalized word of each sentence in `sentences`, `None` for a sentence with none.
+
+    Preserves one entry per input sentence (unlike simply filtering), so callers can zip this
+    positionally against `sentences` — needed by `flag_sentences` to attribute each starter back
+    to its sentence.
+    """
+    return [words[0] if (words := _normalize_words(s)) else None for s in sentences]
+
+
+def _repeated_starter_flags(sentences: list[str]) -> list[bool]:
+    """Per-sentence flag: does this sentence's first word repeat as another sentence's first word?
+
+    Shared starter-counting core of `_repeated_starter_ratio` (aggregate) and `flag_sentences`
+    (per-sentence), so both agree on what "repeated starter" means. Returns one entry per
+    sentence in `sentences`, positionally aligned (`False` for a sentence with no normalizable
+    words, since it has no starter to compare).
+    """
+    starters = _sentence_starters(sentences)
+    counts: dict[str, int] = {}
+    for starter in starters:
+        if starter is not None:
+            counts[starter] = counts.get(starter, 0) + 1
+    return [starter is not None and counts[starter] > 1 for starter in starters]
+
+
 def _repeated_starter_ratio(sentences: list[str]) -> float:
     """Fraction of sentences whose first word is shared with at least one other sentence.
 
@@ -126,14 +159,12 @@ def _repeated_starter_ratio(sentences: list[str]) -> float:
     """
     if len(sentences) < 2:
         return 0.0
-    starters = [words[0] for s in sentences if (words := _normalize_words(s))]
-    if len(starters) < 2:
+    starters = _sentence_starters(sentences)
+    non_empty_count = sum(1 for starter in starters if starter is not None)
+    if non_empty_count < 2:
         return 0.0
-    counts: dict[str, int] = {}
-    for starter in starters:
-        counts[starter] = counts.get(starter, 0) + 1
-    repeated = sum(1 for starter in starters if counts[starter] > 1)
-    return repeated / len(starters)
+    flags = _repeated_starter_flags(sentences)
+    return sum(flags) / non_empty_count
 
 
 def score_ai_fingerprint(text: str) -> float:
@@ -160,6 +191,64 @@ def score_ai_fingerprint(text: str) -> float:
 
 
 @dataclass(frozen=True)
+class SentenceFlag:
+    """Per-sentence breakdown behind an overall `PlagiarismCheckResult`.
+
+    Lets a caller (e.g. a frontend review UI) highlight exactly which sentences drove the
+    aggregate scores, rather than only seeing a single chapter-wide number. `is_plagiarized` and
+    `is_ai_like` are computed with the same thresholds/heuristics `run_precheck` uses for the
+    aggregate result, pre-applied here so the frontend never needs to know the threshold values.
+    """
+
+    text: str
+    plagiarism_score: float
+    is_plagiarized: bool
+    is_ai_like: bool
+
+
+def flag_sentences(
+    text: str,
+    source_excerpts: list[str],
+    *,
+    plagiarism_threshold: float = 0.6,
+) -> list[SentenceFlag]:
+    """Break `text` into sentences and score/flag each one individually.
+
+    `plagiarism_score` per sentence is that sentence's own shingle-overlap ratio against
+    `source_excerpts`' shingles (`_shingle_overlap_ratio`, the same core `score_plagiarism_risk`
+    uses for the whole chapter — computed per-sentence here for finer-grained review), and
+    `is_plagiarized` is that score compared against `plagiarism_threshold`.
+
+    `is_ai_like` flags a sentence whose first normalized word is a "repeated starter" — shared
+    with at least one other sentence in `text` (`_repeated_starter_flags`, the same per-sentence
+    signal `_repeated_starter_ratio` aggregates for the whole chapter's AI-fingerprint score).
+    This is a narrower per-sentence signal than `score_ai_fingerprint`, which also folds in
+    sentence-length uniformity — a whole-chapter-only signal with no single sentence to pin it
+    on, so it's deliberately not reflected in `is_ai_like`.
+
+    Returns one `SentenceFlag` per non-empty sentence `_sentences` finds; sentences with no
+    normalizable words (rare edge case, e.g. a sentence of only punctuation) get
+    `plagiarism_score=0.0` and `is_ai_like=False` since neither heuristic has anything to look at.
+    """
+    sentences = _sentences(text)
+    source_shingles = _shingles(_normalize_words(" ".join(source_excerpts)))
+    ai_like_flags = _repeated_starter_flags(sentences)
+
+    flags: list[SentenceFlag] = []
+    for sentence, is_ai_like in zip(sentences, ai_like_flags, strict=True):
+        plagiarism_score = _shingle_overlap_ratio(sentence, source_shingles)
+        flags.append(
+            SentenceFlag(
+                text=sentence,
+                plagiarism_score=plagiarism_score,
+                is_plagiarized=plagiarism_score > plagiarism_threshold,
+                is_ai_like=is_ai_like,
+            )
+        )
+    return flags
+
+
+@dataclass(frozen=True)
 class PlagiarismCheckResult:
     """Outcome of `run_precheck`: both heuristic scores plus a derived review flag.
 
@@ -175,6 +264,8 @@ class PlagiarismCheckResult:
     ai_fingerprint_score: float
     flagged: bool
     reasons: list[str] = field(default_factory=list)
+    originality_score: float = 0.0
+    sentence_flags: list[SentenceFlag] = field(default_factory=list)
 
 
 def run_precheck(
@@ -192,6 +283,13 @@ def run_precheck(
     per threshold exceeded (e.g. `"plagiarism_score 0.72 exceeds threshold 0.6"`). This function
     only scores and flags — it does not decide what happens next; see this module's docstring
     for why any auto-regeneration/blocking logic is deliberately out of scope here.
+
+    Also populates `originality_score` (`1.0 - plagiarism_score`, a "how much of this reads as
+    the author's own" framing of the same signal) and `sentence_flags`
+    (`flag_sentences(text, source_excerpts, plagiarism_threshold=plagiarism_threshold)`) for
+    callers that want a per-sentence breakdown alongside the aggregate scores. Both are purely
+    additive: existing callers that only read `plagiarism_score`/`ai_fingerprint_score`/`flagged`/
+    `reasons` are unaffected.
     """
     plagiarism_score = score_plagiarism_risk(text, source_excerpts)
     ai_fingerprint_score = score_ai_fingerprint(text)
@@ -212,4 +310,8 @@ def run_precheck(
         ai_fingerprint_score=ai_fingerprint_score,
         flagged=bool(reasons),
         reasons=reasons,
+        originality_score=1.0 - plagiarism_score,
+        sentence_flags=flag_sentences(
+            text, source_excerpts, plagiarism_threshold=plagiarism_threshold
+        ),
     )

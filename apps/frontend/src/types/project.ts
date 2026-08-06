@@ -33,11 +33,20 @@ export interface ProjectDetail {
 
 // Mirrors the backend's plagiarism.precheck.PlagiarismCheckResult dataclass, surfaced via the
 // generate endpoint's response so the UI can flag a draft for extra review.
+export interface PlagiarismSentenceFlag {
+  text: string
+  plagiarism_score: number
+  is_plagiarized: boolean
+  is_ai_like: boolean
+}
+
 export interface PlagiarismCheckResult {
   plagiarism_score: number
   ai_fingerprint_score: number
+  originality_score: number
   flagged: boolean
   reasons: string[]
+  sentence_flags: PlagiarismSentenceFlag[]
 }
 
 export interface GenerateDraftResult {

@@ -158,3 +158,17 @@ anywhere that reached it. See `docs/features/2026-08-05_project-docx-export.md`.
 ## Deferred (no task yet — waiting on ADR-0007 or user input)
 - Wallet-deduction / insufficient-balance enforcement (blocked on ADR-0007 resolution).
 - Paid-tier pricing display in the frontend (blocked on ADR-0007 resolution).
+
+## Phase 5.8 — Anti-Plagiarism Upgrades: Sentence Flags, File Upload, Dash Normalization (added 2026-08-06, user request, not in original epic breakdown)
+
+The user asked for four upgrades to the E07 anti-plagiarism/AI-fingerprint MVP: per-sentence
+plagiarism/AI-like highlighting, a separate "originality %" alongside the AI-fingerprint %, a
+new tab to upload `.pdf`/`.docx` files for checking (not just pasted text), and automatic
+em-dash-to-en-dash normalization on generated text (em-dash overuse is a commonly-cited
+AI-writing tell). See `docs/features/2026-08-06_plagiarism-sentence-flags-and-file-upload.md`.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-13 | Per-sentence plagiarism/AI-like flags + `originality_score` in the precheck result | E07 | python-developer | done |
+| TASK-INT-14 | `POST /plagiarism/check-file` (`.pdf`/`.docx` text extraction via `pypdf`/`python-docx`) + new upload tab | E07 | python-developer, frontend-developer | done |
+| TASK-INT-15 | Auto-normalize em-dash to en-dash in the humanizer pipeline | E07 | python-developer | done |

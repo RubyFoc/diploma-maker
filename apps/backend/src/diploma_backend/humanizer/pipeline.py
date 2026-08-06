@@ -78,6 +78,15 @@ class GuardedText:
     citations: list[str]
 
 
+def normalize_dashes(text: str) -> str:
+    """Replace every em-dash ("—") in `text` with an en-dash ("–").
+
+    Em-dash overuse is a commonly-cited surface tell of AI-generated prose; this is a cheap,
+    deterministic pass applied after humanization to reduce that tell without another LLM call.
+    """
+    return text.replace("—", "–")
+
+
 def guard_citations(text: str) -> GuardedText:
     """Replace recognized citation markers in `text` with stable `__CITATION_N__` placeholders.
 
@@ -134,7 +143,8 @@ async def humanize_text(client: DeepSeekClient, text: str, *, max_attempts: int 
     repetitive AI-sounding patterns while preserving meaning, facts, and the placeholder tokens
     verbatim; (3) `generate_with_retry(client, "fast", messages, max_attempts=max_attempts)`
     makes the call; (4) `restore_citations` substitutes the placeholders back with their
-    original citation text, validating every one survived.
+    original citation text, validating every one survived; (5) `normalize_dashes` replaces any
+    em-dash left in the response with an en-dash.
 
     Raises `LLMRequestError` if `generate_with_retry` exhausts all attempts (propagated
     unchanged). Raises `HumanizationError` if the LLM's response is missing a placeholder token
@@ -150,4 +160,4 @@ async def humanize_text(client: DeepSeekClient, text: str, *, max_attempts: int 
 
     response = await generate_with_retry(client, "fast", messages, max_attempts=max_attempts)
 
-    return restore_citations(response, guarded.citations)
+    return normalize_dashes(restore_citations(response, guarded.citations))

@@ -30,3 +30,25 @@ export function checkPlagiarism(
     ),
   })
 }
+
+/**
+ * Uploads a .docx/.pdf file for the same plagiarism/AI-fingerprint check. Uses a
+ * standalone fetch (not `request<T>()`) because it must NOT set a Content-Type
+ * header — the browser needs to add the multipart boundary itself for FormData.
+ */
+export async function checkPlagiarismFile(file: File): Promise<PlagiarismCheckResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/plagiarism/check-file`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const body = await response.text()
+    throw new Error(`Request to /plagiarism/check-file failed with status ${response.status}: ${body}`)
+  }
+
+  return (await response.json()) as PlagiarismCheckResult
+}

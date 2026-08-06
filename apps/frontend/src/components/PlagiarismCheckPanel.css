@@ -79,3 +79,51 @@
   margin-top: var(--space-4);
   font-size: 0.85rem;
 }
+
+.plagiarism-check-sentence-flags {
+  margin-top: var(--space-4);
+}
+
+.plagiarism-check-sentence-flags p {
+  line-height: 1.7;
+}
+
+.plagiarism-check-sentence--plagiarized {
+  background-color: #fde2e1;
+  border-radius: var(--radius-sm);
+  padding: 0 0.15rem;
+}
+
+.plagiarism-check-sentence--ai-like {
+  background-color: #e3e0fb;
+  border-radius: var(--radius-sm);
+  padding: 0 0.15rem;
+}
+
+/* When both flags apply, the two backgrounds are blended into one distinct
+   tone so both signals stay visible without stacking two padded spans. */
+.plagiarism-check-sentence--plagiarized.plagiarism-check-sentence--ai-like {
+  background-color: #f0d3ee;
+}
+
+.plagiarism-check-mode-toggle {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.plagiarism-check-mode {
+  padding: 0.4rem 0.9rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-bg-subtle);
+  background-color: transparent;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.plagiarism-check-mode--active {
+  background-color: var(--color-primary);
+  color: var(--color-primary-contrast, #fff);
+  border-color: var(--color-primary);
+}
