@@ -16,6 +16,7 @@ from diploma_backend.db import get_database
 from diploma_backend.feedback.router import router as feedback_router
 from diploma_backend.formatting.router import router as formatting_router
 from diploma_backend.formatting.seed import ensure_default_gost_config
+from diploma_backend.locks.router import router as locks_router
 from diploma_backend.plagiarism.router import router as plagiarism_router
 from diploma_backend.projects.router import router as projects_router
 from diploma_backend.projects.router import versions_router
@@ -53,6 +54,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(feedback_router)
 app.include_router(formatting_router)
+app.include_router(locks_router)
 app.include_router(plagiarism_router)
 app.include_router(projects_router)
 app.include_router(versions_router)
