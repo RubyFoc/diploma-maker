@@ -92,6 +92,7 @@ from diploma_backend.versions.models import ChapterVersion
 from diploma_backend.versions.service import (
     accept_draft_version,
     create_draft_version,
+    create_draft_version_at_anchor,
     get_current_accepted_version,
     get_latest_draft_version,
 )
@@ -131,6 +132,26 @@ _GENERATION_SYSTEM_PROMPT = (
     "draw on it directly. Never invent a citation for a source that was not provided; if none of "
     "the provided sources are relevant to a claim, state it plainly without a citation rather "
     "than fabricating one."
+)
+
+# TASK-E15-1: distinct system prompt for "insert at anchor" generation mode. Reuses everything
+# `_GENERATION_SYSTEM_PROMPT` says about grounding/citation honesty, but replaces the "write the
+# whole chapter" framing with "write only the new material to splice in" — the model must not
+# repeat the surrounding context it's shown (it's read-only orientation, not something to
+# reproduce) and must not attempt a full-chapter rewrite.
+_ANCHOR_GENERATION_SYSTEM_PROMPT = (
+    "You are an academic writing assistant helping a student insert new content into an existing "
+    "thesis chapter, at a specific point the user has chosen. You will be shown the text "
+    "immediately before and/or after the insertion point as read-only context, purely so your new "
+    "material flows naturally with what surrounds it. Output ONLY the new text to insert — do not "
+    "repeat, rephrase, or continue past the surrounding context, and do not rewrite or summarize "
+    "the rest of the chapter. Write clear, well-structured, formal academic prose that directly "
+    "follows the user's instruction. Do not include meta-commentary about being an AI. If "
+    "reference sources are provided below, ground relevant claims in them and cite each one "
+    "in-text as (Author, Year) — using the source's own title/year if no author name is given — "
+    "when you draw on it directly. Never invent a citation for a source that was not provided; if "
+    "none of the provided sources are relevant to a claim, state it plainly without a citation "
+    "rather than fabricating one."
 )
 
 # Caps how many external search results become RAG excerpts per generation call — enough to
@@ -201,6 +222,59 @@ async def _fetch_required_source_excerpts(
     return excerpts, unmet
 
 
+async def _humanize_and_precheck(
+    client: DeepSeekClient, content: str, rag_excerpts: list[str]
+) -> tuple[str, PlagiarismCheckResult]:
+    """Shared humanize -> plagiarism/AI-detection precheck pipeline, used by both full-chapter and
+    "insert at anchor" (TASK-E15-1) generation, so the two modes never duplicate this logic.
+
+    Same contract as inlined in `generate_chapter_draft_endpoint` previously: `HumanizationError`
+    fails open (falls back to the pre-humanization `content`, humanization being cosmetic, not
+    correctness-critical); a genuine `LLMRequestError` from the humanize call surfaces as
+    `HTTPException(502)`.
+    """
+    try:
+        humanized_content = await humanize_text(client, content)
+    except LLMRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except HumanizationError:
+        # Fail-open: a mangled citation placeholder shouldn't block the user from seeing
+        # their draft at all, humanization being cosmetic, not correctness-critical (see
+        # docstring).
+        humanized_content = content
+
+    precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
+    return humanized_content, precheck
+
+
+def _anchor_context_excerpts(manifest: list[Block], anchor_block_id: str) -> list[str]:
+    """Build read-only "surrounding context" excerpts for "insert at anchor" generation
+    (TASK-E15-1): the content of the block immediately before and immediately after the anchor
+    block in `manifest`, if they exist, each labeled so the model can tell it's orientation, not
+    something to reproduce.
+
+    Raises `ValueError` (message containing "not found") if no block in `manifest` has
+    `id == anchor_block_id`, matching `locks.models.insert_blocks_after`'s convention — callers
+    translate that into `HTTPException(404)` before ever calling the LLM.
+    """
+    anchor_index = next(
+        (index for index, block in enumerate(manifest) if block.id == anchor_block_id), None
+    )
+    if anchor_index is None:
+        raise ValueError(f"block {anchor_block_id!r} not found in manifest")
+
+    excerpts = []
+    if anchor_index > 0:
+        excerpts.append(
+            f"Text immediately before the insertion point: {manifest[anchor_index - 1].content}"
+        )
+    if anchor_index < len(manifest) - 1:
+        excerpts.append(
+            f"Text immediately after the insertion point: {manifest[anchor_index + 1].content}"
+        )
+    return excerpts
+
+
 def _maybe_start_title_generation(
     client: DeepSeekClient, project: Project | None, instruction: str
 ) -> "asyncio.Task[str] | None":
@@ -267,9 +341,18 @@ class CreateSubchapterRequest(BaseModel):
 
 
 class GenerateDraftRequest(BaseModel):
-    """Body for `POST /projects/{project_id}/chapters/{chapter_id}/generate`."""
+    """Body for `POST /projects/{project_id}/chapters/{chapter_id}/generate`.
+
+    `target_block_id` (TASK-E15-1, ADR-0011) is optional: when omitted (the default), generation
+    behaves exactly as before — a full-chapter draft replacing the whole content. When set to a
+    `Block.id` from the chapter's current accepted manifest, generation switches to "insert at
+    anchor" mode: only new content to splice in immediately after that block is generated and
+    persisted, leaving every other block's `id`/`content_hash`/`content` untouched (see
+    `locks.models.insert_blocks_after`).
+    """
 
     instruction: str
+    target_block_id: str | None = None
 
 
 class ChapterDetail(BaseModel):
@@ -784,6 +867,19 @@ async def generate_chapter_draft_endpoint(
     `versions.service.create_draft_version` — the draft a user reviews is the humanized version,
     not the raw LLM output. Returns a `GenerateDraftResponse` bundling the persisted
     `ChapterVersion` and the precheck result.
+
+    If `body.target_block_id` is set (TASK-E15-1, ADR-0011), generation switches to "insert at
+    anchor" mode instead: the chapter's current accepted manifest is fetched up front and the
+    anchor block is located in it BEFORE any LLM call (raising `HTTPException(404)` immediately
+    if there's no accepted version, no manifest, or the anchor isn't found — mirroring this
+    endpoint's chapter-not-found 404 check's placement, so a bad anchor never wastes a generation
+    call). The model is switched to `_ANCHOR_GENERATION_SYSTEM_PROMPT` and given the anchor's
+    immediate neighboring block content as read-only context (`_anchor_context_excerpts`), told to
+    output only the new material to splice in — not a full-chapter rewrite. The same humanize ->
+    precheck pipeline runs either way (`_humanize_and_precheck`); only persistence differs, via
+    `versions.service.create_draft_version_at_anchor` instead of `create_draft_version`. Lock
+    freshness enforcement over the anchor (rejecting/rerouting a generation that would touch a
+    locked, stale block) is TASK-E15-2's job, not this one's.
     """
     chapter = await get_chapter(db, chapter_id)
     if chapter is None or chapter.project_id != project_id:
@@ -792,12 +888,37 @@ async def generate_chapter_draft_endpoint(
         )
     project = await get_project(db, project_id)
 
+    # TASK-E15-1: "insert at anchor" mode. Checked before any LLM call, mirroring the
+    # chapter-not-found 404 check above — a bad anchor should never cost a wasted generation
+    # call. Note the lock/reject-and-reroute enforcement over a *stale* anchor (ADR-0011's
+    # freshness check) is TASK-E15-2's job, not this one's.
+    anchor_context_excerpts: list[str] = []
+    if body.target_block_id is not None:
+        accepted = await get_current_accepted_version(db, chapter_id)
+        if accepted is None or accepted.manifest is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Chapter '{chapter_id}' has no accepted content to insert into",
+            )
+        try:
+            anchor_context_excerpts = _anchor_context_excerpts(
+                accepted.manifest, body.target_block_id
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
     required_excerpts, unmet_required_sources = await _fetch_required_source_excerpts(
         db, project_id
     )
-    rag_excerpts = required_excerpts + await _fetch_rag_excerpts(body.instruction)
+    rag_excerpts = (
+        required_excerpts + anchor_context_excerpts + await _fetch_rag_excerpts(body.instruction)
+    )
     messages = assemble_prompt(
-        system_prompt=_GENERATION_SYSTEM_PROMPT,
+        system_prompt=(
+            _ANCHOR_GENERATION_SYSTEM_PROMPT
+            if body.target_block_id is not None
+            else _GENERATION_SYSTEM_PROMPT
+        ),
         chapter_summaries=[],
         rag_excerpts=rag_excerpts,
         user_message=body.instruction,
@@ -813,20 +934,17 @@ async def generate_chapter_draft_endpoint(
                 status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
             ) from exc
 
-        try:
-            humanized_content = await humanize_text(client, content)
-        except LLMRequestError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
-            ) from exc
-        except HumanizationError:
-            # Fail-open: a mangled citation placeholder shouldn't block the user from seeing
-            # their draft at all, humanization being cosmetic, not correctness-critical (see
-            # docstring).
-            humanized_content = content
+        humanized_content, precheck = await _humanize_and_precheck(client, content, rag_excerpts)
 
-        precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
-        version = await create_draft_version(db, chapter_id, content=humanized_content)
+        if body.target_block_id is not None:
+            try:
+                version = await create_draft_version_at_anchor(
+                    db, chapter_id, body.target_block_id, generated_content=humanized_content
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        else:
+            version = await create_draft_version(db, chapter_id, content=humanized_content)
     finally:
         # Always awaited, even on an early failure above, so a slower title-generation call
         # never becomes an unretrieved/dangling task (see `_finish_title_generation`'s
@@ -860,6 +978,12 @@ async def generate_chapter_draft_stream_endpoint(
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> StreamingResponse:
     """SSE variant of `generate_chapter_draft_endpoint` (ADR-0009, TASK-E08-3).
+
+    Full-chapter generation only — does not support TASK-E15-1's "insert at anchor" mode
+    (`target_block_id`). Left out deliberately: threading the anchor lookup/404 checks and the
+    alternate system prompt/context through this generator-based streaming path is meaningfully
+    more moving parts than the non-streaming endpoint, and E15's frontend consumer (TASK-E15-3,
+    not part of this task) does not require it yet.
 
     `GET` with `instruction` as a query parameter rather than `POST` with a JSON body: browsers'
     native `EventSource` API (the intended client, per ADR-0009) can only issue GET requests with

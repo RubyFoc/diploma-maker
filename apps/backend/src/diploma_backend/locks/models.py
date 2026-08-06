@@ -85,6 +85,36 @@ def build_manifest_from_text(text: str) -> list[Block]:
     return build_manifest(split_into_blocks(text))
 
 
+def insert_blocks_after(
+    manifest: list[Block], anchor_block_id: str, new_block_contents: list[str]
+) -> list[Block]:
+    """Splice freshly generated content into `manifest`, immediately after the block whose `id`
+    is `anchor_block_id` (TASK-E15-1, ADR-0011's "E15 insertion" consumer).
+
+    Builds one new `Block` per entry of `new_block_contents` (via `build_block`, so each gets a
+    fresh `id`/`content_hash`) and inserts them right after the anchor block. Every block in the
+    returned manifest — anchor, new, and every other pre-existing block — is a new list, ordered
+    by final position, with `order` reassigned sequentially from `0`. Every pre-existing block's
+    `id`/`content_hash`/`content` is otherwise left completely untouched: only `order` may change,
+    which is exactly the stability ADR-0011 requires so an unrelated lock elsewhere in the chapter
+    (anchored by `id` + `content_hash`, not position) never gets invalidated by an insertion
+    somewhere else in the same manifest.
+
+    Raises `ValueError` (message containing "not found") if no block in `manifest` has
+    `id == anchor_block_id`.
+    """
+    anchor_index = next(
+        (index for index, block in enumerate(manifest) if block.id == anchor_block_id), None
+    )
+    if anchor_index is None:
+        raise ValueError(f"block {anchor_block_id!r} not found in manifest")
+
+    new_blocks = [build_block(content, order=0) for content in new_block_contents]
+    spliced = manifest[: anchor_index + 1] + new_blocks + manifest[anchor_index + 1 :]
+
+    return [block.model_copy(update={"order": order}) for order, block in enumerate(spliced)]
+
+
 class CharRange(BaseModel):
     """An intra-block character offset range, for sub-block lock precision (ADR-0011).
 

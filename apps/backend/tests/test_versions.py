@@ -12,6 +12,7 @@ from diploma_backend.versions.models import ChapterVersion
 from diploma_backend.versions.service import (
     accept_draft_version,
     create_draft_version,
+    create_draft_version_at_anchor,
     create_version,
     get_current_accepted_version,
     get_version,
@@ -178,3 +179,61 @@ async def test_accept_draft_version_already_accepted_raises(client: TestClient) 
 
     with pytest.raises(ValueError):
         await accept_draft_version(db, accepted.id)
+
+
+async def test_create_draft_version_at_anchor_no_accepted_version_raises(
+    client: TestClient,
+) -> None:
+    db = _fake_db(client)
+
+    with pytest.raises(ValueError, match="no accepted version"):
+        await create_draft_version_at_anchor(db, "chapter-1", "block-1", "New content.")
+
+
+async def test_create_draft_version_at_anchor_no_manifest_raises(client: TestClient) -> None:
+    db = _fake_db(client)
+    accepted = _build_version(version_number=0, content="Some content", status="accepted")
+    await create_version(db, accepted)
+
+    with pytest.raises(ValueError, match="no block manifest"):
+        await create_draft_version_at_anchor(db, "chapter-1", "block-1", "New content.")
+
+
+async def test_create_draft_version_at_anchor_missing_block_raises(client: TestClient) -> None:
+    db = _fake_db(client)
+    accepted_draft = await create_draft_version(db, "chapter-1", "First paragraph.")
+    await accept_draft_version(db, accepted_draft.id)
+
+    with pytest.raises(ValueError, match="not found"):
+        await create_draft_version_at_anchor(db, "chapter-1", "does-not-exist", "New content.")
+
+
+async def test_create_draft_version_at_anchor_success_splices_and_persists(
+    client: TestClient,
+) -> None:
+    db = _fake_db(client)
+    accepted_draft = await create_draft_version(
+        db, "chapter-1", "First paragraph.\nSecond paragraph."
+    )
+    accepted = await accept_draft_version(db, accepted_draft.id)
+    assert accepted.manifest is not None
+    anchor_block = accepted.manifest[0]
+
+    draft = await create_draft_version_at_anchor(
+        db, "chapter-1", anchor_block.id, "Inserted paragraph."
+    )
+
+    assert draft.status == "draft"
+    assert draft.version_number == accepted.version_number + 1
+    assert draft.parent_version_id == accepted.id
+    assert draft.manifest is not None
+    assert [block.content for block in draft.manifest] == [
+        "First paragraph.",
+        "Inserted paragraph.",
+        "Second paragraph.",
+    ]
+    assert draft.content == "First paragraph.\nInserted paragraph.\nSecond paragraph."
+    # The unrelated existing blocks keep their original id/hash (ADR-0011 stability contract).
+    assert draft.manifest[0].id == anchor_block.id
+    assert draft.manifest[0].content_hash == anchor_block.content_hash
+    assert draft.manifest[2].id == accepted.manifest[1].id

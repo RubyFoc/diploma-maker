@@ -12,7 +12,11 @@ version's number.
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from diploma_backend.locks.models import build_manifest_from_text
+from diploma_backend.locks.models import (
+    build_manifest_from_text,
+    insert_blocks_after,
+    split_into_blocks,
+)
 from diploma_backend.versions.models import ChapterVersion
 
 _COLLECTION = "chapter_versions"
@@ -92,6 +96,47 @@ async def create_draft_version(
         manifest=build_manifest_from_text(content),
         status="draft",
         parent_version_id=current.id if current is not None else None,
+    )
+    return await create_version(db, draft)
+
+
+async def create_draft_version_at_anchor(
+    db: AsyncIOMotorDatabase, chapter_id: str, anchor_block_id: str, generated_content: str
+) -> ChapterVersion:
+    """Build and insert a draft version that splices freshly generated content into the
+    chapter's current accepted manifest at `anchor_block_id`, instead of replacing the whole
+    chapter (TASK-E15-1, ADR-0011).
+
+    `generated_content` is split into one block per non-blank line via
+    `locks.models.split_into_blocks` (same convention `build_manifest_from_text` uses for a
+    full-chapter draft) and spliced in immediately after the anchor block via
+    `locks.models.insert_blocks_after`, which preserves every pre-existing block's `id`/
+    `content_hash`/`content` — only `order` may shift. The new version's `content` is the
+    resulting manifest's block contents joined with `"\\n"`, matching how block-per-line content
+    is joined elsewhere in this codebase. `version_number`/`parent_version_id` follow the same
+    convention as `create_draft_version`.
+
+    Raises `ValueError` if the chapter has no accepted version yet ("no accepted version"), if
+    that version has no block manifest ("no block manifest"), or if `anchor_block_id` isn't found
+    in it (propagated from `insert_blocks_after`, message contains "not found").
+    """
+    accepted = await get_current_accepted_version(db, chapter_id)
+    if accepted is None:
+        raise ValueError(f"chapter {chapter_id!r} has no accepted version to insert into")
+    if accepted.manifest is None:
+        raise ValueError(f"chapter {chapter_id!r}'s current accepted version has no block manifest")
+
+    new_block_contents = split_into_blocks(generated_content)
+    spliced_manifest = insert_blocks_after(accepted.manifest, anchor_block_id, new_block_contents)
+    content = "\n".join(block.content for block in spliced_manifest)
+
+    draft = ChapterVersion(
+        chapter_id=chapter_id,
+        version_number=accepted.version_number + 1,
+        content=content,
+        manifest=spliced_manifest,
+        status="draft",
+        parent_version_id=accepted.id,
     )
     return await create_version(db, draft)
 

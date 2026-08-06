@@ -4,12 +4,15 @@ Pure model/helper tests, no DB access — persisting a manifest (TASK-E13-2) and
 an uploaded draft (TASK-E13-3) are separate follow-up tasks with their own tests.
 """
 
+import pytest
+
 from diploma_backend.locks.models import (
     Block,
     build_block,
     build_manifest,
     build_manifest_from_text,
     hash_block_content,
+    insert_blocks_after,
     split_into_blocks,
 )
 
@@ -91,3 +94,48 @@ def test_recomputed_hash_mismatch_signals_stale_content() -> None:
     edited_content = "Original text, but edited."
 
     assert hash_block_content(edited_content) != locked_hash
+
+
+def test_insert_blocks_after_splices_new_content_immediately_after_anchor() -> None:
+    manifest = build_manifest(["First.", "Second.", "Third."])
+    anchor = manifest[0]
+
+    result = insert_blocks_after(manifest, anchor.id, ["Inserted A.", "Inserted B."])
+
+    assert [block.content for block in result] == [
+        "First.",
+        "Inserted A.",
+        "Inserted B.",
+        "Second.",
+        "Third.",
+    ]
+    assert [block.order for block in result] == [0, 1, 2, 3, 4]
+
+
+def test_insert_blocks_after_preserves_unrelated_block_ids_and_hashes() -> None:
+    manifest = build_manifest(["First.", "Second.", "Third."])
+    anchor = manifest[0]
+    original_by_content = {block.content: (block.id, block.content_hash) for block in manifest}
+
+    result = insert_blocks_after(manifest, anchor.id, ["Inserted."])
+
+    for block in result:
+        if block.content in original_by_content:
+            assert (block.id, block.content_hash) == original_by_content[block.content]
+
+
+def test_insert_blocks_after_missing_anchor_raises_not_found() -> None:
+    manifest = build_manifest(["First.", "Second."])
+
+    with pytest.raises(ValueError, match="not found"):
+        insert_blocks_after(manifest, "does-not-exist", ["New content."])
+
+
+def test_insert_blocks_after_last_block_anchor_appends_at_end() -> None:
+    manifest = build_manifest(["First.", "Second."])
+    anchor = manifest[-1]
+
+    result = insert_blocks_after(manifest, anchor.id, ["Appended."])
+
+    assert [block.content for block in result] == ["First.", "Second.", "Appended."]
+    assert [block.order for block in result] == [0, 1, 2]
