@@ -96,4 +96,11 @@ export const strings = {
   chapterTreeAddSubchapterErrorMessage: 'Failed to add subchapter. Please try again.',
   documentBlockLockLabel: 'Lock this block (protect it from future AI edits)',
   documentBlockUnlockLabel: 'Unlock this block',
+  onboardingRequiredSourcesTitle: 'Required sources (optional)',
+  onboardingRequiredSourcesSubtitle:
+    'List any authors or works your thesis must cite. We will try to ground generated chapters in them.',
+  onboardingRequiredSourceAuthorLabel: 'Author',
+  onboardingRequiredSourceTitleLabel: 'Work title (optional)',
+  onboardingRequiredSourceAddButton: 'Add',
+  onboardingRequiredSourceRemoveButton: 'Remove',
 } as const

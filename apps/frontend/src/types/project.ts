@@ -92,4 +92,24 @@ export interface PlagiarismCheckResult {
 export interface GenerateDraftResult {
   version: ChapterVersion
   precheck: PlagiarismCheckResult
+  /** Must-cite sources (TASK-E14) this generation call couldn't ground — see backend
+   * `GenerateDraftResponse.unmet_required_sources` for the fail-open rationale. */
+  unmet_required_sources: string[]
+}
+
+// Mirrors the backend's `sources.required.RequiredSource` (TASK-E14-1).
+export interface RequiredSource {
+  id: string
+  project_id: string
+  author: string
+  title: string | null
+  year: number | null
+  created_at: string
+}
+
+/** A must-cite author/work entered during onboarding (TASK-E14-4), before any project exists to
+ * attach it to — see `DocumentState.pendingRequiredSources`. */
+export interface PendingRequiredSource {
+  author: string
+  title?: string
 }

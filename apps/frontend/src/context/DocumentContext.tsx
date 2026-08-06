@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, useState } from 'react'
 import type { Dispatch, ReactNode, SetStateAction } from 'react'
-import type { ChapterVersion, ManifestBlock } from '../types/project'
+import type { ChapterVersion, ManifestBlock, PendingRequiredSource } from '../types/project'
 
 export interface Chapter {
   id: string
@@ -21,6 +21,10 @@ export interface DocumentState {
   /** Active project's display title, shown in the workspace header; empty until a project is entered. */
   title: string
   chapters: Chapter[]
+  /** Must-cite authors/works entered during onboarding (TASK-E14-4), before any project exists
+   * to attach them to. `useNewProject` submits these against the newly created project and
+   * clears the list (via `toDocumentState`'s default) once flushed. */
+  pendingRequiredSources: PendingRequiredSource[]
 }
 
 export const emptyDocumentState: DocumentState = {
@@ -28,6 +32,7 @@ export const emptyDocumentState: DocumentState = {
   institutionId: null,
   title: '',
   chapters: [],
+  pendingRequiredSources: [],
 }
 
 interface DocumentContextValue {

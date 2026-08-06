@@ -21,12 +21,18 @@ function InstitutionIdProbe() {
   return <p data-testid="institution-id">{doc.institutionId ?? 'none'}</p>
 }
 
+function PendingRequiredSourcesProbe() {
+  const { document: doc } = useDocument()
+  return <p data-testid="pending-required-sources">{JSON.stringify(doc.pendingRequiredSources)}</p>
+}
+
 function renderOnboarding() {
   render(
     <AuthProvider>
       <DocumentProvider>
         <Onboarding />
         <InstitutionIdProbe />
+        <PendingRequiredSourcesProbe />
       </DocumentProvider>
     </AuthProvider>,
   )
@@ -195,5 +201,78 @@ describe('Onboarding', () => {
     expect(screen.getByLabelText(strings.onboardingInstitutionSelectLabel)).toBeEnabled()
     expect(screen.getByLabelText(strings.onboardingInstitutionNameLabel)).toBeEnabled()
     expect(screen.getByLabelText(strings.onboardingInstitutionFileLabel)).toBeEnabled()
+  })
+
+  describe('required sources (TASK-E14-4)', () => {
+    beforeEach(() => {
+      localStorage.setItem('diploma-maker.accessToken', 'seeded-token')
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse([])))
+    })
+
+    it('adding a required source with just an author queues it without a title', async () => {
+      renderOnboarding()
+      await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+
+      fireEvent.change(screen.getByLabelText(strings.onboardingRequiredSourceAuthorLabel), {
+        target: { value: 'Jane Doe' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: strings.onboardingRequiredSourceAddButton }))
+
+      expect(await screen.findByText('Jane Doe')).toBeInTheDocument()
+      expect(screen.getByTestId('pending-required-sources')).toHaveTextContent(
+        JSON.stringify([{ author: 'Jane Doe' }]),
+      )
+    })
+
+    it('adding a required source with a title queues both fields', async () => {
+      renderOnboarding()
+      await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+
+      fireEvent.change(screen.getByLabelText(strings.onboardingRequiredSourceAuthorLabel), {
+        target: { value: 'Jane Doe' },
+      })
+      fireEvent.change(screen.getByLabelText(strings.onboardingRequiredSourceTitleLabel), {
+        target: { value: 'A Study of Things' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: strings.onboardingRequiredSourceAddButton }))
+
+      expect(await screen.findByText('Jane Doe — A Study of Things')).toBeInTheDocument()
+    })
+
+    it('does not add an entry with a blank author', async () => {
+      renderOnboarding()
+      await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+
+      fireEvent.click(screen.getByRole('button', { name: strings.onboardingRequiredSourceAddButton }))
+
+      expect(screen.getByTestId('pending-required-sources')).toHaveTextContent('[]')
+    })
+
+    it('clears the input fields after adding an entry', async () => {
+      renderOnboarding()
+      await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+
+      const authorInput = screen.getByLabelText(strings.onboardingRequiredSourceAuthorLabel)
+      fireEvent.change(authorInput, { target: { value: 'Jane Doe' } })
+      fireEvent.click(screen.getByRole('button', { name: strings.onboardingRequiredSourceAddButton }))
+
+      expect(authorInput).toHaveValue('')
+    })
+
+    it('removing a queued entry drops it from the list', async () => {
+      renderOnboarding()
+      await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+
+      fireEvent.change(screen.getByLabelText(strings.onboardingRequiredSourceAuthorLabel), {
+        target: { value: 'Jane Doe' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: strings.onboardingRequiredSourceAddButton }))
+      await screen.findByText('Jane Doe')
+
+      fireEvent.click(screen.getByRole('button', { name: strings.onboardingRequiredSourceRemoveButton }))
+
+      expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument()
+      expect(screen.getByTestId('pending-required-sources')).toHaveTextContent('[]')
+    })
   })
 })

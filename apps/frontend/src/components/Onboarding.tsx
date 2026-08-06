@@ -39,6 +39,9 @@ export function Onboarding() {
   const [autoDetectMessage, setAutoDetectMessage] = useState<string | null>(null)
   const [isAutoDetecting, setIsAutoDetecting] = useState(false)
 
+  const [requiredSourceAuthor, setRequiredSourceAuthor] = useState('')
+  const [requiredSourceTitle, setRequiredSourceTitle] = useState('')
+
   const hasToken = auth.accessToken !== null
 
   useEffect(() => {
@@ -86,6 +89,31 @@ export function Onboarding() {
     } finally {
       setIsUploading(false)
     }
+  }
+
+  const handleAddRequiredSource = (event: FormEvent) => {
+    event.preventDefault()
+    const author = requiredSourceAuthor.trim()
+    if (author === '') {
+      return
+    }
+    const title = requiredSourceTitle.trim()
+    setDocument((previous) => ({
+      ...previous,
+      pendingRequiredSources: [
+        ...previous.pendingRequiredSources,
+        title === '' ? { author } : { author, title },
+      ],
+    }))
+    setRequiredSourceAuthor('')
+    setRequiredSourceTitle('')
+  }
+
+  const handleRemoveRequiredSource = (index: number) => {
+    setDocument((previous) => ({
+      ...previous,
+      pendingRequiredSources: previous.pendingRequiredSources.filter((_, i) => i !== index),
+    }))
   }
 
   const handleAutoDetectSubmit = async (event: FormEvent) => {
@@ -162,6 +190,42 @@ export function Onboarding() {
         <p className="onboarding-subtitle">{strings.onboardingInstitutionStepSubtitle}</p>
         {doc.institutionId !== null ? null : (
           <>
+            <h2 className="onboarding-section-title">{strings.onboardingRequiredSourcesTitle}</h2>
+            <p className="onboarding-subtitle">{strings.onboardingRequiredSourcesSubtitle}</p>
+            <form className="onboarding-form" onSubmit={handleAddRequiredSource}>
+              <label>
+                {strings.onboardingRequiredSourceAuthorLabel}
+                <input
+                  type="text"
+                  value={requiredSourceAuthor}
+                  onChange={(event) => setRequiredSourceAuthor(event.target.value)}
+                />
+              </label>
+              <label>
+                {strings.onboardingRequiredSourceTitleLabel}
+                <input
+                  type="text"
+                  value={requiredSourceTitle}
+                  onChange={(event) => setRequiredSourceTitle(event.target.value)}
+                />
+              </label>
+              <button type="submit">{strings.onboardingRequiredSourceAddButton}</button>
+            </form>
+            {doc.pendingRequiredSources.length > 0 && (
+              <ul className="onboarding-required-sources-list">
+                {doc.pendingRequiredSources.map((source, index) => (
+                  <li key={index}>
+                    <span>{source.title ? `${source.author} — ${source.title}` : source.author}</span>
+                    <button type="button" onClick={() => handleRemoveRequiredSource(index)}>
+                      {strings.onboardingRequiredSourceRemoveButton}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="onboarding-divider">{strings.onboardingOrDivider}</div>
+
             <h2 className="onboarding-section-title">{strings.onboardingInstitutionAutoDetectTitle}</h2>
             <p className="onboarding-subtitle">{strings.onboardingInstitutionAutoDetectSubtitle}</p>
             <form className="onboarding-form" onSubmit={(event) => void handleAutoDetectSubmit(event)}>

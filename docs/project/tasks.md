@@ -244,7 +244,7 @@ E14, depends on E04 and E11 (parallel track alongside E12/E13, per `docs/project
 | TASK-E14-1 | Extend `sources` module with a must-cite authors/works model | E14 | python-developer | done |
 | TASK-E14-2 | `POST /projects/{id}/required-sources` endpoint | E14 | python-developer | done |
 | TASK-E14-3 | Boost/require must-cite sources in the RAG query via a Qdrant payload filter (ADR-0002); fail closed (flag unmet requirement) rather than fabricate a citation, per ADR-0001 | E14 | python-developer | done |
-| TASK-E14-4 | Onboarding UI input for the required-authors/works list | E14 | frontend-developer | todo |
+| TASK-E14-4 | Onboarding UI input for the required-authors/works list | E14 | frontend-developer | done |
 
 ## Phase 11 — In-Place AI Insertion Respecting Locks
 
