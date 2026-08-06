@@ -50,6 +50,35 @@ def _docx_bytes(paragraphs: list[str]) -> bytes:
     return buffer.getvalue()
 
 
+class TestAcceptedManifestExposure:
+    def test_chapter_detail_exposes_accepted_manifest(self, client: TestClient) -> None:
+        """TASK-E13-5's lock-selection UI needs the accepted version's manifest to know which
+        block ids/hashes it can lock — exposed on `ChapterDetail` alongside `accepted_content`."""
+        headers = _auth_headers(client)
+        project_id, chapter_id = _create_project_and_chapter(client, headers)
+        _accept_chapter_content(client, chapter_id, "First paragraph.\nSecond paragraph.")
+
+        detail = client.get(f"/projects/{project_id}", headers=headers).json()
+        chapter_detail = next(c for c in detail["chapters"] if c["id"] == chapter_id)
+
+        assert chapter_detail["accepted_manifest"] is not None
+        assert [b["content"] for b in chapter_detail["accepted_manifest"]] == [
+            "First paragraph.",
+            "Second paragraph.",
+        ]
+
+    def test_chapter_detail_accepted_manifest_none_without_accepted_content(
+        self, client: TestClient
+    ) -> None:
+        headers = _auth_headers(client)
+        project_id, chapter_id = _create_project_and_chapter(client, headers)
+
+        detail = client.get(f"/projects/{project_id}", headers=headers).json()
+        chapter_detail = next(c for c in detail["chapters"] if c["id"] == chapter_id)
+
+        assert chapter_detail["accepted_manifest"] is None
+
+
 class TestUploadDraft:
     def test_upload_docx_creates_a_draft_version_with_a_manifest(self, client: TestClient) -> None:
         headers = _auth_headers(client)

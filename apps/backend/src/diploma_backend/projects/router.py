@@ -55,6 +55,7 @@ from diploma_backend.llm_routing import (
     generate_with_retry,
 )
 from diploma_backend.llm_routing.summary import assemble_prompt
+from diploma_backend.locks.models import Block
 from diploma_backend.plagiarism.precheck import PlagiarismCheckResult, run_precheck
 from diploma_backend.projects.models import Chapter, Project
 from diploma_backend.projects.service import (
@@ -223,6 +224,12 @@ class GenerateDraftRequest(BaseModel):
 class ChapterDetail(BaseModel):
     """A chapter plus its current accepted content and pending draft, if any. Response-only:
     not persisted anywhere as its own document.
+
+    `accepted_manifest` is the accepted version's block manifest (ADR-0011, TASK-E13-2) —
+    surfaced alongside `accepted_content` so the frontend's lock-selection UI (TASK-E13-5) has
+    the block ids/hashes it needs to place a lock (`POST /chapters/{chapter_id}/locks`) without a
+    second round trip. `None` both when there's no accepted version yet and when the accepted
+    version predates TASK-E13-2 (no manifest ever built for it) — either way, nothing to lock.
     """
 
     id: str
@@ -232,6 +239,7 @@ class ChapterDetail(BaseModel):
     order: int
     created_at: datetime
     accepted_content: str | None
+    accepted_manifest: list[Block] | None
     pending_draft: ChapterVersion | None
 
 
@@ -307,6 +315,7 @@ async def _build_chapter_detail(db: AsyncIOMotorDatabase, chapter: Chapter) -> C
         order=chapter.order,
         created_at=chapter.created_at,
         accepted_content=accepted.content if accepted is not None else None,
+        accepted_manifest=accepted.manifest if accepted is not None else None,
         pending_draft=draft,
     )
 
