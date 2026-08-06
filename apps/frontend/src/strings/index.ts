@@ -85,4 +85,13 @@ export const strings = {
   projectLandingDeleteCancelButton: 'Cancel',
   projectLandingDeleteErrorMessage: 'Failed to delete project. Please try again.',
   myProjectsButton: 'My Projects',
+  chapterTreeTitle: 'Chapters',
+  chapterTreeEmpty: 'No chapters yet.',
+  chapterTreeExpandLabel: 'Expand',
+  chapterTreeCollapseLabel: 'Collapse',
+  chapterTreeAddSubchapterButton: '+ Subchapter',
+  chapterTreeAddSubchapterInputLabel: 'New subchapter title',
+  chapterTreeAddSubchapterConfirmButton: 'Add',
+  chapterTreeAddSubchapterCancelButton: 'Cancel',
+  chapterTreeAddSubchapterErrorMessage: 'Failed to add subchapter. Please try again.',
 } as const

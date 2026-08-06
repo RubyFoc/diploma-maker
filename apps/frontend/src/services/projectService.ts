@@ -62,6 +62,21 @@ export function createChapter(projectId: string, title: string): Promise<Chapter
   })
 }
 
+export function createSubchapter(
+  projectId: string,
+  chapterId: string,
+  title: string,
+): Promise<ChapterDetail> {
+  return request<ChapterDetail>(`/projects/${projectId}/chapters/${chapterId}/subchapters`, {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function listSubchapters(projectId: string, chapterId: string): Promise<ChapterDetail[]> {
+  return request<ChapterDetail[]>(`/projects/${projectId}/chapters/${chapterId}/subchapters`)
+}
+
 export function generateChapterDraft(
   projectId: string,
   chapterId: string,

@@ -1,0 +1,72 @@
+.chapter-tree {
+  padding: var(--space-3);
+}
+
+.chapter-tree h3 {
+  margin: 0 0 var(--space-2);
+}
+
+.chapter-tree-empty {
+  color: var(--color-text-muted);
+}
+
+.chapter-tree-list,
+.chapter-tree-sublist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.chapter-tree-sublist {
+  padding-left: var(--space-4);
+  margin-top: var(--space-1);
+}
+
+.chapter-tree-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.chapter-tree-item--selected {
+  font-weight: 600;
+}
+
+.chapter-tree-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 var(--space-1);
+}
+
+.chapter-tree-title {
+  flex: 1 1 auto;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-1) 0;
+}
+
+.chapter-tree-add-button {
+  font-size: 0.8rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.chapter-tree-add-form {
+  display: flex;
+  gap: var(--space-1);
+  margin: var(--space-1) 0;
+  padding-left: var(--space-3);
+}
+
+.chapter-tree-add-error {
+  color: var(--color-danger-text, #b00020);
+  font-size: 0.85rem;
+}

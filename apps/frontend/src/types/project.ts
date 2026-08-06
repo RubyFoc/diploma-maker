@@ -17,6 +17,8 @@ export interface ChapterVersion {
 export interface ChapterDetail {
   id: string
   project_id: string
+  /** `null` for a top-level chapter, another chapter's `id` for a subchapter (ADR-0014, TASK-E12-1/2). */
+  parent_chapter_id: string | null
   title: string
   order: number
   created_at: string

@@ -4,10 +4,12 @@ import {
   acceptDraft,
   createChapter,
   createProject,
+  createSubchapter,
   deleteProject,
   generateChapterDraft,
   getProject,
   listProjects,
+  listSubchapters,
 } from './projectService'
 
 const BASE_URL = 'http://localhost:8010'
@@ -78,6 +80,7 @@ describe('projectService', () => {
     const chapter = {
       id: 'c1',
       project_id: 'p1',
+      parent_chapter_id: null,
       title: 'Chapter 1',
       order: 0,
       created_at: 'now',
@@ -94,6 +97,54 @@ describe('projectService', () => {
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ title: 'Chapter 1' }) }),
     )
     expect(result).toEqual(chapter)
+  })
+
+  it('createSubchapter posts to /projects/{id}/chapters/{id}/subchapters with a title', async () => {
+    const subchapter = {
+      id: 'c2',
+      project_id: 'p1',
+      parent_chapter_id: 'c1',
+      title: 'Section 1.1',
+      order: 0,
+      created_at: 'now',
+      accepted_content: null,
+      pending_draft: null,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(subchapter, true, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await createSubchapter('p1', 'c1', 'Section 1.1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects/p1/chapters/c1/subchapters`,
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ title: 'Section 1.1' }) }),
+    )
+    expect(result).toEqual(subchapter)
+  })
+
+  it('listSubchapters fetches /projects/{id}/chapters/{id}/subchapters', async () => {
+    const subchapters = [
+      {
+        id: 'c2',
+        project_id: 'p1',
+        parent_chapter_id: 'c1',
+        title: 'Section 1.1',
+        order: 0,
+        created_at: 'now',
+        accepted_content: null,
+        pending_draft: null,
+      },
+    ]
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(subchapters))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await listSubchapters('p1', 'c1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects/p1/chapters/c1/subchapters`,
+      expect.anything(),
+    )
+    expect(result).toEqual(subchapters)
   })
 
   it('generateChapterDraft posts an instruction to the generate endpoint', async () => {
