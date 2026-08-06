@@ -67,6 +67,7 @@ from diploma_backend.projects.service import (
     insert_chapter_at_order,
     list_chapters_for_project,
     list_projects_for_user,
+    list_subchapters,
     update_project_title,
 )
 from diploma_backend.sources.client import delete_project_vectors
@@ -207,6 +208,12 @@ class InsertChapterRequest(BaseModel):
     title: str
 
 
+class CreateSubchapterRequest(BaseModel):
+    """Body for `POST /projects/{project_id}/chapters/{chapter_id}/subchapters`."""
+
+    title: str
+
+
 class GenerateDraftRequest(BaseModel):
     """Body for `POST /projects/{project_id}/chapters/{chapter_id}/generate`."""
 
@@ -220,6 +227,7 @@ class ChapterDetail(BaseModel):
 
     id: str
     project_id: str
+    parent_chapter_id: str | None
     title: str
     order: int
     created_at: datetime
@@ -294,6 +302,7 @@ async def _build_chapter_detail(db: AsyncIOMotorDatabase, chapter: Chapter) -> C
     return ChapterDetail(
         id=chapter.id,
         project_id=chapter.project_id,
+        parent_chapter_id=chapter.parent_chapter_id,
         title=chapter.title,
         order=chapter.order,
         created_at=chapter.created_at,
@@ -322,13 +331,31 @@ async def _get_owned_project(
 
 async def _build_project_detail(db: AsyncIOMotorDatabase, project: Project) -> ProjectDetail:
     chapters = await list_chapters_for_project(db, project.id)
-    chapter_details = [await _build_chapter_detail(db, chapter) for chapter in chapters]
+    top_level_chapters = [chapter for chapter in chapters if chapter.parent_chapter_id is None]
+    chapter_details = [await _build_chapter_detail(db, chapter) for chapter in top_level_chapters]
     return ProjectDetail(
         id=project.id,
         title=project.title,
         created_at=project.created_at,
         chapters=chapter_details,
     )
+
+
+async def _get_owned_chapter(
+    db: AsyncIOMotorDatabase, project_id: str, chapter_id: str, owner_id: str
+) -> Chapter:
+    """Fetch `chapter_id`, scoped to `project_id` and, transitively via `_get_owned_project`, to
+    `owner_id` (TASK-E11-1). Raises `HTTPException(404)` if the chapter doesn't exist, belongs to
+    a different project, or its project belongs to a different owner — the same "don't
+    distinguish reasons" rationale as `_get_owned_project`.
+    """
+    await _get_owned_project(db, project_id, owner_id)
+    chapter = await get_chapter(db, chapter_id)
+    if chapter is None or chapter.project_id != project_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Chapter '{chapter_id}' not found"
+        )
+    return chapter
 
 
 @router.post("", response_model=ProjectDetail, status_code=status.HTTP_201_CREATED)
@@ -540,15 +567,77 @@ async def insert_chapter_endpoint(
     different owner.
 
     Unlike `create_chapter_endpoint` (always appends at the end), this infers `order` from
-    `body.title`'s leading number relative to the project's existing chapters, shifting any
-    chapters at or past that position forward so the new chapter lands between the chapters its
-    number implies it belongs between (e.g. "Chapter 2" between existing Chapters 1 and 3).
+    `body.title`'s leading number relative to the project's existing top-level chapters, shifting
+    any chapters at or past that position forward so the new chapter lands between the chapters
+    its number implies it belongs between (e.g. "Chapter 2" between existing Chapters 1 and 3).
+    Only inserts among top-level chapters (`parent_chapter_id=None`); inserting among a chapter's
+    subchapters is TASK-E12-2's endpoint, not this one.
     """
     await _get_owned_project(db, project_id, owner_id)
     existing = await list_chapters_for_project(db, project_id)
-    order = infer_insertion_order(existing, body.title)
+    siblings = [chapter for chapter in existing if chapter.parent_chapter_id is None]
+    order = infer_insertion_order(siblings, body.title)
     chapter = await insert_chapter_at_order(db, project_id, body.title, order)
     return await _build_chapter_detail(db, chapter)
+
+
+@router.post(
+    "/{project_id}/chapters/{chapter_id}/subchapters",
+    response_model=ChapterDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_subchapter_endpoint(
+    project_id: str,
+    chapter_id: str,
+    body: CreateSubchapterRequest,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
+) -> ChapterDetail:
+    """Create a new subchapter under `chapter_id` (TASK-E12-2, ADR-0014). Scoped to the
+    authenticated caller via `_get_owned_chapter`: raises `HTTPException(404)` if `project_id`/
+    `chapter_id` don't exist, don't belong to each other, or belong to a different owner.
+
+    Raises `HTTPException(422)` if `chapter_id` is itself a subchapter (`parent_chapter_id is not
+    None`) — nesting is capped at two levels (chapter, subchapter) per ADR-0014, so a subchapter
+    can never have subchapters of its own.
+
+    `order` is assigned by `projects.service.create_chapter` as one past the highest `order`
+    among `chapter_id`'s existing subchapters (append-only; there is no subchapter equivalent of
+    `insert_chapter_endpoint`'s numbered-boundary insertion yet).
+    """
+    parent = await _get_owned_chapter(db, project_id, chapter_id, owner_id)
+    if parent.parent_chapter_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cannot add a subchapter to a subchapter (nesting is capped at two levels)",
+        )
+
+    chapter = await create_chapter(db, project_id, body.title, parent_chapter_id=chapter_id)
+    return await _build_chapter_detail(db, chapter)
+
+
+@router.get(
+    "/{project_id}/chapters/{chapter_id}/subchapters",
+    response_model=list[ChapterDetail],
+)
+async def list_subchapters_endpoint(
+    project_id: str,
+    chapter_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
+) -> list[ChapterDetail]:
+    """List `chapter_id`'s subchapters, in `order` (TASK-E12-2). Scoped to the authenticated
+    caller via `_get_owned_chapter`: raises `HTTPException(404)` if `project_id`/`chapter_id`
+    don't exist, don't belong to each other, or belong to a different owner.
+
+    Returns `[]` (not a 404) if `chapter_id` has no subchapters, or if `chapter_id` is itself a
+    subchapter — the latter is a valid, empty answer rather than an error, since "does X have
+    subchapters" is a sensible question to ask of any chapter row regardless of its own nesting
+    level.
+    """
+    await _get_owned_chapter(db, project_id, chapter_id, owner_id)
+    subchapters = await list_subchapters(db, project_id, chapter_id)
+    return [await _build_chapter_detail(db, chapter) for chapter in subchapters]
 
 
 @router.post(
