@@ -188,6 +188,27 @@ def test_generate_stream_emits_tokens_and_done(client: TestClient) -> None:
 
 
 @respx.mock
+def test_generate_stream_done_payload_reports_unmet_required_sources(client: TestClient) -> None:
+    """TASK-E14-3: the streaming endpoint's `done` payload carries `unmet_required_sources` the
+    same way the non-streaming endpoint's response body does."""
+    _mock_stream_and_humanize(deltas=["Draft body."], humanized="Humanized body.")
+    project_id, chapter_id, headers = _setup_project_and_chapter(client)
+    client.post(
+        f"/projects/{project_id}/required-sources", json={"author": "Jane Doe"}, headers=headers
+    )
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write an introduction."},
+    )
+
+    events = _parse_sse(response.text)
+    done_events = [data for event, data in events if event == "done"]
+    payload = json.loads(done_events[0])
+    assert payload["unmet_required_sources"] == ["Jane Doe"]
+
+
+@respx.mock
 def test_generate_stream_multiline_chunk_is_framed_correctly(client: TestClient) -> None:
     _mock_stream_and_humanize(deltas=["line one\nline two"], humanized="Humanized body.")
     project_id, chapter_id, _headers = _setup_project_and_chapter(client)

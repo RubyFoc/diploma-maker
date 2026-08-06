@@ -16,6 +16,19 @@ querying it here would always return nothing; live external search needs no prio
 and gives real grounding today. `_fetch_rag_excerpts` fails open (`SourceSearchError` or zero
 results → `[]`) since source grounding is a quality enhancement, not a hard requirement.
 
+Must-cite sources (`_fetch_required_source_excerpts`, TASK-E14-3): a project's declared
+`RequiredSource`s (TASK-E14-1/E14-2, `sources.required`) each get their own targeted search
+(author + title, not the general chat instruction) and are boosted into the prompt's
+`rag_excerpts` in addition to (not competing with) the instruction-driven search's
+`_RAG_EXCERPT_LIMIT` cap — a must-cite source should never lose its grounding slot to an
+unrelated but more instruction-relevant result. A required source with no findable/abstract-
+bearing result is reported back as `GenerateDraftResponse.unmet_required_sources` rather than
+silently dropped or fabricated: per ADR-0001, one ungroundable citation must never block the rest
+of generation, so this fails open for the document as a whole while still surfacing the gap to
+the user. Like `_fetch_rag_excerpts`, this targets live external search, not a Qdrant payload
+filter (ADR-0002) — the same live-substitute reasoning applies, since nothing in this codebase
+ingests project-scoped literature into Qdrant yet (see the paragraph above).
+
 Known remaining simplification: `chapter_summaries=[]` is still passed to `assemble_prompt` —
 persisted chapter-summary accumulation (TASK-E03-2's `summarize_chapter`, wired into a session)
 is not yet threaded into this endpoint. Full citation verification (ADR-0001,
@@ -72,6 +85,7 @@ from diploma_backend.projects.service import (
     update_project_title,
 )
 from diploma_backend.sources.client import delete_project_vectors
+from diploma_backend.sources.required import list_required_sources_for_project
 from diploma_backend.sources.search import SourceSearchError, search_sources
 from diploma_backend.toc.parser import TocParseError, parse_toc
 from diploma_backend.versions.models import ChapterVersion
@@ -148,6 +162,43 @@ async def _fetch_rag_excerpts(instruction: str) -> list[str]:
             continue
         excerpts.append(f"{result.title} ({result.year}): {result.abstract}")
     return excerpts
+
+
+async def _fetch_required_source_excerpts(
+    db: AsyncIOMotorDatabase, project_id: str
+) -> tuple[list[str], list[str]]:
+    """Boost `project_id`'s must-cite sources (TASK-E14-1/2/3) into the RAG excerpt set, each via
+    its own targeted search rather than leaving it to compete with `_fetch_rag_excerpts`'s
+    instruction-driven, `_RAG_EXCERPT_LIMIT`-capped results.
+
+    For each `RequiredSource`, searches `f"{author} {title}"` (or just `author` if no `title`)
+    and takes the first result with an abstract as that source's excerpt. Returns
+    `(excerpts, unmet_labels)`: `unmet_labels` collects the `"{author} — {title}"` (or just
+    `author`) label of every required source that couldn't be matched to an abstract-bearing
+    result, or whose search failed outright (`SourceSearchError`) — surfaced to the caller as
+    `GenerateDraftResponse.unmet_required_sources` (see module docstring for why this fails open
+    per-source rather than fabricating a citation or blocking generation).
+    """
+    required_sources = await list_required_sources_for_project(db, project_id)
+    excerpts: list[str] = []
+    unmet: list[str] = []
+
+    for required in required_sources:
+        label = f"{required.author} — {required.title}" if required.title else required.author
+        query = f"{required.author} {required.title}" if required.title else required.author
+        try:
+            results = await search_sources(query, limit=1)
+        except SourceSearchError:
+            unmet.append(label)
+            continue
+
+        matched = next((result for result in results if result.abstract), None)
+        if matched is None:
+            unmet.append(label)
+            continue
+        excerpts.append(f"{matched.title} ({matched.year}): {matched.abstract}")
+
+    return excerpts, unmet
 
 
 def _maybe_start_title_generation(
@@ -298,10 +349,17 @@ class GenerateDraftResponse(BaseModel):
     `generate_chapter_draft_endpoint`). `precheck` is the anti-plagiarism/AI-detection scan
     result run against that same humanized text, so a caller/frontend can surface a "this draft
     was flagged, review carefully" signal alongside the draft.
+
+    `unmet_required_sources` (TASK-E14-3) lists the label (`"{author} — {title}"`, or just
+    `author`) of every project-declared must-cite source (`sources.required.RequiredSource`) that
+    `_fetch_required_source_excerpts` could not ground this generation call in — empty when the
+    project has no required sources, or all of them were found. Never blocks generation itself;
+    purely informational, per ADR-0001's "one bad citation must never block the document" posture.
     """
 
     version: ChapterVersion
     precheck: PlagiarismCheckResultResponse
+    unmet_required_sources: list[str] = []
 
 
 async def _build_chapter_detail(db: AsyncIOMotorDatabase, chapter: Chapter) -> ChapterDetail:
@@ -734,7 +792,10 @@ async def generate_chapter_draft_endpoint(
         )
     project = await get_project(db, project_id)
 
-    rag_excerpts = await _fetch_rag_excerpts(body.instruction)
+    required_excerpts, unmet_required_sources = await _fetch_required_source_excerpts(
+        db, project_id
+    )
+    rag_excerpts = required_excerpts + await _fetch_rag_excerpts(body.instruction)
     messages = assemble_prompt(
         system_prompt=_GENERATION_SYSTEM_PROMPT,
         chapter_summaries=[],
@@ -773,7 +834,9 @@ async def generate_chapter_draft_endpoint(
         await _finish_title_generation(db, project_id, title_task)
 
     return GenerateDraftResponse(
-        version=version, precheck=PlagiarismCheckResultResponse.from_result(precheck)
+        version=version,
+        precheck=PlagiarismCheckResultResponse.from_result(precheck),
+        unmet_required_sources=unmet_required_sources,
     )
 
 
@@ -834,7 +897,10 @@ async def generate_chapter_draft_stream_endpoint(
         )
     project = await get_project(db, project_id)
 
-    rag_excerpts = await _fetch_rag_excerpts(instruction)
+    required_excerpts, unmet_required_sources = await _fetch_required_source_excerpts(
+        db, project_id
+    )
+    rag_excerpts = required_excerpts + await _fetch_rag_excerpts(instruction)
     messages = assemble_prompt(
         system_prompt=_GENERATION_SYSTEM_PROMPT,
         chapter_summaries=[],
@@ -867,7 +933,9 @@ async def generate_chapter_draft_stream_endpoint(
             precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
             version = await create_draft_version(db, chapter_id, content=humanized_content)
             response_payload = GenerateDraftResponse(
-                version=version, precheck=PlagiarismCheckResultResponse.from_result(precheck)
+                version=version,
+                precheck=PlagiarismCheckResultResponse.from_result(precheck),
+                unmet_required_sources=unmet_required_sources,
             )
             yield _sse_event("done", json.dumps(response_payload.model_dump(mode="json")))
         finally:

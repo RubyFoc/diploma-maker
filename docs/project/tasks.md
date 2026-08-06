@@ -183,6 +183,23 @@ rather than requiring a manual rename.
 | --- | --- | --- | --- | --- |
 | TASK-INT-16 | Auto-generate and persist a project title from the user's first chat instruction via a fast-tier DeepSeek call, wired into both the streaming and non-streaming generate-draft endpoints (fail-open, triggers once via a title-equality check) | E11 | python-developer | done |
 
+## Phase 5.10 — Per-Project University Selection (added 2026-08-06, user request, not in original epic breakdown)
+
+The user pointed out that "Select your university" currently gates the whole app once per account
+(`Onboarding`, TASK-E10-1/TASK-INT-8, backed by a single global `DocumentContext.institutionId`),
+so every project a user creates shares the same formatting styles. It should instead be asked at
+new-project-creation time, scoped per project, since different theses/projects may need different
+institution formatting. Requires adding an `institution_id` field to the `Project` model (currently
+absent per its own docstring, "no per-project settings"; institution is only threaded through
+export as an optional ad-hoc query param today) and moving the select/upload/auto-detect UI out of
+the account-level `Onboarding` gate into the "create new project" flow (`useNewProject`/
+`ProjectLanding`). `Onboarding` keeps only its email/password auth step.
+
+| ID | Task | Epic | Owner Role | Status |
+| --- | --- | --- | --- | --- |
+| TASK-INT-17 | Add `institution_id: str \| None` to `Project`; accept it in `CreateProjectRequest` (`POST /projects`) and use it (not the export-time query param) when applying formatting on export | E05 | python-developer | todo |
+| TASK-INT-18 | Move university select/upload/auto-detect UI from the account-level `Onboarding` gate into the "create new project" flow (`useNewProject`/`ProjectLanding`), scoped per project instead of per account | E05 | frontend-developer | todo |
+
 ## Phase 7 — Multi-Project Management (added 2026-08-06, BA/architect epic breakdown for large onboarding/history/async epic)
 
 E11. See `docs/project/epics.md` build sequence and `docs/project/plan.md` for sequencing —
@@ -224,9 +241,9 @@ E14, depends on E04 and E11 (parallel track alongside E12/E13, per `docs/project
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E14-1 | Extend `sources` module with a must-cite authors/works model | E14 | python-developer | todo |
-| TASK-E14-2 | `POST /projects/{id}/required-sources` endpoint | E14 | python-developer | todo |
-| TASK-E14-3 | Boost/require must-cite sources in the RAG query via a Qdrant payload filter (ADR-0002); fail closed (flag unmet requirement) rather than fabricate a citation, per ADR-0001 | E14 | python-developer | todo |
+| TASK-E14-1 | Extend `sources` module with a must-cite authors/works model | E14 | python-developer | done |
+| TASK-E14-2 | `POST /projects/{id}/required-sources` endpoint | E14 | python-developer | done |
+| TASK-E14-3 | Boost/require must-cite sources in the RAG query via a Qdrant payload filter (ADR-0002); fail closed (flag unmet requirement) rather than fabricate a citation, per ADR-0001 | E14 | python-developer | done |
 | TASK-E14-4 | Onboarding UI input for the required-authors/works list | E14 | frontend-developer | todo |
 
 ## Phase 11 — In-Place AI Insertion Respecting Locks

@@ -21,6 +21,8 @@ _CHAPTERS_COLLECTION = "chapters"
 # Owned by `versions.service` (its `_COLLECTION`), duplicated here only so `delete_project` can
 # cascade into it without importing that module's storage internals across the module boundary.
 _CHAPTER_VERSIONS_COLLECTION = "chapter_versions"
+# Owned by `sources.required` (its `_COLLECTION`), duplicated for the same cascade reason.
+_REQUIRED_SOURCES_COLLECTION = "required_sources"
 
 
 async def create_project(db: AsyncIOMotorDatabase, title: str, owner_id: str) -> Project:
@@ -205,10 +207,11 @@ async def delete_project(db: AsyncIOMotorDatabase, project_id: str) -> None:
 
     `ChapterVersion` has no direct `project_id` field (only `chapter_id`, see
     `versions.service`), so its versions must be reached via the project's chapter ids first.
-    Order: `chapter_versions` for those chapter ids -> `chapters` for `project_id` -> the
-    `project` document itself. There are no FK constraints in Mongo, so this order isn't required
-    for correctness, only for leaving the least orphaned data behind if the process is
-    interrupted partway through.
+    `required_sources` (TASK-E14-1, `sources.required`) does have a direct `project_id` field, so
+    it's deleted alongside `chapters` directly. Order: `chapter_versions` for those chapter ids ->
+    `chapters`/`required_sources` for `project_id` -> the `project` document itself. There are no
+    FK constraints in Mongo, so this order isn't required for correctness, only for leaving the
+    least orphaned data behind if the process is interrupted partway through.
 
     Does nothing (no error) if `project_id` doesn't exist — callers that need a 404 for an
     unknown/foreign project should check with `get_project`/`_get_owned_project` first, as
@@ -220,4 +223,5 @@ async def delete_project(db: AsyncIOMotorDatabase, project_id: str) -> None:
     if chapter_ids:
         await db[_CHAPTER_VERSIONS_COLLECTION].delete_many({"chapter_id": {"$in": chapter_ids}})
     await db[_CHAPTERS_COLLECTION].delete_many({"project_id": project_id})
+    await db[_REQUIRED_SOURCES_COLLECTION].delete_many({"project_id": project_id})
     await db[_PROJECTS_COLLECTION].delete_one({"id": project_id})

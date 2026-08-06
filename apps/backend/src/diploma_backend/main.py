@@ -20,6 +20,7 @@ from diploma_backend.locks.router import router as locks_router
 from diploma_backend.plagiarism.router import router as plagiarism_router
 from diploma_backend.projects.router import router as projects_router
 from diploma_backend.projects.router import versions_router
+from diploma_backend.sources.router import router as sources_router
 
 
 @asynccontextmanager
@@ -57,6 +58,7 @@ app.include_router(formatting_router)
 app.include_router(locks_router)
 app.include_router(plagiarism_router)
 app.include_router(projects_router)
+app.include_router(sources_router)
 app.include_router(versions_router)
 
 
