@@ -8,17 +8,20 @@ own work, not something this platform generated — and get the same heuristic s
 project/chapter association and nothing persisted.
 """
 
+import asyncio
+
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from diploma_backend.plagiarism.extract import PlagiarismFileParseError, extract_text
-from diploma_backend.plagiarism.precheck import (
-    PlagiarismCheckResult,
-    SentenceFlag,
-    run_precheck,
-)
+from diploma_backend.plagiarism.precheck import PlagiarismCheckResult, SentenceFlag
+from diploma_backend.plagiarism.tasks import run_precheck_task
 
 router = APIRouter(prefix="/plagiarism", tags=["plagiarism"])
+
+# Local heuristic scoring only (no network calls) — generous timeout purely as a worker-hang
+# safety net, matching `projects.router._TOC_PARSE_TASK_TIMEOUT_SECONDS`'s rationale.
+_PRECHECK_TASK_TIMEOUT_SECONDS = 60.0
 
 
 class PlagiarismCheckRequest(BaseModel):
@@ -79,6 +82,18 @@ class PlagiarismCheckResultResponse(BaseModel):
             ],
         )
 
+    @classmethod
+    def from_task_result(cls, result: dict) -> "PlagiarismCheckResultResponse":
+        """Build this response from `plagiarism.tasks.run_precheck_task`'s plain-dict return.
+
+        `run_precheck_task`'s `dataclasses.asdict` conversion of `PlagiarismCheckResult` (see that
+        task's docstring) yields a dict whose keys/shape already line up exactly with this
+        model's fields, including the nested `sentence_flags` dicts matching
+        `SentenceFlagResponse`'s fields — so `model_validate` needs no extra field mapping, unlike
+        `from_result` above (which reads attributes off the dataclass directly).
+        """
+        return cls.model_validate(result)
+
 
 @router.post("/check", response_model=PlagiarismCheckResultResponse)
 async def check_plagiarism(request: PlagiarismCheckRequest) -> PlagiarismCheckResultResponse:
@@ -87,9 +102,18 @@ async def check_plagiarism(request: PlagiarismCheckRequest) -> PlagiarismCheckRe
     Stateless and unauthenticated: nothing is persisted, and there is no LLM call here (only a
     couple of local heuristic function calls), so this carries none of the cost/abuse concerns
     that motivate auth/rate-limiting on the generation endpoint.
+
+    Scoring now runs on a Celery worker via `plagiarism.tasks.run_precheck_task` (ADR-0013,
+    TASK-E17-4) instead of inline on this process. Per ADR-0013's addendum point 1, the HTTP
+    contract is unchanged: this handler still `await`s the task's result (via
+    `asyncio.to_thread`, since `AsyncResult.get()` blocks) before responding, with the same
+    response shape/status as before. `run_precheck` never raises (see that task's docstring), so
+    there is no failure path to translate here, unlike `upload_toc_endpoint`'s `TocParseError`
+    handling.
     """
-    result = run_precheck(request.text, request.source_excerpts)
-    return PlagiarismCheckResultResponse.from_result(result)
+    async_result = run_precheck_task.delay(request.text, request.source_excerpts)
+    result = await asyncio.to_thread(async_result.get, timeout=_PRECHECK_TASK_TIMEOUT_SECONDS)
+    return PlagiarismCheckResultResponse.from_task_result(result)
 
 
 @router.post("/check-file", response_model=PlagiarismCheckResultResponse)
@@ -105,6 +129,13 @@ async def check_plagiarism_file(
     correctly (score `0.0`), so this is a deliberate simplification, not a limitation that needs
     a `Form` field workaround. Raises `HTTPException(400)` if `file` isn't a parseable
     `.docx`/`.pdf` (matches `formatting.router`'s upload error-translation pattern).
+
+    Text extraction stays inline on this process: `extract_text` is cheap, in-memory
+    `.docx`/`.pdf` parsing comparable in cost/shape to `toc.parser.parse_toc` (which likewise
+    stays inline, only its result is fed to a Celery task), so only the scoring step below moves
+    to `plagiarism.tasks.run_precheck_task` (ADR-0013, TASK-E17-4) — the same
+    `.delay()`-then-`asyncio.to_thread(async_result.get, ...)` pattern
+    `upload_toc_endpoint` uses.
     """
     content = await file.read()
 
@@ -113,5 +144,6 @@ async def check_plagiarism_file(
     except PlagiarismFileParseError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    result = run_precheck(text, [])
-    return PlagiarismCheckResultResponse.from_result(result)
+    async_result = run_precheck_task.delay(text, [])
+    result = await asyncio.to_thread(async_result.get, timeout=_PRECHECK_TASK_TIMEOUT_SECONDS)
+    return PlagiarismCheckResultResponse.from_task_result(result)

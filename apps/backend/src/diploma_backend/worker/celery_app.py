@@ -41,6 +41,7 @@ celery_app = Celery(
         "diploma_backend.sources.tasks",
         "diploma_backend.humanizer.tasks",
         "diploma_backend.toc.tasks",
+        "diploma_backend.plagiarism.tasks",
     ],
 )
 
