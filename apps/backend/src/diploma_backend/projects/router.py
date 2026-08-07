@@ -29,9 +29,14 @@ the user. Like `_fetch_rag_excerpts`, this targets live external search, not a Q
 filter (ADR-0002) — the same live-substitute reasoning applies, since nothing in this codebase
 ingests project-scoped literature into Qdrant yet (see the paragraph above).
 
-Known remaining simplification: `chapter_summaries=[]` is still passed to `assemble_prompt` —
-persisted chapter-summary accumulation (TASK-E03-2's `summarize_chapter`, wired into a session)
-is not yet threaded into this endpoint. Full citation verification (ADR-0001,
+`assemble_prompt`'s `chapter_summaries` prefix (`_accumulated_chapter_summaries`, ADR-0003
+addendum) is populated from every chapter in the project that has been accepted and summarized at
+least once — `accept_draft_version_endpoint` dispatches `llm_routing.tasks.summarize_chapter_task`
+right after each accept and persists the result onto that chapter via
+`projects.service.update_chapter_summary` (TASK-E03-2's `summarize_chapter`, now wired into a
+session).
+
+Full citation verification (ADR-0001,
 `citations.verification`) is ALSO still not wired in: that needs a claim-extraction step (finding
 which sentences in the generated text assert something citable) which doesn't exist anywhere in
 this codebase yet — a materially larger follow-up than RAG grounding, since grounding only
@@ -73,7 +78,11 @@ from diploma_backend.llm_routing import (
     generate_project_title,
 )
 from diploma_backend.llm_routing.summary import assemble_prompt
-from diploma_backend.llm_routing.tasks import generate_with_retry_task, stream_generation_task
+from diploma_backend.llm_routing.tasks import (
+    generate_with_retry_task,
+    stream_generation_task,
+    summarize_chapter_task,
+)
 from diploma_backend.locks.models import Block
 from diploma_backend.locks.service import (
     AnchorResolution,
@@ -96,6 +105,7 @@ from diploma_backend.projects.service import (
     list_chapters_for_project,
     list_projects_for_user,
     list_subchapters,
+    update_chapter_summary,
     update_project_title,
 )
 from diploma_backend.sources.client import delete_project_vectors
@@ -132,6 +142,12 @@ _TOC_PARSE_TASK_TIMEOUT_SECONDS = 60.0
 # `plagiarism.router._PRECHECK_TASK_TIMEOUT_SECONDS`'s value.
 _HUMANIZE_TASK_TIMEOUT_SECONDS = 60.0
 _PRECHECK_TASK_TIMEOUT_SECONDS = 60.0
+
+# Applied to `summarize_chapter_task`, dispatched from `accept_draft_version_endpoint` (ADR-0003
+# addendum, follow-up to TASK-E03-2/E17). Same 60.0 as `_HUMANIZE_TASK_TIMEOUT_SECONDS`:
+# `summarize_chapter` makes a single fast-tier call with no internal retry of its own, unlike the
+# heavy-tier generation call, so there's no multi-attempt worst case to budget extra headroom for.
+_SUMMARIZE_TASK_TIMEOUT_SECONDS = 60.0
 
 # Applied to the non-streaming heavy-tier draft generation call, now dispatched to
 # `llm_routing.tasks.generate_with_retry_task` (ADR-0013, TASK-E17-4). Deliberately NOT the same
@@ -229,6 +245,24 @@ _ANCHOR_GENERATION_SYSTEM_PROMPT = (
 # ground the model without bloating the prompt (and DeepSeek's cache-hit economics, ADR-0003,
 # favor a small, stable-ish context over a large one).
 _RAG_EXCERPT_LIMIT = 3
+
+
+async def _accumulated_chapter_summaries(db: AsyncIOMotorDatabase, project_id: str) -> list[str]:
+    """Fetch `project_id`'s accumulated per-chapter summaries for `assemble_prompt`'s
+    `chapter_summaries` (ADR-0003 addendum, follow-up to TASK-E03-2/E17).
+
+    Filters `list_chapters_for_project` down to chapters with a non-`None` `summary` (i.e. ones
+    that have been accepted at least once and summarized successfully by
+    `_summarize_and_persist_chapter`), then orders them by `created_at` — chronological creation
+    order, unlike `Chapter.order` which is only unique within a `(project_id, parent_chapter_id)`
+    scope (ADR-0014) and so cannot globally order chapters that have different parents/subchapters
+    against each other. The chapter currently being generated is deliberately included too if it
+    already has a summary from a prior accept — no exclusion logic, per this feature's scope.
+    """
+    chapters = await list_chapters_for_project(db, project_id)
+    summarized = [chapter for chapter in chapters if chapter.summary is not None]
+    summarized.sort(key=lambda chapter: chapter.created_at)
+    return [chapter.summary for chapter in summarized]
 
 
 async def _fetch_rag_excerpts(instruction: str) -> list[str]:
@@ -506,6 +540,41 @@ async def _finish_title_generation(
     except LLMRequestError:
         return
     await update_project_title(db, project_id, title)
+
+
+async def _summarize_and_persist_chapter(
+    db: AsyncIOMotorDatabase, chapter_id: str, content: str
+) -> None:
+    """Best-effort accept-time chapter summarization (ADR-0003 addendum, follow-up to
+    TASK-E03-2/E17), dispatched from `accept_draft_version_endpoint` right after a draft version
+    is flipped to `accepted`.
+
+    Fails open exactly like `_finish_title_generation`'s title-generation call: this is a
+    nice-to-have background enrichment (feeding `assemble_prompt`'s `chapter_summaries` prefix on
+    later generation calls), never a correctness-critical step, so ANY failure here — an
+    `LLMRequestError` (the underlying DeepSeek call failed) or a `celery.exceptions.TimeoutError`
+    (the worker didn't respond within `_SUMMARIZE_TASK_TIMEOUT_SECONDS`) — is caught and swallowed,
+    leaving the chapter's stored `summary` at whatever it was before (`None` on a chapter's first
+    accept, or stale from a previous accept). Accepting a draft must never fail or be delayed by a
+    summarization problem.
+
+    `summarize_chapter_task`'s body drives its async work via `asyncio.run(...)` (ADR-0013
+    addendum point 3), so both the `.delay()` call and the blocking `.get()` are run together
+    inside one `asyncio.to_thread(...)` call, not just `.get()` alone — same caller-side pattern
+    as `_run_generate`/`_run_humanize` elsewhere in this module (ADR-0013 addendum point 3's
+    caller-side corollary).
+    """
+
+    def _run_summarize() -> str:
+        return summarize_chapter_task.delay(content).get(
+            timeout=_SUMMARIZE_TASK_TIMEOUT_SECONDS
+        )
+
+    try:
+        summary = await asyncio.to_thread(_run_summarize)
+    except Exception:  # noqa: BLE001 -- fail open on any summarization problem, see docstring
+        return
+    await update_chapter_summary(db, chapter_id, summary)
 
 
 class CreateProjectRequest(BaseModel):
@@ -1189,7 +1258,7 @@ async def generate_chapter_draft_endpoint(
             if body.target_block_id is not None
             else _GENERATION_SYSTEM_PROMPT
         ),
-        chapter_summaries=[],
+        chapter_summaries=await _accumulated_chapter_summaries(db, project_id),
         rag_excerpts=rag_excerpts,
         user_message=body.instruction,
     )
@@ -1383,7 +1452,7 @@ async def generate_chapter_draft_stream_endpoint(
     rag_excerpts = required_excerpts + await _fetch_rag_excerpts(instruction)
     messages = assemble_prompt(
         system_prompt=_GENERATION_SYSTEM_PROMPT,
-        chapter_summaries=[],
+        chapter_summaries=await _accumulated_chapter_summaries(db, project_id),
         rag_excerpts=rag_excerpts,
         user_message=instruction,
     )
@@ -1531,11 +1600,20 @@ async def accept_draft_version_endpoint(
     Raises `HTTPException(404)` if `version_id` doesn't exist, or `HTTPException(409)` if it
     exists but isn't currently a draft (see `versions.service.accept_draft_version`'s `ValueError`
     messages, which this distinguishes by substring).
+
+    After a successful accept (ADR-0003 addendum, follow-up to TASK-E03-2/E17), dispatches
+    accept-time chapter summarization (`_summarize_and_persist_chapter`) with the just-accepted
+    version's content, so later generation calls' `assemble_prompt` has a real per-chapter summary
+    to include in its cache-friendly prefix. This is a pure side effect: the response contract is
+    unchanged (same `ChapterVersion`, same status code) whether summarization succeeds or fails.
     """
     try:
-        return await accept_draft_version(db, version_id)
+        version = await accept_draft_version(db, version_id)
     except ValueError as exc:
         message = str(exc)
         if "no version" in message:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message) from exc
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message) from exc
+
+    await _summarize_and_persist_chapter(db, version.chapter_id, version.content)
+    return version

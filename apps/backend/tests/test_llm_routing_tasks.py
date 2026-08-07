@@ -29,6 +29,7 @@ from diploma_backend.llm_routing.tasks import (
     _stream_generation,
     generate_with_retry_task,
     stream_generation_task,
+    summarize_chapter_task,
 )
 from diploma_backend.worker.celery_app import celery_app
 
@@ -103,6 +104,25 @@ def test_exhausted_retries_propagate_as_real_exception() -> None:
             max_attempts=1,
             api_key="test-key",
         )
+
+
+@respx.mock
+def test_summarize_chapter_task_returns_summary_text() -> None:
+    respx.post(_CHAT_URL).mock(return_value=_success_response("A dense chapter summary."))
+
+    async_result = summarize_chapter_task.delay(
+        "Full chapter text to compact.", api_key="test-key"
+    )
+
+    assert async_result.get() == "A dense chapter summary."
+
+
+@respx.mock
+def test_summarize_chapter_task_propagates_llm_failure() -> None:
+    respx.post(_CHAT_URL).mock(return_value=httpx.Response(500, json={"error": "boom"}))
+
+    with pytest.raises(LLMRequestError):
+        summarize_chapter_task.delay("Full chapter text to compact.", api_key="test-key")
 
 
 def _stream_body(deltas: list[str]) -> bytes:

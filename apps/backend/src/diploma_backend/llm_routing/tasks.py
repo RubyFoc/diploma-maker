@@ -23,6 +23,12 @@ marker) to a Redis Stream keyed `generation:{task_id}`, which the endpoint tails
 instead of `.get()`-ing this task's return value. It lives alongside `generate_with_retry_task`
 rather than in a separate module because both wrap the same `DeepSeekClient`/`llm_routing`
 concern; `sources`/`humanizer`/`formatting`/`feedback`/`billing` stay untouched by this change.
+
+`summarize_chapter_task` (ADR-0003 addendum, follow-up to TASK-E03-2/E17) wraps
+`llm_routing.summary.summarize_chapter` the same way, for the same "same `DeepSeek`/`llm_routing`
+concern" reasoning — dispatched from `projects.router.accept_draft_version_endpoint` right after
+a draft is accepted, so `assemble_prompt`'s `chapter_summaries` prefix has real content to work
+with on later generation calls.
 """
 
 import asyncio
@@ -32,6 +38,7 @@ import redis
 
 from diploma_backend.llm_routing.client import DeepSeekClient, LLMRequestError, Message, Tier
 from diploma_backend.llm_routing.retry import generate_with_retry
+from diploma_backend.llm_routing.summary import summarize_chapter
 from diploma_backend.worker.celery_app import celery_app
 
 # Read the same way `worker.celery_app` reads `REDIS_URL`: a plain `os.environ.get` with the same
@@ -96,6 +103,32 @@ def generate_with_retry_task(
             max_tokens=max_tokens,
         )
     )
+
+
+@celery_app.task(name="llm_routing.summarize_chapter")
+def summarize_chapter_task(
+    chapter_content: str,
+    *,
+    api_key: str | None = None,
+    fast_model: str | None = None,
+    heavy_model: str | None = None,
+) -> str:
+    """Run `summarize_chapter` in a worker process and return the compacted summary text
+    (accept-time summarization, `projects.router.accept_draft_version_endpoint`, TASK-E03-2
+    wiring).
+
+    Builds a fresh `DeepSeekClient(api_key, fast_model, heavy_model)` per call (see module
+    docstring for why a client instance isn't passed as a task argument), then runs
+    `summarize_chapter` via `asyncio.run` — `summarize_chapter` is itself `async def` but, unlike
+    `generate_with_retry`/`humanize_text`, has no internal retry of its own (it calls
+    `client.generate_fast` directly), so no Celery-level `autoretry_for` is warranted here either
+    (ADR-0013 addendum point 5's reasoning applies the same way: this is a best-effort cost
+    optimization, not a correctness-critical path — the caller is expected to fail open on any
+    exception this task raises, never block on it). Raises `LLMRequestError` unchanged on any
+    call failure, matching `generate_with_retry_task`'s propagation contract.
+    """
+    client = DeepSeekClient(api_key=api_key, fast_model=fast_model, heavy_model=heavy_model)
+    return asyncio.run(summarize_chapter(client, chapter_content))
 
 
 async def _stream_generation(

@@ -63,6 +63,18 @@ unresolved ADR.
 - **Consequences:** Prompt templates and the summary-compaction logic become a stable contract
   other epics (E04, E07, E08) build against; changing the split later invalidates cached context
   and requires re-tuning prompts.
+- **Addendum (2026-08-07, cost-optimization follow-up to TASK-E03-2/E17):** `assemble_prompt`'s
+  `chapter_summaries` parameter is now actually populated, closing the gap where every generation
+  call passed `chapter_summaries=[]` despite `summarize_chapter` already existing with no caller.
+  `projects.router.accept_draft_version_endpoint` dispatches `llm_routing.tasks.
+  summarize_chapter_task` (a thin Celery wrapper around `summarize_chapter`, same pattern as
+  `generate_with_retry_task`/`humanize_text_task`) right after each accept, and persists the
+  result onto `Chapter.summary` via `projects.service.update_chapter_summary` — failing open on
+  any summarization error, since accepting a draft must never be blocked by this best-effort
+  enrichment. Both generation call sites (`generate_chapter_draft_endpoint`,
+  `generate_chapter_draft_stream_endpoint`) now build `chapter_summaries` from every chapter in
+  the project with a persisted summary, ordered by `created_at` (not `Chapter.order`, which is
+  only unique within a `(project_id, parent_chapter_id)` scope per ADR-0014).
 
 ### ADR-0004: Document diff/versioning data model
 - **Date:** 2026-08-04

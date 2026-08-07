@@ -62,6 +62,17 @@ async def update_project_title(db: AsyncIOMotorDatabase, project_id: str, title:
     await db[_PROJECTS_COLLECTION].update_one({"id": project_id}, {"$set": {"title": title}})
 
 
+async def update_chapter_summary(db: AsyncIOMotorDatabase, chapter_id: str, summary: str) -> None:
+    """Set `chapter_id`'s stored `summary` to `summary` (accept-time summarization,
+    `projects.router.accept_draft_version_endpoint`, TASK-E03-2 wiring).
+
+    Does nothing (no error) if `chapter_id` doesn't exist, matching `update_project_title`'s
+    no-error-on-missing convention — the caller already fails open on any summarization problem,
+    so a missing chapter here is likewise not treated as an error.
+    """
+    await db[_CHAPTERS_COLLECTION].update_one({"id": chapter_id}, {"$set": {"summary": summary}})
+
+
 async def list_projects_for_user(db: AsyncIOMotorDatabase, owner_id: str) -> list[Project]:
     """Return every project owned by `owner_id` (TASK-E11-2), in no particular order.
 

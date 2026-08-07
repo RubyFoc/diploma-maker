@@ -48,6 +48,13 @@ class Chapter(BaseModel):
     enforced by callers (TASK-E12-2), not this model. Sibling `order` is scoped to
     `(project_id, parent_chapter_id)`, not just `project_id` — see
     `projects.service.insert_chapter_at_order`/`infer_insertion_order`.
+
+    `summary` (TASK-E03-2/ADR-0003 wiring) is the compacted (~150-300 token) summary of this
+    chapter's current accepted content, produced by `llm_routing.summary.summarize_chapter` and
+    persisted via `projects.service.update_chapter_summary` right after a draft version is
+    accepted (`projects.router.accept_draft_version_endpoint`). It is `None` until the chapter has
+    ever been accepted, or if summarization has failed on every accept so far -- accepting a draft
+    must never be blocked by a summarization failure, so this field fails open rather than raising.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -56,3 +63,4 @@ class Chapter(BaseModel):
     title: str
     order: int
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    summary: str | None = None
