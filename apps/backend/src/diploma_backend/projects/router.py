@@ -61,7 +61,8 @@ from diploma_backend.auth.dependencies import get_current_user_id
 from diploma_backend.db import get_database
 from diploma_backend.export.docx import apply_institution_config, markdown_to_docx
 from diploma_backend.formatting.service import get_institution_config
-from diploma_backend.humanizer.pipeline import HumanizationError, humanize_text
+from diploma_backend.humanizer.pipeline import HumanizationError
+from diploma_backend.humanizer.tasks import humanize_text_task
 from diploma_backend.llm_routing import (
     DeepSeekClient,
     LLMRequestError,
@@ -77,7 +78,8 @@ from diploma_backend.locks.service import (
     list_locks_for_chapter,
     reverify_anchor_resolution,
 )
-from diploma_backend.plagiarism.precheck import PlagiarismCheckResult, run_precheck
+from diploma_backend.plagiarism.precheck import PlagiarismCheckResult, SentenceFlag
+from diploma_backend.plagiarism.tasks import run_precheck_task
 from diploma_backend.projects.models import Chapter, Project
 from diploma_backend.projects.service import (
     create_chapter,
@@ -120,6 +122,12 @@ _DEFAULT_PROJECT_TITLE = "Untitled Thesis"
 # (ADR-0013 addendum point 1). `parse_toc` itself is fast in-memory `.docx` parsing; this mostly
 # bounds how long a request waits on a busy/unreachable Celery worker, not the parse itself.
 _TOC_PARSE_TASK_TIMEOUT_SECONDS = 60.0
+
+# Same rationale/precedent as `_TOC_PARSE_TASK_TIMEOUT_SECONDS`, applied to the humanize/precheck
+# tasks the generation pipeline now awaits (ADR-0013, TASK-E17-4). Matches
+# `plagiarism.router._PRECHECK_TASK_TIMEOUT_SECONDS`'s value.
+_HUMANIZE_TASK_TIMEOUT_SECONDS = 60.0
+_PRECHECK_TASK_TIMEOUT_SECONDS = 60.0
 
 # Matches the frontend's `chapterContentEmpty` string (apps/frontend/src/strings/index.ts)
 # verbatim, so a user sees the same wording in the exported document as in the editor UI for a
@@ -237,19 +245,71 @@ async def _fetch_required_source_excerpts(
     return excerpts, unmet
 
 
+def _plagiarism_result_from_task_dict(precheck_dict: dict) -> PlagiarismCheckResult:
+    """Reconstruct a `PlagiarismCheckResult` from `run_precheck_task`'s plain-dict return value.
+
+    `run_precheck_task` returns `dataclasses.asdict(result)`, which recurses into the nested
+    `sentence_flags: list[SentenceFlag]` and converts each entry to a plain `dict` too. Plain
+    dataclass construction (`PlagiarismCheckResult(**precheck_dict)`) does NOT reverse that
+    recursion, so doing so directly would leave `sentence_flags` as a `list[dict]` sitting inside
+    a `PlagiarismCheckResult` that claims to hold `list[SentenceFlag]` — any caller that reads a
+    flag's fields as attributes (e.g. `plagiarism.router.SentenceFlagResponse.from_flag`, via
+    `flag.text`/`flag.plagiarism_score`) would raise `AttributeError` the first time a generation
+    actually produces a flagged sentence. This helper re-wraps each entry in `SentenceFlag`
+    explicitly before constructing the outer dataclass, so the result matches
+    `PlagiarismCheckResult`'s real shape. Used by both `_humanize_and_precheck` and
+    `generate_chapter_draft_stream_endpoint`, which otherwise duplicate this same reconstruction.
+    """
+    return PlagiarismCheckResult(
+        **{
+            **precheck_dict,
+            "sentence_flags": [SentenceFlag(**flag) for flag in precheck_dict["sentence_flags"]],
+        }
+    )
+
+
 async def _humanize_and_precheck(
-    client: DeepSeekClient, content: str, rag_excerpts: list[str]
+    content: str, rag_excerpts: list[str]
 ) -> tuple[str, PlagiarismCheckResult]:
     """Shared humanize -> plagiarism/AI-detection precheck pipeline, used by both full-chapter and
     "insert at anchor" (TASK-E15-1) generation, so the two modes never duplicate this logic.
 
-    Same contract as inlined in `generate_chapter_draft_endpoint` previously: `HumanizationError`
-    fails open (falls back to the pre-humanization `content`, humanization being cosmetic, not
-    correctness-critical); a genuine `LLMRequestError` from the humanize call surfaces as
-    `HTTPException(502)`.
+    Both stages now run on a Celery worker (ADR-0013, TASK-E17-4) via
+    `humanizer.tasks.humanize_text_task` and `plagiarism.tasks.run_precheck_task` instead of
+    inline on this process, but this handler still `await`s each task's result before returning,
+    so callers see the exact same behavior/timing shape as before (ADR-0013 addendum point 1) —
+    no `client` argument is needed here any more, since `humanize_text_task` builds its own
+    `DeepSeekClient` from `DEEPSEEK_API_KEY`/`DEEPSEEK_FAST_MODEL`/`DEEPSEEK_HEAVY_MODEL`, the
+    same environment fallback every caller of this function already relies on (both call this
+    with a bare `DeepSeekClient()`).
+
+    Both the `.delay()` call AND the blocking `.get()` are run together inside a single
+    `asyncio.to_thread(...)` call, not just `.get()` (unlike `upload_toc_endpoint`'s
+    `parse_toc_task`/`plagiarism.router`'s `run_precheck_task` sites): under
+    `task_always_eager=True` (tests), `.delay()` itself runs the task body synchronously, and
+    `humanize_text_task`'s body drives its async work via `asyncio.run(...)` (ADR-0013 addendum
+    point 3) — calling `.delay()` directly from this already-running coroutine would collide with
+    the caller's own event loop ("asyncio.run() cannot be called from a running event loop").
+    Running both calls in a worker thread sidesteps that regardless of eager/real-worker mode.
+
+    Same contract as before: `HumanizationError` fails open (falls back to the
+    pre-humanization `content`, humanization being cosmetic, not correctness-critical); a genuine
+    `LLMRequestError` from the humanize call surfaces as `HTTPException(502)`. Per
+    `task_eager_propagates=True` (tests) / a real worker (production), both exception types
+    propagate through `asyncio.to_thread` unchanged (see `test_humanizer_tasks.py`).
+
+    `run_precheck_task` returns a plain `dict` (`dataclasses.asdict` of a `PlagiarismCheckResult`,
+    since Celery's JSON result backend can't carry the dataclass natively); it is converted back
+    into a `PlagiarismCheckResult` here (via `_plagiarism_result_from_task_dict`, which also
+    rehydrates the nested `sentence_flags` entries) so this function's return type/contract is
+    unchanged for its callers (both build a `PlagiarismCheckResultResponse` via `.from_result`).
     """
+
+    def _run_humanize() -> str:
+        return humanize_text_task.delay(content).get(timeout=_HUMANIZE_TASK_TIMEOUT_SECONDS)
+
     try:
-        humanized_content = await humanize_text(client, content)
+        humanized_content = await asyncio.to_thread(_run_humanize)
     except LLMRequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     except HumanizationError:
@@ -258,8 +318,15 @@ async def _humanize_and_precheck(
         # docstring).
         humanized_content = content
 
-    precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
-    return humanized_content, precheck
+    # Unlike `_run_humanize` above, `run_precheck_task` has no internal `asyncio.run()` (it calls
+    # the synchronous `run_precheck` directly — see that task's docstring), so only the blocking
+    # `.get()` needs `asyncio.to_thread`, matching `plagiarism.router`'s existing
+    # `.delay()`-then-`asyncio.to_thread(async_result.get, ...)` pattern for the same task.
+    async_result = run_precheck_task.delay(humanized_content, rag_excerpts)
+    precheck_dict = await asyncio.to_thread(
+        async_result.get, timeout=_PRECHECK_TASK_TIMEOUT_SECONDS
+    )
+    return humanized_content, _plagiarism_result_from_task_dict(precheck_dict)
 
 
 def _anchor_context_excerpts(
@@ -888,9 +955,7 @@ async def upload_toc_endpoint(
         # the exception to `.get()`, so both calls must sit inside this `try` block to catch a
         # `TocParseError` regardless of whether the task ran eagerly or on a real worker.
         async_result = parse_toc_task.delay(content_b64)
-        titles = await asyncio.to_thread(
-            async_result.get, timeout=_TOC_PARSE_TASK_TIMEOUT_SECONDS
-        )
+        titles = await asyncio.to_thread(async_result.get, timeout=_TOC_PARSE_TASK_TIMEOUT_SECONDS)
     except TocParseError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -928,11 +993,12 @@ async def generate_chapter_draft_endpoint(
     `generate_with_retry`. Raises `HTTPException(502)` if every retry attempt fails
     (`LLMRequestError`).
 
-    The raw generated content is then passed through `humanizer.pipeline.humanize_text` (reusing
-    the same `DeepSeekClient`, fast tier per ADR-0003) to break up repetitive LLM-sounding
-    patterns. Citation verification (ADR-0001) is not yet wired into this endpoint (see module
-    docstring), so no citation markers are formatted into the raw text today, and
-    `humanize_text`'s `guard_citations` step should find nothing to guard in practice. It is
+    The raw generated content is then passed through `humanizer.pipeline.humanize_text` (fast
+    tier per ADR-0003), now dispatched to a Celery worker via `humanizer.tasks.humanize_text_task`
+    (ADR-0013, TASK-E17-4) rather than running inline — see `_humanize_and_precheck` — to break up
+    repetitive LLM-sounding patterns. Citation verification (ADR-0001) is not yet wired into this
+    endpoint (see module docstring), so no citation markers are formatted into the raw text today,
+    and `humanize_text`'s `guard_citations` step should find nothing to guard in practice. It is
     still handled defensively: a `LLMRequestError` from the humanize call (the DeepSeek call
     itself failing after retries) is a genuine infra failure and surfaces as `HTTPException(502)`,
     same as a failed generation. A `HumanizationError` (the model dropped/mangled a citation
@@ -1031,7 +1097,7 @@ async def generate_chapter_draft_endpoint(
         except LLMRequestError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-        humanized_content, precheck = await _humanize_and_precheck(client, content, rag_excerpts)
+        humanized_content, precheck = await _humanize_and_precheck(content, rag_excerpts)
 
         if anchor_resolution is not None:
             # TASK-E15-2: re-verify right before persistence, closing the TOCTOU gap between
@@ -1115,10 +1181,13 @@ async def generate_chapter_draft_stream_endpoint(
       chunk text verbatim (multi-line chunks are split across multiple `data:` lines per the SSE
       spec, all within the same event).
     - On successful completion of the stream: the accumulated raw text is run through the same
-      `humanize_text` (fail-open on `HumanizationError`, same reasoning as the non-streaming
-      endpoint) -> `run_precheck` (with the same live-searched RAG excerpts as `source_excerpts`,
-      see module docstring) -> `create_draft_version` pipeline as `generate_chapter_draft_endpoint`,
-      then a single `event: done` whose `data:` is the JSON
+      `humanize_text_task` (fail-open on `HumanizationError`, same reasoning as the non-streaming
+      endpoint) -> `run_precheck_task` (with the same live-searched RAG excerpts as
+      `source_excerpts`, see module docstring) -> `create_draft_version` pipeline as
+      `generate_chapter_draft_endpoint`'s `_humanize_and_precheck`, both now dispatched to a
+      Celery worker (ADR-0013, TASK-E17-4) rather than running inline, but translated to an
+      `error` SSE event instead of an `HTTPException` on `LLMRequestError` since the response has
+      already started streaming — then a single `event: done` whose `data:` is the JSON
       (via `.model_dump(mode="json")`) of a `GenerateDraftResponse`-shaped payload
       (`{"version": ..., "precheck": ...}`) — same response shape as that endpoint's body.
     - On `LLMRequestError` from `generate_stream` (a non-2xx status before the stream starts, or a
@@ -1159,15 +1228,34 @@ async def generate_chapter_draft_stream_endpoint(
                 return
 
             content = "".join(chunks)
+
+            def _run_humanize() -> str:
+                return humanize_text_task.delay(content).get(
+                    timeout=_HUMANIZE_TASK_TIMEOUT_SECONDS
+                )
+
             try:
-                humanized_content = await humanize_text(client, content)
+                # Humanization now runs on a Celery worker (ADR-0013, TASK-E17-4) via
+                # `humanizer.tasks.humanize_text_task`, matching `_humanize_and_precheck`'s
+                # non-streaming treatment of the same call (see that function's docstring for why
+                # `.delay()` and `.get()` both run inside one `asyncio.to_thread`); unlike that
+                # helper, a genuine `LLMRequestError` here is translated into an `error` SSE
+                # event rather than an `HTTPException`, since the response has already started
+                # streaming.
+                humanized_content = await asyncio.to_thread(_run_humanize)
             except LLMRequestError as exc:
                 yield _sse_event("error", json.dumps({"detail": str(exc)}))
                 return
             except HumanizationError:
                 humanized_content = content
 
-            precheck = run_precheck(humanized_content, source_excerpts=rag_excerpts)
+            # See `_humanize_and_precheck`'s matching comment: `run_precheck_task` needs only
+            # `.get()` wrapped in `asyncio.to_thread`, not `.delay()` too.
+            async_result = run_precheck_task.delay(humanized_content, rag_excerpts)
+            precheck_dict = await asyncio.to_thread(
+                async_result.get, timeout=_PRECHECK_TASK_TIMEOUT_SECONDS
+            )
+            precheck = _plagiarism_result_from_task_dict(precheck_dict)
             version = await create_draft_version(db, chapter_id, content=humanized_content)
             response_payload = GenerateDraftResponse(
                 version=version,

@@ -250,6 +250,15 @@ ADR-0009)
      reuse across tasks. Purely-sync CPU work already in this codebase (`plagiarism.precheck.
      run_precheck`, `toc.parser.parse_toc`) is called directly by its task wrapper, with no
      `asyncio.run()` needed.
+     **Caller-side corollary discovered during TASK-E17-4's humanization slice:** under
+     `task_always_eager=True`, `.delay()` runs the task body synchronously in the CALLING
+     thread/coroutine — so calling `.delay()` on a task whose body itself calls `asyncio.run()`
+     (e.g. `humanizer.tasks.humanize_text_task`, and `llm_routing.tasks.generate_with_retry_task`
+     once it's wired to an endpoint) from an already-running FastAPI coroutine raises
+     `RuntimeError: asyncio.run() cannot be called from a running event loop`. The fix is to wrap
+     BOTH `.delay()` and the blocking `.get()` together inside one `asyncio.to_thread(...)` call,
+     not just `.get()` — a task whose body has no internal event loop (`run_precheck_task`,
+     `parse_toc_task`) only needs the lighter "wrap `.get()` alone" pattern instead.
   4. **Tests run with `task_always_eager=True` (+ `task_eager_propagates=True`)** so `.delay()`/
      `.apply_async()` executes synchronously in-process against the existing `TestClient`+`respx`
      fixtures, with no real worker/Redis required. Constraint: every test must exercise a

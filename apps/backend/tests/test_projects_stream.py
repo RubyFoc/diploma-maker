@@ -188,6 +188,43 @@ def test_generate_stream_emits_tokens_and_done(client: TestClient) -> None:
 
 
 @respx.mock
+def test_generate_stream_flagged_content_does_not_crash_precheck_reconstruction(
+    client: TestClient,
+) -> None:
+    """Regression test mirroring `test_projects.py`'s test of the same name: the streaming
+    endpoint's inline copy of `_humanize_and_precheck`'s precheck-dict reconstruction had the same
+    bug (plain `PlagiarismCheckResult(**precheck_dict)` construction leaving `sentence_flags` as
+    a `list[dict]` instead of `list[SentenceFlag]`), duplicated separately from the shared
+    helper. The humanized text below reliably earns a non-empty, `is_ai_like`-flagged
+    `sentence_flags` via `plagiarism.precheck.flag_sentences`'s repeated-starter heuristic (see
+    `test_plagiarism.py`'s `test_flag_sentences_repeated_starter_is_flagged_ai_like`)."""
+    humanized = (
+        "Furthermore, the results were significant. Furthermore, the data was consistent. "
+        "Furthermore, the trend was clear. Furthermore, the outcome was expected."
+    )
+    _mock_stream_and_humanize(deltas=["Draft ", "chapter ", "body."], humanized=humanized)
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write an introduction."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done_events = [data for event, data in events if event == "done"]
+    assert len(done_events) == 1
+    payload = json.loads(done_events[0])
+    assert payload["version"]["content"] == humanized
+    assert set(payload["precheck"].keys()) == {
+        "plagiarism_score",
+        "ai_fingerprint_score",
+        "flagged",
+        "reasons",
+    }
+
+
+@respx.mock
 def test_generate_stream_done_payload_reports_unmet_required_sources(client: TestClient) -> None:
     """TASK-E14-3: the streaming endpoint's `done` payload carries `unmet_required_sources` the
     same way the non-streaming endpoint's response body does."""
@@ -206,6 +243,40 @@ def test_generate_stream_done_payload_reports_unmet_required_sources(client: Tes
     done_events = [data for event, data in events if event == "done"]
     payload = json.loads(done_events[0])
     assert payload["unmet_required_sources"] == ["Jane Doe"]
+
+
+@respx.mock
+def test_generate_stream_humanize_dropped_citation_falls_back_to_raw_content(
+    client: TestClient,
+) -> None:
+    """`HumanizationError` (a dropped/mangled `__CITATION_N__` placeholder) must fail open through
+    the Celery task boundary (ADR-0013, TASK-E17-4) the same way the non-streaming endpoint's
+    `_humanize_and_precheck` does, falling back to the raw streamed content instead of emitting an
+    `error` event."""
+    _mock_empty_rag_search()
+    generated = "This baseline was established by prior work (Smith, 2020)."
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_stream_body([generated]),
+        )
+    )
+    respx.post(_CHAT_URL, json__model="deepseek-v4-flash").mock(
+        return_value=_success_response("This baseline is well known.")
+    )
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write something."},
+    )
+
+    events = _parse_sse(response.text)
+    done_events = [data for event, data in events if event == "done"]
+    assert len(done_events) == 1
+    payload = json.loads(done_events[0])
+    assert payload["version"]["content"] == generated
 
 
 @respx.mock

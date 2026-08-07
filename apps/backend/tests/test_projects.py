@@ -366,6 +366,83 @@ def test_generate_draft_creates_and_returns_draft_version(client: TestClient) ->
 
 
 @respx.mock
+def test_generate_draft_flagged_content_does_not_crash_precheck_reconstruction(
+    client: TestClient,
+) -> None:
+    """Regression test for a bug where `_humanize_and_precheck` reconstructed
+    `PlagiarismCheckResult` from `run_precheck_task`'s dict return value via plain
+    `PlagiarismCheckResult(**precheck_dict)` construction, which does not recursively rehydrate
+    the nested `sentence_flags: list[SentenceFlag]` — leaving it as a `list[dict]` instead. That
+    silently violated the dataclass's contract for any generation whose humanized content
+    actually earns a flagged sentence (empty-`sentence_flags` content, as most of this module's
+    other tests use, round-trips fine by accident and never exercised the bug).
+
+    The humanized text below repeats the same sentence starter four times, which
+    `plagiarism.precheck.flag_sentences`'s repeated-starter heuristic reliably flags as
+    `is_ai_like=True` per sentence (see `test_plagiarism.py`'s
+    `test_flag_sentences_repeated_starter_is_flagged_ai_like`), guaranteeing a non-empty
+    `sentence_flags` on the reconstructed `PlagiarismCheckResult` this endpoint builds internally.
+    """
+    humanized = (
+        "Furthermore, the results were significant. Furthermore, the data was consistent. "
+        "Furthermore, the trend was clear. Furthermore, the outcome was expected."
+    )
+    _mock_generate_and_humanize(generated="Draft chapter body.", humanized=humanized)
+
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write an introduction."},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["version"]["content"] == humanized
+    assert set(body["precheck"].keys()) == {
+        "plagiarism_score",
+        "ai_fingerprint_score",
+        "flagged",
+        "reasons",
+    }
+
+
+def test_plagiarism_result_from_task_dict_rehydrates_sentence_flags_as_dataclasses() -> None:
+    """Direct unit test of the reconstruction helper itself (`_plagiarism_result_from_task_dict`,
+    used by both `_humanize_and_precheck` and the streaming endpoint's copy of the same logic):
+    given a dict shaped exactly like `run_precheck_task`'s real return value (nested
+    `sentence_flags` as plain dicts, matching `dataclasses.asdict`'s recursive conversion), the
+    reconstructed `PlagiarismCheckResult.sentence_flags` entries must be real `SentenceFlag`
+    instances — attribute access (`flag.text`, as `plagiarism.router.SentenceFlagResponse.
+    from_flag` does) must not raise `AttributeError`, which it would if `sentence_flags` were
+    left as `list[dict]` (the exact bug this test guards against: the endpoint-level tests above
+    only exercise the "does it crash" question end to end, but `GenerateDraftResponse` doesn't
+    itself surface `sentence_flags`, so this is the only test that actually inspects the
+    reconstructed types)."""
+    import diploma_backend.projects.router as router_module
+    from diploma_backend.plagiarism.precheck import SentenceFlag
+    from diploma_backend.plagiarism.tasks import run_precheck_task
+
+    humanized = (
+        "Furthermore, the results were significant. Furthermore, the data was consistent."
+    )
+    precheck_dict = run_precheck_task.delay(humanized, []).get()
+
+    result = router_module._plagiarism_result_from_task_dict(precheck_dict)
+
+    assert len(result.sentence_flags) >= 1
+    for flag in result.sentence_flags:
+        assert isinstance(flag, SentenceFlag)
+        assert isinstance(flag.text, str)
+        assert isinstance(flag.plagiarism_score, float)
+
+
+@respx.mock
 def test_generate_draft_llm_failure_returns_502(client: TestClient) -> None:
     _mock_empty_rag_search()
     respx.post(_CHAT_URL).mock(return_value=_fail_response())
@@ -383,6 +460,42 @@ def test_generate_draft_llm_failure_returns_502(client: TestClient) -> None:
     )
 
     assert response.status_code == 502
+
+
+@respx.mock
+def test_generate_draft_humanize_dropped_citation_falls_back_to_raw_content(
+    client: TestClient,
+) -> None:
+    """`HumanizationError` (a dropped/mangled `__CITATION_N__` placeholder, per
+    `humanizer.pipeline.restore_citations`) must fail open through the Celery task boundary
+    (ADR-0013, TASK-E17-4, `_humanize_and_precheck`), falling back to the pre-humanization draft
+    content rather than surfacing an error to the caller."""
+    _mock_empty_rag_search()
+    generated = "This baseline was established by prior work (Smith, 2020)."
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=_success_response(generated)
+    )
+    # The humanizer's own system prompt asks the model to preserve the __CITATION_0__ placeholder
+    # it inserts in place of "(Smith, 2020)"; this response drops it, matching
+    # `test_humanizer_tasks.py::test_dropped_citation_placeholder_propagates_as_real_exception`.
+    respx.post(_CHAT_URL, json__model="deepseek-v4-flash").mock(
+        return_value=_success_response("This baseline is well known.")
+    )
+
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write something."},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["version"]["content"] == generated
 
 
 @respx.mock
