@@ -263,7 +263,7 @@ shares the same anchor primitives.
 
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
-| TASK-E16-1 | `Operation` op-log model per ADR-0012 (layered on the existing `ChapterVersion` chain, not replacing it) | E16 | python-developer | todo |
+| TASK-E16-1 | `Operation` op-log model per ADR-0012 (layered on the existing `ChapterVersion` chain, not replacing it) | E16 | python-developer | done |
 | TASK-E16-2 | `POST /chapters/{id}/undo`, `/redo` endpoints: replay/revert `Operation` rows against the current draft; reject with a clear error if an op's anchor block no longer exists | E16 | python-developer | todo |
 | TASK-E16-3 | Redo-stack wipe on a new edit applied after an undo (linear op-log, no branching history) | E16 | python-developer | todo |
 | TASK-E16-4 | Client-side page-range revert resolution: `PaginatedDocument`'s per-page block indices resolved into a block-id range, sent to the backend as a batch-undo | E16 | frontend-developer | todo |
