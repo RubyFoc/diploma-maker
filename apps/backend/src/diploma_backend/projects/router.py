@@ -44,6 +44,7 @@ skipping the not-yet-integrated citation-verification step.
 """
 
 import asyncio
+import base64
 import json
 import re
 from collections.abc import AsyncIterator
@@ -94,7 +95,8 @@ from diploma_backend.projects.service import (
 from diploma_backend.sources.client import delete_project_vectors
 from diploma_backend.sources.required import list_required_sources_for_project
 from diploma_backend.sources.search import SourceSearchError, search_sources
-from diploma_backend.toc.parser import TocParseError, parse_toc
+from diploma_backend.toc.parser import TocParseError
+from diploma_backend.toc.tasks import parse_toc_task
 from diploma_backend.versions.models import ChapterVersion
 from diploma_backend.versions.service import (
     accept_draft_version,
@@ -112,6 +114,12 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 versions_router = APIRouter(prefix="/versions", tags=["projects"])
 
 _DEFAULT_PROJECT_TITLE = "Untitled Thesis"
+
+# Matches `llm_routing.client._DEFAULT_TIMEOUT_SECONDS`'s precedent of a generous fixed timeout
+# for an external/out-of-process call this handler must still `await` before responding
+# (ADR-0013 addendum point 1). `parse_toc` itself is fast in-memory `.docx` parsing; this mostly
+# bounds how long a request waits on a busy/unreachable Celery worker, not the parse itself.
+_TOC_PARSE_TASK_TIMEOUT_SECONDS = 60.0
 
 # Matches the frontend's `chapterContentEmpty` string (apps/frontend/src/strings/index.ts)
 # verbatim, so a user sees the same wording in the exported document as in the editor UI for a
@@ -853,11 +861,20 @@ async def upload_toc_endpoint(
     """Parse an uploaded `.docx` table of contents and create one chapter per entry, in order.
 
     Scoped to the authenticated caller (TASK-E11-1): raises `HTTPException(404)` if `project_id`
-    doesn't exist or belongs to a different owner. Parses `file` via `toc.parser.parse_toc`;
-    raises `HTTPException(422)` if it isn't a parseable TOC (fail-closed, matching
-    `formatting.router`'s upload-parse-error convention). On success, calls
-    `projects.service.create_chapter` once per parsed title, in order (so `order` assignment
-    stays centralized in that function), and returns the updated `ProjectDetail`.
+    doesn't exist or belongs to a different owner. Parsing itself now runs on a Celery worker via
+    `toc.tasks.parse_toc_task` (ADR-0013, TASK-E17-4) instead of inline on this process; the
+    uploaded bytes are base64-encoded before `.delay()` since Celery's default JSON serializer
+    cannot carry raw `bytes`, and the task decodes them back before calling `parse_toc`. Per
+    ADR-0013's addendum point 1, the HTTP contract is unchanged: this handler still `await`s the
+    task's result (via `asyncio.to_thread`, since `AsyncResult.get()` blocks) before responding,
+    with the same response shape/status as before. Raises `HTTPException(422)` if the task
+    surfaces a `TocParseError` (fail-closed, matching `formatting.router`'s upload-parse-error
+    convention) — Celery re-raises the original exception type from `.get()` when it's importable
+    in this process, which it is here since the API and worker share this codebase, so the
+    `except TocParseError` below still fires whether the task ran eagerly (tests) or on a real
+    worker. On success, calls `projects.service.create_chapter` once per parsed title, in order
+    (so `order` assignment stays centralized in that function), and returns the updated
+    `ProjectDetail`.
 
     Note: this only creates chapters from the parsed TOC; inserting a later-generated
     chapter between existing ones is handled separately by `insert_chapter_endpoint`.
@@ -865,8 +882,15 @@ async def upload_toc_endpoint(
     project = await _get_owned_project(db, project_id, owner_id)
 
     content = await file.read()
+    content_b64 = base64.b64encode(content).decode("ascii")
     try:
-        titles = parse_toc(content)
+        # `task_eager_propagates` (tests) raises directly from `.delay()` rather than deferring
+        # the exception to `.get()`, so both calls must sit inside this `try` block to catch a
+        # `TocParseError` regardless of whether the task ran eagerly or on a real worker.
+        async_result = parse_toc_task.delay(content_b64)
+        titles = await asyncio.to_thread(
+            async_result.get, timeout=_TOC_PARSE_TASK_TIMEOUT_SECONDS
+        )
     except TocParseError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
