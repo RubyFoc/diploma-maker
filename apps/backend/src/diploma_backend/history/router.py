@@ -11,7 +11,15 @@ version row, "accept" (`versions.service.accept_draft_version`) is unaffected. B
 over `count` steps (ADR-0012's client-resolved-page-range note) is supported; resolving a page's
 block-id range into a `count`/starting point is a separate frontend task (TASK-E16-4), not built
 here.
+
+`GET /chapters/{chapter_id}/operations` is a small read-only addendum added for TASK-E16-4: the
+frontend resolves a page's block-id range into an undo/redo `count` client-side, which requires
+seeing every recorded operation's `block_id` in op-log order — this endpoint exposes exactly that
+(and nothing more; content is never sent twice over the wire since the draft's own manifest
+already carries it).
 """
+
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -19,9 +27,12 @@ from pydantic import BaseModel, Field
 
 from diploma_backend.auth.dependencies import get_current_user_id
 from diploma_backend.db import get_database
+from diploma_backend.history.models import Operation
 from diploma_backend.history.service import (
     HistoryReplayError,
     UndoRedoResult,
+    get_history_cursor,
+    list_operations_for_chapter,
     redo_operations,
     undo_operations,
 )
@@ -140,3 +151,61 @@ async def redo_endpoint(
         message = str(exc)
         raise HTTPException(status_code=_replay_error_status(message), detail=message) from exc
     return UndoRedoResponse.from_result(result)
+
+
+class OperationSummary(BaseModel):
+    """Minimal, non-content projection of one `history.models.Operation` for
+    `GET /chapters/{chapter_id}/operations`. Deliberately omits `before_text`/`after_text`/
+    `applied_by` — the frontend only needs `block_id` (to map blocks on a page to their op-log
+    position) and `created_at` (for ordering/display), and there is no reason to send a chapter's
+    generated content over the wire twice when the draft's own manifest already carries it."""
+
+    id: str
+    block_id: str
+    created_at: datetime
+
+    @classmethod
+    def from_operation(cls, operation: Operation) -> "OperationSummary":
+        return cls(id=operation.id, block_id=operation.block_id, created_at=operation.created_at)
+
+
+class OperationsListResponse(BaseModel):
+    """Response for `GET /chapters/{chapter_id}/operations`: every recorded operation for the
+    chapter (both currently-applied and any still-undone redo tail), oldest-first, plus the same
+    `applied_count`/`total_operations` the undo/redo endpoints report — enough for a caller to
+    tell which of `operations` are currently applied (the first `applied_count` of them) without
+    a second request."""
+
+    operations: list[OperationSummary]
+    applied_count: int
+    total_operations: int
+
+
+@router.get("/chapters/{chapter_id}/operations", response_model=OperationsListResponse)
+async def list_operations_endpoint(
+    chapter_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
+) -> OperationsListResponse:
+    """List every recorded operation for `chapter_id`, oldest-first (TASK-E16-4's addendum): the
+    frontend needs each operation's `block_id` in op-log order to resolve a page's block-id range
+    into an undo/redo `count` client-side ("revert this page").
+
+    A chapter that exists but has never had an anchor-insertion generation run against it has no
+    recorded operations and no `HistoryCursor` yet — that is a valid, common state, distinct from
+    "chapter doesn't exist", so it returns the zeroed shape (`operations=[]`, `applied_count=0`,
+    `total_operations=0`) rather than a 404.
+
+    Raises `HTTPException(404)` if `chapter_id` doesn't exist or isn't owned by the caller.
+    """
+    await _get_owned_chapter(db, chapter_id, owner_id)
+
+    operations = await list_operations_for_chapter(db, chapter_id)
+    cursor = await get_history_cursor(db, chapter_id)
+    applied_count = cursor.applied_count if cursor is not None else 0
+
+    return OperationsListResponse(
+        operations=[OperationSummary.from_operation(operation) for operation in operations],
+        applied_count=applied_count,
+        total_operations=len(operations),
+    )
