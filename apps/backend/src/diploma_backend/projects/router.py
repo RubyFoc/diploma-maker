@@ -46,12 +46,16 @@ skipping the not-yet-integrated citation-verification step.
 import asyncio
 import base64
 import json
+import os
 import re
+import time
+import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
 from io import BytesIO
 from urllib.parse import quote
 
+import redis.asyncio as redis_asyncio
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -69,7 +73,7 @@ from diploma_backend.llm_routing import (
     generate_project_title,
 )
 from diploma_backend.llm_routing.summary import assemble_prompt
-from diploma_backend.llm_routing.tasks import generate_with_retry_task
+from diploma_backend.llm_routing.tasks import generate_with_retry_task, stream_generation_task
 from diploma_backend.locks.models import Block
 from diploma_backend.locks.service import (
     AnchorResolution,
@@ -141,6 +145,37 @@ _PRECHECK_TASK_TIMEOUT_SECONDS = 60.0
 # `except LLMRequestError` block) while the underlying task keeps running detached from the
 # already-abandoned HTTP request.
 _GENERATE_TASK_TIMEOUT_SECONDS = 200.0
+
+# Read the same way `worker.celery_app`/`llm_routing.tasks` read `REDIS_URL` (see the latter's
+# matching comment for why this two-line duplication is preferred over a shared config module for
+# one env var read in three places).
+_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+# How many stream entries `generate_chapter_draft_stream_endpoint`'s catch-up `XREAD` requests in
+# one call (ADR-0013 addendum point 2). Does NOT need to cover every entry a
+# `stream_generation_task` that had already finished (under `task_always_eager=True`, always true
+# in tests) may have written before this endpoint's tail loop attached — any entries past this
+# call's cap are picked up by the very next `while not done:` iteration below instead, since a
+# blocking `XREAD` from a given id returns immediately (no waiting) when entries already exist
+# past that id. `llm_routing.tasks._STREAM_MAXLEN` is deliberately NOT trimmed during the hot
+# per-chunk write loop any more (see that constant's docstring), so this count and that cap no
+# longer need any numeric relationship to each other for correctness.
+_STREAM_CATCHUP_COUNT = 500
+
+# How long each subsequent `XREAD BLOCK` waits for a new entry before looping again. Short enough
+# that a client disconnect is noticed promptly, long enough to avoid a tight busy-poll loop.
+_STREAM_READ_BLOCK_MS = 2000
+
+# Overall wall-clock ceiling on `generate_chapter_draft_stream_endpoint`'s catch-up + tail-loop
+# sequence (i.e. from dispatching `stream_generation_task` to seeing its terminal `"done"`/
+# `"error"` marker) — without this, a worker crash mid-task, a transient Redis error while
+# publishing, or the stream key's `_STREAM_TTL_SECONDS` expiring before a marker ever arrives would
+# leave the tail loop re-polling every `_STREAM_READ_BLOCK_MS` forever: an unbounded, leaked-open
+# SSE connection/coroutine. Mirrors `_GENERATE_TASK_TIMEOUT_SECONDS`'s "don't hang forever"
+# precedent for the non-streaming migration: this streaming path drives the same underlying
+# DeepSeek call (worst case ~183s inside `generate_with_retry`, per that constant's comment) plus
+# streaming overhead, so this ceiling is set comfortably above it rather than reusing it outright.
+_STREAM_TAIL_TIMEOUT_SECONDS = 280.0
 
 # Matches the frontend's `chapterContentEmpty` string (apps/frontend/src/strings/index.ts)
 # verbatim, so a user sees the same wording in the exported document as in the editor UI for a
@@ -1174,6 +1209,46 @@ def _sse_event(event: str, data: str) -> str:
     return f"event: {event}\n{data_lines}\n\n"
 
 
+def _process_stream_entries(
+    entries: list[tuple[str, dict[str, str]]], chunks: list[str]
+) -> tuple[list[str], bool, str | None, str | None]:
+    """Turn a batch of `generation:{task_id}` Redis Stream entries (ADR-0013 addendum point 2)
+    into SSE-framed strings for `generate_chapter_draft_stream_endpoint`'s tail loop to yield.
+
+    Appends each `"token"` entry's `data` field to `chunks` in place (mirroring the accumulation
+    the old inline `client.generate_stream` loop performed, so the unchanged humanize/precheck
+    block below still sees `"".join(chunks)` as the full generated text) and returns:
+    - the list of `_sse_event("token", ...)` strings to yield, in order;
+    - whether a terminal (`"done"`/`"error"`) entry was seen in this batch;
+    - that entry's `"detail"` field if it was `"error"`, else `None`;
+    - the last entry id processed in this batch (`None` if `entries` was empty), so the caller
+      knows where to resume `XREAD`ing from.
+
+    Stops processing (ignoring any further entries in this same batch) as soon as a terminal entry
+    is seen, matching the old code's `except LLMRequestError: ... return` early-exit shape — a
+    `done`/`error` marker is always the last entry `stream_generation_task` publishes.
+    """
+    sse_events: list[str] = []
+    done = False
+    error_detail: str | None = None
+    last_id: str | None = None
+    for entry_id, fields in entries:
+        last_id = entry_id
+        event_type = fields.get("type")
+        if event_type == "token":
+            data = fields.get("data", "")
+            chunks.append(data)
+            sse_events.append(_sse_event("token", data))
+        elif event_type == "done":
+            done = True
+            break
+        elif event_type == "error":
+            done = True
+            error_detail = fields.get("detail", "")
+            break
+    return sse_events, done, error_detail, last_id
+
+
 @router.get("/{project_id}/chapters/{chapter_id}/generate/stream")
 async def generate_chapter_draft_stream_endpoint(
     project_id: str,
@@ -1204,7 +1279,11 @@ async def generate_chapter_draft_stream_endpoint(
     events (see `_sse_event`):
     - `event: token` once per chunk yielded by `DeepSeekClient.generate_stream`, `data:` being the
       chunk text verbatim (multi-line chunks are split across multiple `data:` lines per the SSE
-      spec, all within the same event).
+      spec, all within the same event). The generation call itself now runs inside
+      `llm_routing.tasks.stream_generation_task` (ADR-0013 addendum point 2, TASK-E17-3) rather
+      than inline: this endpoint enqueues that task, then tails its `generation:{task_id}` Redis
+      Stream via `XREAD` (catch-up from `0`, then `BLOCK`-ing reads) and re-emits each `"token"`
+      entry as the same `event: token` SSE frame as before — the response contract is unchanged.
     - On successful completion of the stream: the accumulated raw text is run through the same
       `humanize_text_task` (fail-open on `HumanizationError`, same reasoning as the non-streaming
       endpoint) -> `run_precheck_task` (with the same live-searched RAG excerpts as
@@ -1216,10 +1295,22 @@ async def generate_chapter_draft_stream_endpoint(
       (via `.model_dump(mode="json")`) of a `GenerateDraftResponse`-shaped payload
       (`{"version": ..., "precheck": ...}`) — same response shape as that endpoint's body.
     - On `LLMRequestError` from `generate_stream` (a non-2xx status before the stream starts, or a
-      connection drop mid-stream): a single `event: error` whose `data:` is
-      `{"detail": str(exc)}`, and the generator stops — per TASK-E08-3's scope, streaming has no
-      retry, so a failure here is a real, visible failure to the user, not silently retried, and
-      humanize/precheck/persist are not attempted on a failed/incomplete generation.
+      connection drop mid-stream) — now surfaced as an `"error"` entry on the Redis Stream by
+      `stream_generation_task` rather than raised directly in this coroutine — a single
+      `event: error` whose `data:` is `{"detail": str(exc)}`, and the generator stops — per
+      TASK-E08-3's scope, streaming has no retry, so a failure here is a real, visible failure to
+      the user, not silently retried, and humanize/precheck/persist are not attempted on a
+      failed/incomplete generation.
+    - On any OTHER unexpected exception inside `stream_generation_task` (e.g. a Redis I/O error,
+      not just `LLMRequestError`) — the task's own broad `except Exception` (see
+      `llm_routing.tasks._stream_generation`) still publishes an `"error"` entry, which surfaces
+      here the same way.
+    - If dispatching `stream_generation_task.delay(...)` itself fails (e.g. a Celery/broker
+      connection error before the task even starts) or if no terminal `"done"`/`"error"` marker
+      ever arrives within `_STREAM_TAIL_TIMEOUT_SECONDS` (a crashed worker, a Redis publish error,
+      or the stream key's TTL expiring first) — a single `event: error` is emitted and the
+      generator stops, rather than an unhandled exception or an unboundedly hanging SSE
+      connection/coroutine.
     """
     chapter = await get_chapter(db, chapter_id)
     if chapter is None or chapter.project_id != project_id:
@@ -1243,13 +1334,87 @@ async def generate_chapter_draft_stream_endpoint(
 
     async def event_stream() -> AsyncIterator[str]:
         chunks: list[str] = []
+        task_id = uuid.uuid4().hex
+        stream_key = f"generation:{task_id}"
         try:
             try:
-                async for chunk in client.generate_stream("heavy", messages):
-                    chunks.append(chunk)
-                    yield _sse_event("token", chunk)
-            except LLMRequestError as exc:
+                # `stream_generation_task`'s body calls `asyncio.run(...)` internally (ADR-0013
+                # addendum point 3); under `task_always_eager=True`, `.delay()` alone runs that
+                # entire body synchronously in the calling thread, so `.delay()` — not just a
+                # paired `.get()`, since this endpoint never calls `.get()` on this task at all —
+                # must run in a separate thread via `asyncio.to_thread` to avoid colliding with
+                # this coroutine's own already-running event loop (ADR-0013 addendum's caller-side
+                # corollary).
+                await asyncio.to_thread(stream_generation_task.delay, task_id, "heavy", messages)
+            except Exception as exc:  # noqa: BLE001 -- a broker-level failure (e.g. Celery/Redis
+                # connection error) before the task even starts must still surface as a graceful
+                # `error` SSE event, not an unhandled exception killing the generator mid-stream
+                # with a dropped connection.
                 yield _sse_event("error", json.dumps({"detail": str(exc)}))
+                return
+
+            redis_client = redis_asyncio.Redis.from_url(_REDIS_URL, decode_responses=True)
+            error_detail: str | None = None
+            timed_out = False
+            read_failed = False
+            tail_deadline = time.monotonic() + _STREAM_TAIL_TIMEOUT_SECONDS
+            try:
+                last_id = "0"
+                response = await redis_client.xread(
+                    {stream_key: last_id}, count=_STREAM_CATCHUP_COUNT
+                )
+                entries = response[0][1] if response else []
+                sse_events, done, error_detail, seen_id = _process_stream_entries(entries, chunks)
+                for sse_event in sse_events:
+                    yield sse_event
+                if seen_id is not None:
+                    last_id = seen_id
+
+                while not done:
+                    if time.monotonic() >= tail_deadline:
+                        timed_out = True
+                        break
+                    response = await redis_client.xread(
+                        {stream_key: last_id}, block=_STREAM_READ_BLOCK_MS
+                    )
+                    entries = response[0][1] if response else []
+                    if not entries:
+                        continue
+                    sse_events, done, error_detail, seen_id = _process_stream_entries(
+                        entries, chunks
+                    )
+                    for sse_event in sse_events:
+                        yield sse_event
+                    if seen_id is not None:
+                        last_id = seen_id
+            except Exception as exc:  # noqa: BLE001 -- a Redis I/O error on the ENDPOINT's own
+                # read connection (distinct from a failure inside the worker task, already handled
+                # by `stream_generation_task`'s own broad `except Exception`) must still surface as
+                # a graceful `error` SSE event rather than propagating unhandled and silently
+                # truncating/dropping the SSE response mid-stream.
+                read_failed = True
+                error_detail = str(exc)
+            finally:
+                await redis_client.aclose()
+
+            if read_failed:
+                yield _sse_event("error", json.dumps({"detail": error_detail}))
+                return
+
+            if timed_out:
+                # No terminal marker arrived within `_STREAM_TAIL_TIMEOUT_SECONDS` — surface a
+                # clear, graceful `error` event rather than hanging this SSE connection/coroutine
+                # open forever (see that constant's docstring for the failure modes this guards
+                # against: a crashed worker, a Redis publish error, or the stream key's TTL
+                # expiring before its terminal marker ever arrived).
+                yield _sse_event(
+                    "error",
+                    json.dumps({"detail": "Generation timed out waiting for a response."}),
+                )
+                return
+
+            if error_detail is not None:
+                yield _sse_event("error", json.dumps({"detail": error_detail}))
                 return
 
             content = "".join(chunks)

@@ -13,6 +13,9 @@ import httpx
 import respx
 from fastapi.testclient import TestClient
 
+from diploma_backend.llm_routing.tasks import stream_generation_task
+from diploma_backend.projects import router as projects_router
+
 _CHAT_URL = "https://api.deepseek.com/chat/completions"
 _SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 
@@ -366,6 +369,91 @@ def test_generate_stream_title_generation_failure_does_not_break_main_flow(
 
     project_after = client.get(f"/projects/{project_id}", headers=headers).json()
     assert project_after["title"] == "Untitled Thesis"
+
+
+def test_generate_stream_times_out_gracefully_when_no_terminal_marker_arrives(
+    client: TestClient, monkeypatch
+) -> None:
+    """If `stream_generation_task` never publishes a terminal `"done"`/`"error"` marker (e.g. a
+    crashed worker, or here a stubbed-out `.delay()` that never writes anything to the stream key
+    at all), the tail loop must not hang forever — it must emit a graceful `error` SSE event once
+    `_STREAM_TAIL_TIMEOUT_SECONDS` elapses, rather than an unbounded, leaked-open SSE connection.
+    Uses a monkeypatched, test-only tiny timeout so this doesn't have to wait out the real
+    production ceiling."""
+    monkeypatch.setattr(projects_router, "_STREAM_TAIL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(stream_generation_task, "delay", lambda *args, **kwargs: None)
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write something."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert len(events) == 1
+    event, data = events[0]
+    assert event == "error"
+    assert "timed out" in json.loads(data)["detail"].lower()
+
+
+def test_generate_stream_dispatch_failure_emits_error_event(
+    client: TestClient, monkeypatch
+) -> None:
+    """If enqueueing `stream_generation_task` itself fails (e.g. a Celery/broker connection error
+    before the task even starts), the endpoint must yield a graceful `error` SSE event instead of
+    letting the async generator die unhandled with a dropped connection."""
+
+    def _raise_delay(*args, **kwargs):
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(stream_generation_task, "delay", _raise_delay)
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write something."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert len(events) == 1
+    event, data = events[0]
+    assert event == "error"
+    assert "broker unavailable" in json.loads(data)["detail"]
+
+
+def test_generate_stream_read_failure_emits_error_event(client: TestClient, monkeypatch) -> None:
+    """If the ENDPOINT's own Redis read connection fails while tailing the stream (distinct from
+    a failure inside the worker task, already covered by `stream_generation_task`'s own broad
+    `except Exception`, and distinct from a dispatch-time failure, covered above), the endpoint
+    must still yield a graceful `error` SSE event rather than letting the exception propagate
+    unhandled and silently truncate/drop the SSE response mid-stream."""
+
+    class _RaisingRedis:
+        async def xread(self, *args, **kwargs):
+            raise ConnectionError("redis connection lost")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(stream_generation_task, "delay", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        projects_router.redis_asyncio.Redis, "from_url", lambda *args, **kwargs: _RaisingRedis()
+    )
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write something."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert len(events) == 1
+    event, data = events[0]
+    assert event == "error"
+    assert "redis connection lost" in json.loads(data)["detail"]
 
 
 def test_generate_stream_404s_for_unknown_chapter(client: TestClient) -> None:

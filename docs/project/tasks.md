@@ -278,5 +278,5 @@ begin real work, per `docs/project/plan.md`.
 | --- | --- | --- | --- | --- |
 | TASK-E17-1 | New `redis` service in `docker-compose.yml` + Celery app config (broker + result backend) per ADR-0013 | E17 | python-developer | done |
 | TASK-E17-2 | New `worker` package: task modules `llm_routing.tasks`, `sources.tasks`, `humanizer.tasks`, `formatting.tasks` | E17 | python-developer | done |
-| TASK-E17-3 | Redis Pub/Sub progress bridge into the existing SSE generators (ADR-0009), buffering the last N events per `task_id` for late subscribers | E17 | python-developer | todo |
-| TASK-E17-4 | Migrate parsing/humanization/plagiarism-precheck/generation endpoints to enqueue Celery tasks instead of running inline | E17 | python-developer | todo |
+| TASK-E17-3 | Redis Pub/Sub progress bridge into the existing SSE generators (ADR-0009), buffering the last N events per `task_id` for late subscribers | E17 | python-developer | done |
+| TASK-E17-4 | Migrate parsing/humanization/plagiarism-precheck/generation endpoints to enqueue Celery tasks instead of running inline | E17 | python-developer | done |

@@ -19,6 +19,21 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UV_CACHE_DIR: ~/.cache/uv
+    services:
+      # TASK-E17-3: `stream_generation_task`'s progress-buffering tests (test_llm_routing_tasks.py,
+      # test_projects_stream.py) exercise real Redis Streams (`XADD`/`XREAD`), not a fake/mock, so
+      # a real Redis instance is needed here the same way the dev docker-compose.yml provides one.
+      # Default `REDIS_URL` (redis://localhost:6379/0) already points at the standard port this
+      # service publishes, so no extra env var is needed.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
