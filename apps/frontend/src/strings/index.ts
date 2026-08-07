@@ -113,4 +113,21 @@ export const strings = {
   newProjectSetupRequiredSourceTitleLabel: 'Work title (optional)',
   newProjectSetupRequiredSourceAddButton: 'Add',
   newProjectSetupRequiredSourceRemoveButton: 'Remove',
+  historyControlsTitle: 'Undo/Redo',
+  historyUndoLastButton: 'Undo last edit',
+  historyRedoLastButton: 'Redo last edit',
+  historyUndoPageButton: 'Undo this page',
+  historyRedoPageButton: 'Redo this page',
+  historyUndoAllButton: 'Undo entire document',
+  historyRedoAllButton: 'Redo entire document',
+  historyConflictErrorMessage:
+    'This edit history changed elsewhere (or an anchor block no longer exists). Please refresh and try again.',
+  historyGenericErrorMessage: 'Undo/redo failed. Please try again.',
+  historyPageRevertSpansWarning: (count: number) =>
+    `Reverting this page will also undo ${count} edit(s) made elsewhere since.`,
+  historyPageRedoSpansWarning: (count: number) =>
+    `Redoing this page will also redo ${count} edit(s) made elsewhere since.`,
+  historyPageUndoConfirmButton: (count: number) => `Yes, also undo ${count} edit(s) elsewhere`,
+  historyPageRedoConfirmButton: (count: number) => `Yes, also redo ${count} edit(s) elsewhere`,
+  historyPageRevertCancelButton: 'Cancel',
 } as const

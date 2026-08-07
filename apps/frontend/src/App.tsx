@@ -10,11 +10,15 @@ import { DocumentPreview } from './components/DocumentPreview'
 import { Onboarding } from './components/Onboarding'
 import { PlagiarismCheckPanel } from './components/PlagiarismCheckPanel'
 import { ProjectLanding } from './components/ProjectLanding'
+import { useChapterHistory } from './hooks/useChapterHistory'
 import { exportProject } from './services/exportService'
 import { recordSignal } from './services/feedbackService'
 import { RequestError, acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
 import { streamChapterDraft } from './services/generateStream'
 import { toDocumentState } from './utils/mapProject'
+import type { Chapter } from './context/DocumentContext'
+import type { InstitutionConfig } from './types/institution'
+import type { ChapterVersion } from './types/project'
 
 function ChatPanel() {
   const { chat, appendMessage } = useChat()
@@ -215,6 +219,58 @@ function ChatPanel() {
   )
 }
 
+/**
+ * Renders one chapter's pending-draft diff plus its undo/redo controls (TASK-E16-4/5). Split out
+ * of `DocumentPanel`'s chapter list so `useChapterHistory` (which fetches the chapter's op-log)
+ * can be called once per chapter, rather than conditionally inside a `.map` — `chapterId` is only
+ * ever non-null here while `pendingDraft` exists, since undo/redo only matter for a chapter whose
+ * draft is currently on screen.
+ */
+function ChapterDraftDiff({
+  chapter,
+  institutionConfig,
+  onAccept,
+  onReject,
+  onDraftUpdated,
+}: {
+  chapter: Chapter
+  institutionConfig: InstitutionConfig | null
+  onAccept: () => void
+  onReject: () => void
+  onDraftUpdated: (version: ChapterVersion) => void
+}) {
+  const { pendingDraft } = chapter
+  const { history, error: historyError, undo, redo } = useChapterHistory(
+    pendingDraft ? chapter.id : null,
+    onDraftUpdated,
+    pendingDraft?.id,
+  )
+
+  if (!pendingDraft) {
+    return null
+  }
+
+  return (
+    <DiffViewer
+      before={chapter.content}
+      after={pendingDraft.content}
+      onAccept={onAccept}
+      onReject={onReject}
+      institutionConfig={institutionConfig}
+      rerouteNotice={chapter.pendingDraftReroute}
+      manifest={pendingDraft.manifest}
+      history={
+        history
+          ? { operations: history.operations, appliedCount: history.applied_count, totalOperations: history.total_operations }
+          : null
+      }
+      historyError={historyError}
+      onUndo={(count) => void undo(count)}
+      onRedo={(count) => void redo(count)}
+    />
+  )
+}
+
 function DocumentPanel() {
   const { document: doc, setDocument } = useDocument()
   const { config: institutionConfig } = useInstitutionConfig(doc.institutionId)
@@ -258,6 +314,18 @@ function DocumentPanel() {
     }))
   }
 
+  // Undo/redo (TASK-E16-4/5) mutate the chapter's pending draft in place — same `id`/
+  // `version_number`, only `content`/`manifest` change — so this just swaps in the returned
+  // version, mirroring how `handleAccept`/`handleReject` already update `pendingDraft`.
+  const handleDraftUpdated = (chapterId: string, version: ChapterVersion) => {
+    setDocument((previous) => ({
+      ...previous,
+      chapters: previous.chapters.map((chapter) =>
+        chapter.id === chapterId ? { ...chapter, pendingDraft: version } : chapter,
+      ),
+    }))
+  }
+
   return (
     <section className="panel document-panel" aria-label={strings.documentPanelTitle}>
       <h2>{strings.documentPanelTitle}</h2>
@@ -292,13 +360,12 @@ function DocumentPanel() {
                   </div>
                 )}
                 {pendingDraft && (
-                  <DiffViewer
-                    before={chapter.content}
-                    after={pendingDraft.content}
+                  <ChapterDraftDiff
+                    chapter={chapter}
+                    institutionConfig={institutionConfig}
                     onAccept={() => void handleAccept(chapter.id, pendingDraft.id)}
                     onReject={() => handleReject(chapter.id, pendingDraft.id)}
-                    institutionConfig={institutionConfig}
-                    rerouteNotice={chapter.pendingDraftReroute}
+                    onDraftUpdated={(version) => handleDraftUpdated(chapter.id, version)}
                   />
                 )}
               </li>

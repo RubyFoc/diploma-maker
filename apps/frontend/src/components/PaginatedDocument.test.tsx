@@ -155,4 +155,30 @@ describe('PaginatedDocument', () => {
     expect(page.getByRole('button', { name: strings.documentBlockLockLabel })).toBeInTheDocument()
     expect(page.getByRole('button', { name: strings.documentBlockInsertHereLabel })).toBeInTheDocument()
   })
+
+  it('calls onPageBlockIdsChange with the visible page block ids, skipping nulls (TASK-E16-4)', () => {
+    const blocks: Block[] = [
+      { kind: 'p', text: 'First paragraph.' },
+      { kind: 'p', text: 'Second paragraph.' },
+    ]
+    const onPageBlockIdsChange = vi.fn()
+    render(
+      <PaginatedDocument
+        blocks={blocks}
+        pageStyle={pageStyle}
+        pageBlockIds={['b1', null]}
+        onPageBlockIdsChange={onPageBlockIdsChange}
+      />,
+    )
+
+    expect(onPageBlockIdsChange).toHaveBeenCalledWith(['b1'])
+  })
+
+  it('does not call onPageBlockIdsChange when pageBlockIds is omitted', () => {
+    const blocks: Block[] = [{ kind: 'p', text: 'First paragraph.' }]
+    const onPageBlockIdsChange = vi.fn()
+    render(<PaginatedDocument blocks={blocks} pageStyle={pageStyle} onPageBlockIdsChange={onPageBlockIdsChange} />)
+
+    expect(onPageBlockIdsChange).toHaveBeenCalledWith([])
+  })
 })

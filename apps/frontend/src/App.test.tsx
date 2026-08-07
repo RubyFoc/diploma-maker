@@ -105,6 +105,12 @@ function createFetchMock(queued: Response[] = []) {
     if (/\/chapters\/.+\/locks$/.test(String(url)) && (!init?.method || init.method === 'GET')) {
       return Promise.resolve(jsonResponse([]))
     }
+    // `useChapterHistory` (TASK-E16-5) fetches `/chapters/{id}/operations` whenever a chapter has
+    // a pending draft — respond with the zeroed "no history yet" shape rather than consuming a
+    // queue slot, same reasoning as institution-configs/projects/locks above.
+    if (/\/chapters\/.+\/operations$/.test(String(url)) && (!init?.method || init.method === 'GET')) {
+      return Promise.resolve(jsonResponse({ operations: [], applied_count: 0, total_operations: 0 }))
+    }
     const next = queue.shift()
     return Promise.resolve(next ?? jsonResponse({ detail: 'unexpected request' }, false, 500))
   })

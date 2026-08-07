@@ -1,12 +1,16 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { diffLines } from '../utils/diff'
 import type { DiffSegmentType } from '../utils/diff'
 import { parseBlocks, renderBlock } from '../utils/renderMarkdownPreview'
 import type { Block } from '../utils/renderMarkdownPreview'
 import { getHeadingStyle, getPageStyle } from '../utils/institutionPageStyle'
+import { resolvePageRedoCount, resolvePageUndoCount } from '../utils/resolvePageRevertCount'
 import { PaginatedDocument } from './PaginatedDocument'
 import { strings } from '../strings'
 import type { InstitutionConfig } from '../types/institution'
+import type { OperationSummary } from '../types/history'
+import type { ManifestBlock } from '../types/project'
 import './DiffViewer.css'
 import './DocumentPage.css'
 
@@ -28,6 +32,25 @@ export interface DiffViewerProps {
    * not the raw API response shape (`used_block_id`/`rerouted_from_block_id`), per this
    * component's presentational-only contract. */
   rerouteNotice?: { requestedBlockId: string; usedBlockId: string } | null
+  /** The pending draft's own block manifest (ADR-0011), for resolving "undo/redo this page"
+   * (TASK-E16-4) into a block-id set for whichever page is currently visible. Matched
+   * positionally against this draft's content the same approximate way
+   * `PaginatedDocument`'s `lockSelection.lockableBlocks` is — see that component's doc comment.
+   * Omit (along with `history`) to hide the undo/redo controls entirely. */
+  manifest?: ManifestBlock[] | null
+  /** This chapter's undo/redo op-log position (TASK-E16-2/3/4), fetched by the caller (e.g. via
+   * `hooks/useChapterHistory`). `null` hides the controls — the common case for a chapter that
+   * has never used anchor-mode generation, per that hook's doc comment — as does a non-null
+   * `totalOperations === 0`. */
+  history?: { operations: OperationSummary[]; appliedCount: number; totalOperations: number } | null
+  /** Distinct message to show after a failed undo/redo attempt (TASK-E16-5): `'conflict'` for a
+   * 409 (a race, or a vanished anchor block), `'generic'` otherwise. `null` shows nothing. */
+  historyError?: 'conflict' | 'generic' | null
+  /** Called with the resolved step count for whichever undo control was clicked. Caller owns the
+   * actual API call (this component has no knowledge of APIs, per its doc comment) and updating
+   * the draft afterwards. */
+  onUndo?: (count: number) => void
+  onRedo?: (count: number) => void
 }
 
 interface TaggedBlock {
@@ -75,9 +98,20 @@ export function DiffViewer({
   onReject,
   institutionConfig = null,
   rerouteNotice = null,
+  manifest = null,
+  history = null,
+  historyError = null,
+  onUndo,
+  onRedo,
 }: DiffViewerProps) {
   const taggedBlocks = buildTaggedBlocks(before, after)
   const pageStyle = getPageStyle(institutionConfig)
+  const [visiblePageBlockIds, setVisiblePageBlockIds] = useState<string[]>([])
+  // Arms the "this page" undo/redo button once `spansOtherEdits` is true, so `widerCount` (which
+  // also reverts/reapplies unrelated operations elsewhere) is never sent on the first click — the
+  // user must explicitly confirm, mirroring `ProjectLanding`'s `confirmingDeleteId` two-click
+  // pattern for its own destructive action.
+  const [pendingWiderConfirm, setPendingWiderConfirm] = useState<'undo' | 'redo' | null>(null)
 
   const renderDiffBlock = (block: Block, key: number): ReactNode => {
     const segmentType = taggedBlocks[key]?.segmentType ?? 'unchanged'
@@ -87,6 +121,35 @@ export function DiffViewer({
       </span>
     )
   }
+
+  // Maps each tagged block back to the after-content's manifest block id (TASK-E16-4): 'removed'
+  // segments only exist in `before`, so they have no counterpart in `manifest` (the pending
+  // draft's own block list) — every other segment, in order, lines up with the next manifest
+  // entry. Anchor-mode generation (the only path that ever records undo-able operations) never
+  // removes content, so in practice this covers every operation-bearing draft exactly.
+  //
+  // Same positional-matching caveat as `PaginatedDocument`'s `lockSelection.lockableBlocks` doc
+  // comment (see that component): the manifest has one entry per source *line*, but `parseBlocks`
+  // collapses consecutive markdown list items into a single rendered block, so if anchor-inserted
+  // content contains a list, the mapping can drift for blocks after it. Left as a known
+  // limitation for now (not fixed here) — a mismatch only affects which page a list's own undo/
+  // redo controls attribute it to, not the correctness of the underlying undo/redo op-log itself.
+  let afterIndex = 0
+  const pageBlockIds: (string | null)[] | undefined = manifest
+    ? taggedBlocks.map((tagged) => {
+        if (tagged.segmentType === 'removed') {
+          return null
+        }
+        const id = manifest[afterIndex]?.id ?? null
+        afterIndex += 1
+        return id
+      })
+    : undefined
+
+  const pageBlockIdSet = new Set(visiblePageBlockIds)
+  const hasHistory = history !== null && history.totalOperations > 0
+  const undoPage = hasHistory ? resolvePageUndoCount(history.operations, history.appliedCount, pageBlockIdSet) : null
+  const redoPage = hasHistory ? resolvePageRedoCount(history.operations, history.appliedCount, pageBlockIdSet) : null
 
   return (
     <section className="diff-viewer" aria-label={strings.diffViewerTitle}>
@@ -104,7 +167,124 @@ export function DiffViewer({
           pageStyle={pageStyle}
           headingStyle={(level) => getHeadingStyle(institutionConfig, level)}
           renderBlock={renderDiffBlock}
+          pageBlockIds={pageBlockIds}
+          onPageBlockIdsChange={pageBlockIds ? setVisiblePageBlockIds : undefined}
         />
+      )}
+      {hasHistory && history && (
+        <div className="diff-history-controls" aria-label={strings.historyControlsTitle}>
+          {historyError && (
+            <p className="diff-history-error" role="alert">
+              {historyError === 'conflict' ? strings.historyConflictErrorMessage : strings.historyGenericErrorMessage}
+            </p>
+          )}
+          <div className="diff-history-actions">
+            <button
+              type="button"
+              disabled={history.appliedCount === 0}
+              onClick={() => onUndo?.(1)}
+            >
+              {strings.historyUndoLastButton}
+            </button>
+            <button
+              type="button"
+              disabled={history.appliedCount === history.totalOperations}
+              onClick={() => onRedo?.(1)}
+            >
+              {strings.historyRedoLastButton}
+            </button>
+            {pendingWiderConfirm === 'undo' && undoPage ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUndo?.(undoPage.widerCount)
+                    setPendingWiderConfirm(null)
+                  }}
+                >
+                  {strings.historyPageUndoConfirmButton(undoPage.otherEditsCount)}
+                </button>
+                <button type="button" onClick={() => setPendingWiderConfirm(null)}>
+                  {strings.historyPageRevertCancelButton}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={!undoPage || undoPage.count === 0}
+                onClick={() => {
+                  if (!undoPage) {
+                    return
+                  }
+                  if (undoPage.spansOtherEdits) {
+                    setPendingWiderConfirm('undo')
+                    return
+                  }
+                  onUndo?.(undoPage.count)
+                }}
+              >
+                {strings.historyUndoPageButton}
+              </button>
+            )}
+            {pendingWiderConfirm === 'redo' && redoPage ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onRedo?.(redoPage.widerCount)
+                    setPendingWiderConfirm(null)
+                  }}
+                >
+                  {strings.historyPageRedoConfirmButton(redoPage.otherEditsCount)}
+                </button>
+                <button type="button" onClick={() => setPendingWiderConfirm(null)}>
+                  {strings.historyPageRevertCancelButton}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={!redoPage || redoPage.count === 0}
+                onClick={() => {
+                  if (!redoPage) {
+                    return
+                  }
+                  if (redoPage.spansOtherEdits) {
+                    setPendingWiderConfirm('redo')
+                    return
+                  }
+                  onRedo?.(redoPage.count)
+                }}
+              >
+                {strings.historyRedoPageButton}
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={history.appliedCount === 0}
+              onClick={() => onUndo?.(history.appliedCount)}
+            >
+              {strings.historyUndoAllButton}
+            </button>
+            <button
+              type="button"
+              disabled={history.appliedCount === history.totalOperations}
+              onClick={() => onRedo?.(history.totalOperations - history.appliedCount)}
+            >
+              {strings.historyRedoAllButton}
+            </button>
+          </div>
+          {undoPage?.spansOtherEdits && (
+            <p className="diff-history-warning" role="status">
+              {strings.historyPageRevertSpansWarning(undoPage.otherEditsCount)}
+            </p>
+          )}
+          {redoPage?.spansOtherEdits && (
+            <p className="diff-history-warning" role="status">
+              {strings.historyPageRedoSpansWarning(redoPage.otherEditsCount)}
+            </p>
+          )}
+        </div>
       )}
       <div className="diff-actions">
         <button type="button" className="diff-accept" onClick={onAccept}>

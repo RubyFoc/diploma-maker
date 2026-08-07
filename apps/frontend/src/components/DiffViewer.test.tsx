@@ -77,4 +77,269 @@ describe('DiffViewer', () => {
 
     expect(screen.queryByText(strings.diffRerouteNoticeMessage)).not.toBeInTheDocument()
   })
+
+  describe('undo/redo history controls (TASK-E16-5)', () => {
+    // `before`/`after` for these tests describe an anchor-mode insertion (the only case that
+    // ever records history) — one added block, no removals — so the "after" manifest lines up
+    // one-to-one with the tagged blocks, matching real usage.
+    const insertBefore = 'first paragraph'
+    const insertAfter = 'first paragraph\ninserted paragraph'
+    const manifest = [
+      { id: 'b1', content: 'first paragraph', content_hash: 'h1', order: 0 },
+      { id: 'b2', content: 'inserted paragraph', content_hash: 'h2', order: 1 },
+    ]
+
+    it('hides the controls entirely when history is null', () => {
+      render(<DiffViewer before={insertBefore} after={insertAfter} onAccept={vi.fn()} onReject={vi.fn()} manifest={manifest} />)
+
+      expect(screen.queryByLabelText(strings.historyControlsTitle)).not.toBeInTheDocument()
+    })
+
+    it('hides the controls entirely when there is no recorded history yet', () => {
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={{ operations: [], appliedCount: 0, totalOperations: 0 }}
+        />,
+      )
+
+      expect(screen.queryByLabelText(strings.historyControlsTitle)).not.toBeInTheDocument()
+    })
+
+    it('disables undo controls when nothing is applied, and redo controls when nothing is undone', () => {
+      const history = { operations: [{ id: 'o1', block_id: 'b2', created_at: 'now' }], appliedCount: 1, totalOperations: 1 }
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={history}
+        />,
+      )
+
+      expect(screen.getByRole('button', { name: strings.historyRedoLastButton })).toBeDisabled()
+      expect(screen.getByRole('button', { name: strings.historyRedoAllButton })).toBeDisabled()
+      expect(screen.getByRole('button', { name: strings.historyUndoLastButton })).toBeEnabled()
+      expect(screen.getByRole('button', { name: strings.historyUndoAllButton })).toBeEnabled()
+    })
+
+    it('"Undo last edit" calls onUndo with count 1', () => {
+      const onUndo = vi.fn()
+      const history = { operations: [{ id: 'o1', block_id: 'b2', created_at: 'now' }], appliedCount: 1, totalOperations: 1 }
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={history}
+          onUndo={onUndo}
+        />,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: strings.historyUndoLastButton }))
+
+      expect(onUndo).toHaveBeenCalledWith(1)
+    })
+
+    it('"Undo entire document" calls onUndo with the full applied count', () => {
+      const onUndo = vi.fn()
+      const history = {
+        operations: [
+          { id: 'o1', block_id: 'b2', created_at: 'now' },
+          { id: 'o2', block_id: 'b3', created_at: 'now' },
+        ],
+        appliedCount: 2,
+        totalOperations: 2,
+      }
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={history}
+          onUndo={onUndo}
+        />,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: strings.historyUndoAllButton }))
+
+      expect(onUndo).toHaveBeenCalledWith(2)
+    })
+
+    it('"Redo entire document" calls onRedo with the remaining redo-tail count', () => {
+      const onRedo = vi.fn()
+      const history = {
+        operations: [
+          { id: 'o1', block_id: 'b2', created_at: 'now' },
+          { id: 'o2', block_id: 'b3', created_at: 'now' },
+        ],
+        appliedCount: 0,
+        totalOperations: 2,
+      }
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={history}
+          onRedo={onRedo}
+        />,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: strings.historyRedoAllButton }))
+
+      expect(onRedo).toHaveBeenCalledWith(2)
+    })
+
+    it('disables "Undo this page" when the page has nothing to revert', () => {
+      // The tail operation touches a block that isn't part of this draft's manifest at all
+      // (e.g. some other page) — the resolved page-count is 0.
+      const history = { operations: [{ id: 'o1', block_id: 'unrelated-block', created_at: 'now' }], appliedCount: 1, totalOperations: 1 }
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={history}
+        />,
+      )
+
+      expect(screen.getByRole('button', { name: strings.historyUndoPageButton })).toBeDisabled()
+    })
+
+    it('"Undo this page" fires immediately when the page\'s edits are plainly contiguous', () => {
+      const onUndo = vi.fn()
+      const history = { operations: [{ id: 'o1', block_id: 'b2', created_at: 'now' }], appliedCount: 1, totalOperations: 1 }
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={history}
+          onUndo={onUndo}
+        />,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: strings.historyUndoPageButton }))
+
+      expect(onUndo).toHaveBeenCalledWith(1)
+    })
+
+    it('"Undo this page" requires an explicit second confirm click before reverting operations elsewhere', () => {
+      const onUndo = vi.fn()
+      // Tail is an unrelated block; this page's other match ('b1') sits further back, separated
+      // by that unrelated operation — reverting the whole page also undoes the unrelated one.
+      const history = {
+        operations: [
+          { id: 'o1', block_id: 'b2', created_at: 'now' },
+          { id: 'o2', block_id: 'other', created_at: 'now' },
+          { id: 'o3', block_id: 'b1', created_at: 'now' },
+        ],
+        appliedCount: 3,
+        totalOperations: 3,
+      }
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={history}
+          onUndo={onUndo}
+        />,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: strings.historyUndoPageButton }))
+
+      expect(onUndo).not.toHaveBeenCalled()
+      const confirmButton = screen.getByRole('button', { name: strings.historyPageUndoConfirmButton(1) })
+
+      fireEvent.click(confirmButton)
+
+      expect(onUndo).toHaveBeenCalledWith(3)
+    })
+
+    it('"Redo this page" requires an explicit second confirm click before reapplying operations elsewhere', () => {
+      const onRedo = vi.fn()
+      const history = {
+        operations: [
+          { id: 'o1', block_id: 'b1', created_at: 'now' },
+          { id: 'o2', block_id: 'other', created_at: 'now' },
+          { id: 'o3', block_id: 'b2', created_at: 'now' },
+        ],
+        appliedCount: 0,
+        totalOperations: 3,
+      }
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={history}
+          onRedo={onRedo}
+        />,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: strings.historyRedoPageButton }))
+
+      expect(onRedo).not.toHaveBeenCalled()
+      const confirmButton = screen.getByRole('button', { name: strings.historyPageRedoConfirmButton(1) })
+
+      fireEvent.click(confirmButton)
+
+      expect(onRedo).toHaveBeenCalledWith(3)
+    })
+
+    it('shows a distinct message for a 409 conflict', () => {
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={{ operations: [{ id: 'o1', block_id: 'b2', created_at: 'now' }], appliedCount: 1, totalOperations: 1 }}
+          historyError="conflict"
+        />,
+      )
+
+      expect(screen.getByText(strings.historyConflictErrorMessage)).toBeInTheDocument()
+      expect(screen.queryByText(strings.historyGenericErrorMessage)).not.toBeInTheDocument()
+    })
+
+    it('shows a generic message for a non-conflict error', () => {
+      render(
+        <DiffViewer
+          before={insertBefore}
+          after={insertAfter}
+          onAccept={vi.fn()}
+          onReject={vi.fn()}
+          manifest={manifest}
+          history={{ operations: [{ id: 'o1', block_id: 'b2', created_at: 'now' }], appliedCount: 1, totalOperations: 1 }}
+          historyError="generic"
+        />,
+      )
+
+      expect(screen.getByText(strings.historyGenericErrorMessage)).toBeInTheDocument()
+    })
+  })
 })
