@@ -114,8 +114,8 @@ def _mock_generate_humanize_and_title(
     )
 
     def side_effect(request: httpx.Request) -> httpx.Response:
-        return resolved_title_response if _is_title_request(request) else _success_response(
-            humanized
+        return (
+            resolved_title_response if _is_title_request(request) else _success_response(humanized)
         )
 
     respx.post(_CHAT_URL, json__model="deepseek-v4-flash").mock(side_effect=side_effect)
@@ -217,9 +217,9 @@ def test_list_projects_only_shows_own_projects(client: TestClient) -> None:
 
 def test_get_project_404s_for_other_users_project(client: TestClient) -> None:
     owner_headers = _auth_headers(client, email="owner@example.com")
-    project_id = client.post(
-        "/projects", json={"title": "Thesis"}, headers=owner_headers
-    ).json()["id"]
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=owner_headers).json()[
+        "id"
+    ]
 
     other_headers = _auth_headers(client, email="other@example.com")
     response = client.get(f"/projects/{project_id}", headers=other_headers)
@@ -229,9 +229,7 @@ def test_get_project_404s_for_other_users_project(client: TestClient) -> None:
 
 async def test_delete_project_removes_it_and_its_chapters_and_versions(client: TestClient) -> None:
     headers = _auth_headers(client)
-    project_id = client.post(
-        "/projects", json={"title": "Thesis"}, headers=headers
-    ).json()["id"]
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
     chapter_id = client.post(
         f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
     ).json()["id"]
@@ -260,9 +258,9 @@ async def test_delete_project_removes_it_and_its_chapters_and_versions(client: T
 
 def test_delete_project_404s_for_other_users_project(client: TestClient) -> None:
     owner_headers = _auth_headers(client, email="owner@example.com")
-    project_id = client.post(
-        "/projects", json={"title": "Thesis"}, headers=owner_headers
-    ).json()["id"]
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=owner_headers).json()[
+        "id"
+    ]
 
     other_headers = _auth_headers(client, email="other@example.com")
     response = client.delete(f"/projects/{project_id}", headers=other_headers)
@@ -340,6 +338,7 @@ def test_generate_draft_creates_and_returns_draft_version(client: TestClient) ->
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write an introduction about renewable energy."},
+        headers=headers,
     )
 
     assert response.status_code == 201
@@ -380,6 +379,7 @@ def test_generate_draft_llm_failure_returns_502(client: TestClient) -> None:
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write something."},
+        headers=headers,
     )
 
     assert response.status_code == 502
@@ -402,6 +402,7 @@ def test_generate_draft_humanize_llm_failure_returns_502(client: TestClient) -> 
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write something."},
+        headers=headers,
     )
 
     assert response.status_code == 502
@@ -425,6 +426,7 @@ def test_generate_draft_auto_titles_a_default_titled_project(client: TestClient)
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write an introduction about renewable energy."},
+        headers=headers,
     )
 
     assert response.status_code == 201
@@ -454,6 +456,7 @@ def test_generate_draft_does_not_retitle_an_already_titled_project(client: TestC
     first = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write an introduction about renewable energy."},
+        headers=headers,
     )
     assert first.status_code == 201
     assert client.get(f"/projects/{project_id}", headers=headers).json()["title"] == (
@@ -463,6 +466,7 @@ def test_generate_draft_does_not_retitle_an_already_titled_project(client: TestC
     second = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write a second paragraph."},
+        headers=headers,
     )
     assert second.status_code == 201
     assert client.get(f"/projects/{project_id}", headers=headers).json()["title"] == (
@@ -494,6 +498,7 @@ def test_generate_draft_title_generation_failure_does_not_break_main_flow(
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write an introduction about renewable energy."},
+        headers=headers,
     )
 
     assert response.status_code == 201
@@ -509,6 +514,7 @@ def test_generate_draft_404s_for_unknown_chapter(client: TestClient) -> None:
     response = client.post(
         f"/projects/{project_id}/chapters/does-not-exist/generate",
         json={"instruction": "Write something."},
+        headers=headers,
     )
 
     assert response.status_code == 404
@@ -525,6 +531,29 @@ def test_generate_draft_404s_when_chapter_belongs_to_other_project(client: TestC
     response = client.post(
         f"/projects/{project_b}/chapters/{chapter_id}/generate",
         json={"instruction": "Write something."},
+        headers=headers,
+    )
+
+    assert response.status_code == 404
+
+
+def test_generate_draft_404s_for_other_owners_project(client: TestClient) -> None:
+    """Regression test for TASK-E16-2's ownership fix: adding `get_current_user_id` to this
+    endpoint (needed for `applied_by`) must not stop at "some valid token" — it must also verify
+    the caller actually owns `project_id`, the same as every other project-scoped endpoint."""
+    owner_headers = _auth_headers(client, email="owner@example.com")
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=owner_headers).json()[
+        "id"
+    ]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=owner_headers
+    ).json()["id"]
+
+    other_headers = _auth_headers(client, email="other@example.com")
+    response = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write something."},
+        headers=other_headers,
     )
 
     assert response.status_code == 404
@@ -614,6 +643,7 @@ def test_accept_already_accepted_draft_returns_409(client: TestClient) -> None:
     draft = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write something."},
+        headers=headers,
     ).json()["version"]
 
     first_accept = client.post(f"/versions/{draft['id']}/accept")

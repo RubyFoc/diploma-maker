@@ -13,6 +13,7 @@ version's number.
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from diploma_backend.locks.models import (
+    Block,
     build_manifest_from_text,
     insert_blocks_after,
     split_into_blocks,
@@ -101,7 +102,11 @@ async def create_draft_version(
 
 
 async def create_draft_version_at_anchor(
-    db: AsyncIOMotorDatabase, chapter_id: str, anchor_block_id: str, generated_content: str
+    db: AsyncIOMotorDatabase,
+    chapter_id: str,
+    anchor_block_id: str,
+    generated_content: str,
+    applied_by: str,
 ) -> ChapterVersion:
     """Build and insert a draft version that splices freshly generated content into the
     chapter's current accepted manifest at `anchor_block_id`, instead of replacing the whole
@@ -116,6 +121,21 @@ async def create_draft_version_at_anchor(
     is joined elsewhere in this codebase. `version_number`/`parent_version_id` follow the same
     convention as `create_draft_version`.
 
+    `applied_by` (the caller's user id) is recorded on each newly spliced block's `Operation`
+    row (TASK-E16-2, ADR-0012) via `history.service.record_anchor_insertion_operations` — one op
+    per new block, anchored to that block's own id, with `before_text=""` and `after_text` equal
+    to the block's content. Recording first wipes any stale redo tail for this chapter
+    (TASK-E16-3): a fresh edit after an undo discards whatever was undone, since this is a
+    linear op-log, not a branching history. This is the ONLY generation path that records
+    `Operation`s — full-chapter generation (`create_draft_version`) and uploaded-draft ingestion
+    (`locks.router.upload_draft_endpoint`) have no clean block-level before/after decomposition
+    and are deliberately left out of scope (ADR-0012).
+
+    Imports `history.service` lazily (inside this function, not at module import time) because
+    `history.service` itself imports from this module (`get_latest_draft_version`,
+    `update_draft_manifest`) for undo/redo replay — a module-level import here would create an
+    import cycle.
+
     Raises `ValueError` if the chapter has no accepted version yet ("no accepted version"), if
     that version has no block manifest ("no block manifest"), or if `anchor_block_id` isn't found
     in it (propagated from `insert_blocks_after`, message contains "not found").
@@ -126,9 +146,17 @@ async def create_draft_version_at_anchor(
     if accepted.manifest is None:
         raise ValueError(f"chapter {chapter_id!r}'s current accepted version has no block manifest")
 
+    anchor_index = next(
+        (index for index, block in enumerate(accepted.manifest) if block.id == anchor_block_id),
+        None,
+    )
+    if anchor_index is None:
+        raise ValueError(f"block {anchor_block_id!r} not found in manifest")
+
     new_block_contents = split_into_blocks(generated_content)
     spliced_manifest = insert_blocks_after(accepted.manifest, anchor_block_id, new_block_contents)
     content = "\n".join(block.content for block in spliced_manifest)
+    new_blocks = spliced_manifest[anchor_index + 1 : anchor_index + 1 + len(new_block_contents)]
 
     draft = ChapterVersion(
         chapter_id=chapter_id,
@@ -138,7 +166,47 @@ async def create_draft_version_at_anchor(
         status="draft",
         parent_version_id=accepted.id,
     )
-    return await create_version(db, draft)
+    created = await create_version(db, draft)
+
+    from diploma_backend.history.service import record_anchor_insertion_operations
+
+    await record_anchor_insertion_operations(
+        db,
+        chapter_id=chapter_id,
+        base_version_id=accepted.id,
+        anchor_block_id=anchor_block_id,
+        new_blocks=new_blocks,
+        applied_by=applied_by,
+    )
+
+    return created
+
+
+async def update_draft_manifest(
+    db: AsyncIOMotorDatabase, version_id: str, manifest: list[Block], content: str
+) -> ChapterVersion:
+    """Overwrite `manifest`/`content` on the existing draft version `version_id`, in place —
+    no new row, no `version_number` bump (same in-place-`update_one` pattern as
+    `accept_draft_version`'s status flip).
+
+    Used by `history.service`'s undo/redo replay (TASK-E16-2) to mutate a chapter's current
+    pending draft as operations are reverted/reapplied against it. Raises `ValueError` if no
+    version with `version_id` exists, or if it exists but isn't currently a draft — undo/redo
+    only ever mutate a pending draft, never an already-accepted, immutable version (ADR-0004).
+    """
+    version = await get_version(db, version_id)
+    if version is None:
+        raise ValueError(f"no version with id {version_id!r}")
+    if version.status != "draft":
+        raise ValueError(f"version {version_id!r} is not a draft (status={version.status!r})")
+
+    await db[_COLLECTION].update_one(
+        {"id": version_id},
+        {"$set": {"manifest": [block.model_dump() for block in manifest], "content": content}},
+    )
+    version.manifest = manifest
+    version.content = content
+    return version
 
 
 async def accept_draft_version(db: AsyncIOMotorDatabase, version_id: str) -> ChapterVersion:

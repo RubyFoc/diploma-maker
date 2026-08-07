@@ -506,9 +506,7 @@ async def _build_chapter_detail(db: AsyncIOMotorDatabase, chapter: Chapter) -> C
     )
 
 
-async def _get_owned_project(
-    db: AsyncIOMotorDatabase, project_id: str, owner_id: str
-) -> Project:
+async def _get_owned_project(db: AsyncIOMotorDatabase, project_id: str, owner_id: str) -> Project:
     """Fetch `project_id`, scoped to `owner_id` (TASK-E11-1).
 
     Raises `HTTPException(404)` both when `project_id` doesn't exist at all AND when it exists
@@ -657,7 +655,7 @@ def _content_disposition_header(filename: str) -> str:
     if not any(char.isalnum() for char in ascii_fallback):
         ascii_fallback = _FALLBACK_EXPORT_FILENAME
     encoded = quote(filename, safe="")
-    return f'attachment; filename="{ascii_fallback}.docx"; filename*=UTF-8\'\'{encoded}.docx'
+    return f"attachment; filename=\"{ascii_fallback}.docx\"; filename*=UTF-8''{encoded}.docx"
 
 
 async def _build_export_markdown(db: AsyncIOMotorDatabase, project: Project) -> str:
@@ -728,9 +726,7 @@ async def export_project_endpoint(
     filename = _sanitize_filename(project.title)
     return Response(
         content=buffer.getvalue(),
-        media_type=(
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        ),
+        media_type=("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
         headers={"Content-Disposition": _content_disposition_header(filename)},
     )
 
@@ -891,11 +887,17 @@ async def generate_chapter_draft_endpoint(
     chapter_id: str,
     body: GenerateDraftRequest,
     db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
 ) -> GenerateDraftResponse:
     """Generate a chapter draft from a chat instruction, humanize it, scan it, and store the
     humanized text as a new draft version.
 
-    Raises `HTTPException(404)` if `chapter_id` doesn't exist or doesn't belong to `project_id`.
+    Scoped to the authenticated caller via `_get_owned_chapter`: raises `HTTPException(404)` if
+    `chapter_id` doesn't exist, doesn't belong to `project_id`, or `project_id` belongs to a
+    different owner (previously this endpoint had no ownership check at all — TASK-E16-2 added
+    the `get_current_user_id` dependency it needed for `applied_by` and, since a real caller
+    identity is now available, this closes what would otherwise be a same-diff IDOR: any
+    authenticated user generating content into a project they don't own).
     Fetches live RAG excerpts via `_fetch_rag_excerpts` (external academic search, see module
     docstring) and builds messages via `assemble_prompt` with `chapter_summaries=[]` and those
     excerpts, then calls the DeepSeek "heavy" tier (ADR-0003: chapter drafting) through
@@ -949,12 +951,13 @@ async def generate_chapter_draft_endpoint(
     the anchor block's content changes, during the LLM round-trip — and raises
     `HTTPException(409)` instead of persisting if the previously-resolved anchor is no longer
     valid.
+
+    Requires authentication (`Depends(get_current_user_id)`, added for TASK-E16-2): in anchor
+    mode, `owner_id` is threaded through to `create_draft_version_at_anchor` as `applied_by`, so
+    each newly spliced block's recorded `Operation` (ADR-0012) attributes it to the caller.
+    Raises `HTTPException(401)` (via `get_current_user_id`) if no valid bearer token is given.
     """
-    chapter = await get_chapter(db, chapter_id)
-    if chapter is None or chapter.project_id != project_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Chapter '{chapter_id}' not found"
-        )
+    await _get_owned_chapter(db, project_id, chapter_id, owner_id)
     project = await get_project(db, project_id)
 
     # TASK-E15-2: "insert at anchor" mode's deterministic lock guard, run before any LLM call so
@@ -1002,9 +1005,7 @@ async def generate_chapter_draft_endpoint(
         try:
             content = await generate_with_retry(client, "heavy", messages)
         except LLMRequestError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
         humanized_content, precheck = await _humanize_and_precheck(client, content, rag_excerpts)
 
@@ -1023,6 +1024,7 @@ async def generate_chapter_draft_endpoint(
                     chapter_id,
                     anchor_resolution.used_block_id,
                     generated_content=humanized_content,
+                    applied_by=owner_id,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

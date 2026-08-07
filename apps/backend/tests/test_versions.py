@@ -49,9 +49,7 @@ async def test_create_and_get_version_by_id(client: TestClient) -> None:
 
     fetched = await get_version(db, version.id)
     assert fetched is not None
-    assert fetched.model_dump(exclude={"created_at"}) == version.model_dump(
-        exclude={"created_at"}
-    )
+    assert fetched.model_dump(exclude={"created_at"}) == version.model_dump(exclude={"created_at"})
 
 
 async def test_get_version_by_missing_id_returns_none(client: TestClient) -> None:
@@ -187,7 +185,9 @@ async def test_create_draft_version_at_anchor_no_accepted_version_raises(
     db = _fake_db(client)
 
     with pytest.raises(ValueError, match="no accepted version"):
-        await create_draft_version_at_anchor(db, "chapter-1", "block-1", "New content.")
+        await create_draft_version_at_anchor(
+            db, "chapter-1", "block-1", "New content.", applied_by="user-1"
+        )
 
 
 async def test_create_draft_version_at_anchor_no_manifest_raises(client: TestClient) -> None:
@@ -196,7 +196,9 @@ async def test_create_draft_version_at_anchor_no_manifest_raises(client: TestCli
     await create_version(db, accepted)
 
     with pytest.raises(ValueError, match="no block manifest"):
-        await create_draft_version_at_anchor(db, "chapter-1", "block-1", "New content.")
+        await create_draft_version_at_anchor(
+            db, "chapter-1", "block-1", "New content.", applied_by="user-1"
+        )
 
 
 async def test_create_draft_version_at_anchor_missing_block_raises(client: TestClient) -> None:
@@ -205,7 +207,9 @@ async def test_create_draft_version_at_anchor_missing_block_raises(client: TestC
     await accept_draft_version(db, accepted_draft.id)
 
     with pytest.raises(ValueError, match="not found"):
-        await create_draft_version_at_anchor(db, "chapter-1", "does-not-exist", "New content.")
+        await create_draft_version_at_anchor(
+            db, "chapter-1", "does-not-exist", "New content.", applied_by="user-1"
+        )
 
 
 async def test_create_draft_version_at_anchor_success_splices_and_persists(
@@ -220,7 +224,7 @@ async def test_create_draft_version_at_anchor_success_splices_and_persists(
     anchor_block = accepted.manifest[0]
 
     draft = await create_draft_version_at_anchor(
-        db, "chapter-1", anchor_block.id, "Inserted paragraph."
+        db, "chapter-1", anchor_block.id, "Inserted paragraph.", applied_by="user-1"
     )
 
     assert draft.status == "draft"

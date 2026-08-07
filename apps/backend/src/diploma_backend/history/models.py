@@ -65,3 +65,39 @@ class Operation(BaseModel):
     after_text: str
     applied_by: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class HistoryCursor(BaseModel):
+    """Undo/redo position for one chapter's op-log (TASK-E16-2/3, ADR-0012).
+
+    One doc per `chapter_id` (upserted, never inserted twice). `applied_count` is how many of the
+    chapter's `Operation` rows — ordered by `created_at`, oldest first — are currently applied to
+    the chapter's current draft `ChapterVersion`, out of however many are recorded for that
+    chapter in total. Undo decrements it, redo increments it; the "undone but not yet
+    overwritten" tail (index `applied_count` up to the total) is exactly the redo stack, and
+    recording a brand new operation (TASK-E16-3) first deletes that entire tail before appending,
+    which is the whole of the "a new edit after an undo wipes the redo stack" rule — no separate
+    branching/tree structure is needed for a linear op-log.
+    """
+
+    chapter_id: str
+    applied_count: int = 0
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class OperationPlacement(BaseModel):
+    """Where one insertion `Operation` was spliced into the manifest, recorded alongside it at
+    write time (TASK-E16-2), so redo can re-run the exact same splice later without re-deriving
+    it from anything else.
+
+    `insert_after_block_id` is the block id `locks.models.insert_blocks_after` spliced this
+    operation's new block immediately after: the original anchor block's id for the first new
+    block in a multi-block generation batch, or the previous new block's own `id` for every
+    subsequent block in that same batch (since each one was spliced immediately after the one
+    before it, in generation order) — reconstructing exactly the order
+    `versions.service.create_draft_version_at_anchor` actually inserted them in.
+    """
+
+    operation_id: str
+    insert_after_block_id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

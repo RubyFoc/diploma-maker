@@ -173,9 +173,7 @@ def infer_insertion_order(existing_chapters: list[Chapter], title: str) -> int:
     return append_order
 
 
-async def list_chapters_for_project(
-    db: AsyncIOMotorDatabase, project_id: str
-) -> list[Chapter]:
+async def list_chapters_for_project(db: AsyncIOMotorDatabase, project_id: str) -> list[Chapter]:
     """Return all chapters (and subchapters) for `project_id`, ordered by `order`.
 
     Note `order` is only unique within a `(project_id, parent_chapter_id)` scope (per ADR-0014),

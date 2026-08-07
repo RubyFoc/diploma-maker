@@ -54,13 +54,13 @@ def _semantic_scholar_response(papers: list[dict]) -> httpx.Response:
     return httpx.Response(200, json={"data": papers})
 
 
-def _setup_project_and_chapter(client: TestClient) -> tuple[str, str]:
+def _setup_project_and_chapter(client: TestClient) -> tuple[str, str, dict]:
     headers = _auth_headers(client)
     project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
     chapter_id = client.post(
         f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
     ).json()["id"]
-    return project_id, chapter_id
+    return project_id, chapter_id, headers
 
 
 @respx.mock
@@ -80,11 +80,12 @@ def test_generate_draft_threads_search_result_abstract_into_prompt(client: TestC
         )
     )
     _mock_generate_and_humanize()
-    project_id, chapter_id = _setup_project_and_chapter(client)
+    project_id, chapter_id, headers = _setup_project_and_chapter(client)
 
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write about solar panel efficiency."},
+        headers=headers,
     )
 
     assert response.status_code == 201
@@ -116,11 +117,12 @@ def test_generate_draft_skips_results_with_no_abstract(client: TestClient) -> No
         )
     )
     _mock_generate_and_humanize()
-    project_id, chapter_id = _setup_project_and_chapter(client)
+    project_id, chapter_id, headers = _setup_project_and_chapter(client)
 
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write something."},
+        headers=headers,
     )
 
     assert response.status_code == 201
@@ -136,11 +138,12 @@ def test_generate_draft_skips_results_with_no_abstract(client: TestClient) -> No
 def test_generate_draft_fails_open_when_search_provider_errors(client: TestClient) -> None:
     respx.get(_SEMANTIC_SCHOLAR_URL).mock(return_value=httpx.Response(500))
     _mock_generate_and_humanize()
-    project_id, chapter_id = _setup_project_and_chapter(client)
+    project_id, chapter_id, headers = _setup_project_and_chapter(client)
 
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write something."},
+        headers=headers,
     )
 
     assert response.status_code == 201
@@ -150,11 +153,12 @@ def test_generate_draft_fails_open_when_search_provider_errors(client: TestClien
 def test_generate_draft_fails_open_when_search_returns_nothing(client: TestClient) -> None:
     respx.get(_SEMANTIC_SCHOLAR_URL).mock(return_value=_semantic_scholar_response([]))
     _mock_generate_and_humanize()
-    project_id, chapter_id = _setup_project_and_chapter(client)
+    project_id, chapter_id, headers = _setup_project_and_chapter(client)
 
     response = client.post(
         f"/projects/{project_id}/chapters/{chapter_id}/generate",
         json={"instruction": "Write something."},
+        headers=headers,
     )
 
     assert response.status_code == 201
