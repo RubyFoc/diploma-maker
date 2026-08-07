@@ -269,6 +269,28 @@ ADR-0009)
   5. **Retry ownership**: `llm_routing.tasks`' generation task keeps `generate_with_retry`'s
      existing internal retry/backoff as the sole retry mechanism; Celery-level `autoretry_for` is
      NOT enabled for LLM tasks, to avoid retry-of-retries multiplying latency/cost.
+  6. **Generation-pipeline resilience (2026-08-07, user-requested follow-up):** once
+     `generate_with_retry`'s (and, transitively, `humanize_text`'s — it calls the same function)
+     internal retries are exhausted, the failure must never discard already-generated content
+     that real money/latency already paid for. Concretely: a humanize-stage failure of ANY kind
+     (`LLMRequestError` after retries, or `HumanizationError`) falls back to the
+     pre-humanization content rather than failing the request — widened from the earlier,
+     narrower "only `HumanizationError` fails open" contract; a precheck-stage failure similarly
+     falls back to a safe all-clear `PlagiarismCheckResult` rather than discarding an
+     already-humanized draft over a scoring error; `versions.service.create_version`/
+     `update_draft_manifest`'s Mongo writes get a short, bounded retry (3 attempts, ~0.5s/1s
+     backoff, `pymongo.errors.PyMongoError` only) since this deployment's `mongo:7`
+     `docker-compose.yml` service is a standalone single-node container, not a replica
+     set/sharded cluster, so MongoDB's own automatic retryable-writes feature never applies here;
+     and a mid-stream generation failure (`generate_chapter_draft_stream_endpoint`'s tail loop
+     seeing a worker-published `"error"` marker) persists whatever tokens were already
+     accumulated as a raw, unhumanized draft before yielding the SSE `error` event, instead of
+     throwing away real, already-generated text. Scoped deliberately narrow: this last case only
+     covers a worker-reported generation failure — a Redis read failure on the endpoint's own tail
+     connection, or the tail loop's own overall timeout, still discard accumulated tokens rather
+     than persisting them, since those are lower-probability failure modes on the SSE endpoint's
+     own infrastructure rather than the generation itself, and this addendum favors direct
+     hardening of the common failure path over exhaustively covering every branch as a first pass.
 
 ### ADR-0014: Subchapter data model (first structural change to Chapter)
 - **Date:** 2026-08-06

@@ -3,8 +3,10 @@ fake from `conftest.py`. `client` (a FastAPI `TestClient`) is only used here for
 dependency-override wiring of `get_database`, since this module has no HTTP routes yet.
 """
 
+import pymongo.errors
 import pytest
 from fastapi.testclient import TestClient
+from mongomock_motor import AsyncMongoMockCollection
 
 from diploma_backend.db import get_database
 from diploma_backend.main import app
@@ -17,6 +19,7 @@ from diploma_backend.versions.service import (
     get_current_accepted_version,
     get_version,
     list_versions_for_chapter,
+    update_draft_manifest,
 )
 
 
@@ -241,3 +244,104 @@ async def test_create_draft_version_at_anchor_success_splices_and_persists(
     assert draft.manifest[0].id == anchor_block.id
     assert draft.manifest[0].content_hash == anchor_block.content_hash
     assert draft.manifest[2].id == accepted.manifest[1].id
+
+
+@pytest.fixture
+def fake_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """No-op stand-in for `versions.service.asyncio.sleep`, matching `test_retry.py`'s
+    `fake_sleep` fixture, so the retry-with-backoff tests below don't actually wait out the real
+    delays."""
+    delays: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr("diploma_backend.versions.service.asyncio.sleep", _fake_sleep)
+    return delays
+
+
+def _flaky_insert_one(call_count: dict[str, int], failures_before_success: int):
+    """Build a stand-in for `AsyncMongoMockCollection.insert_one` that raises
+    `pymongo.errors.AutoReconnect` (a transient-write failure, per `PyMongoError`'s docs) for the
+    first `failures_before_success` calls, then delegates to the real implementation."""
+    original_insert_one = AsyncMongoMockCollection.insert_one
+
+    async def _insert_one(self, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] <= failures_before_success:
+            raise pymongo.errors.AutoReconnect("transient connection blip")
+        return await original_insert_one(self, *args, **kwargs)
+
+    return _insert_one
+
+
+async def test_create_version_retries_transient_write_failure_and_succeeds(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_sleep: list[float]
+) -> None:
+    """A transient `PyMongoError` (e.g. `AutoReconnect`) on the first attempt(s) must be retried,
+    not surfaced to the caller — the standalone, non-replica-set `mongo` container this codebase
+    runs against has no automatic retryable-writes support (see `versions.service`'s module
+    docstring), so `_retry_mongo_write` is this module's own guard against exactly that."""
+    db = _fake_db(client)
+    version = _build_version()
+    call_count = {"n": 0}
+    monkeypatch.setattr(
+        AsyncMongoMockCollection, "insert_one", _flaky_insert_one(call_count, failures_before_success=2)
+    )
+
+    result = await create_version(db, version)
+
+    assert result == version
+    assert call_count["n"] == 3
+    assert fake_sleep == [0.5, 1.0]
+    fetched = await get_version(db, version.id)
+    assert fetched is not None
+    assert fetched.id == version.id
+
+
+async def test_create_version_exhausted_retries_raises_original_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_sleep: list[float]
+) -> None:
+    """A persistent (not transient) write failure must still propagate once every retry attempt
+    is exhausted — this guard is for surviving a blip, not masking a real outage."""
+    db = _fake_db(client)
+    version = _build_version()
+    call_count = {"n": 0}
+    monkeypatch.setattr(
+        AsyncMongoMockCollection,
+        "insert_one",
+        _flaky_insert_one(call_count, failures_before_success=10),
+    )
+
+    with pytest.raises(pymongo.errors.AutoReconnect):
+        await create_version(db, version)
+
+    assert call_count["n"] == 3
+    assert fake_sleep == [0.5, 1.0]
+
+
+async def test_update_draft_manifest_retries_transient_write_failure_and_succeeds(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, fake_sleep: list[float]
+) -> None:
+    """Mirrors `test_create_version_retries_transient_write_failure_and_succeeds` for
+    `update_draft_manifest`'s `update_one` call."""
+    db = _fake_db(client)
+    draft = await create_draft_version(db, "chapter-1", "Original content.")
+    assert draft.manifest is not None
+
+    original_update_one = AsyncMongoMockCollection.update_one
+    call_count = {"n": 0}
+
+    async def _flaky_update_one(self, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] <= 1:
+            raise pymongo.errors.AutoReconnect("transient connection blip")
+        return await original_update_one(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncMongoMockCollection, "update_one", _flaky_update_one)
+
+    updated = await update_draft_manifest(db, draft.id, draft.manifest, "Updated content.")
+
+    assert updated.content == "Updated content."
+    assert call_count["n"] == 2
+    assert fake_sleep == [0.5]

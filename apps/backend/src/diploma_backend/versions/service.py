@@ -8,9 +8,24 @@ collection, keyed by `id` (see `versions.models.ChapterVersion`).
 Version numbering convention: a chapter's first version (whether created as a draft or directly
 as accepted) is `version_number=0`; each subsequent version is one past the current accepted
 version's number.
+
+Write resilience: `docker-compose.yml`'s `mongo` service is a standalone single-node `mongo:7`
+container, not a replica set or sharded cluster, so MongoDB's own automatic retryable-writes
+feature (which requires one of those topologies) never kicks in here — a transient connection
+blip during a write is not itself retried by the driver. `create_version`/`update_draft_manifest`
+persist the result of a generation call that may already have been retried (and, for the "heavy"
+tier draft call, expensively paid for) before ever reaching this module, so losing that work to a
+transient Mongo write failure would be a needless waste. `_retry_mongo_write` wraps just the
+actual `insert_one`/`update_one` calls with a short, bounded retry-with-backoff for exactly this
+case — see that helper's docstring for why it's short and why it never swallows a persistent
+failure.
 """
 
+import asyncio
+from collections.abc import Awaitable, Callable
+
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 
 from diploma_backend.locks.models import (
     Block,
@@ -22,10 +37,46 @@ from diploma_backend.versions.models import ChapterVersion
 
 _COLLECTION = "chapter_versions"
 
+# Short and bounded on purpose: this guards against a transient blip on a single non-replica-set
+# Mongo instance (see module docstring), not a real outage. `max_attempts=3` with these delays
+# adds at most ~1.5s of latency on top of an already-completed, already-expensive generation call
+# before giving up and propagating the original error.
+_MONGO_WRITE_MAX_ATTEMPTS = 3
+_MONGO_WRITE_BASE_DELAY_SECONDS = 0.5
+
+
+async def _retry_mongo_write[T](write: Callable[[], Awaitable[T]]) -> T:
+    """Call `write()`, retrying on `PyMongoError` with exponential backoff.
+
+    Mirrors `llm_routing.retry.generate_with_retry`'s shape (same "uniformly retry the broad
+    exception type, no signal here to distinguish transient from permanent" reasoning, since
+    `PyMongoError` covers `AutoReconnect`/`NetworkTimeout`/`ConnectionFailure` and similar
+    transient-write failures without this module needing to enumerate each one individually).
+    Sleeps `_MONGO_WRITE_BASE_DELAY_SECONDS * 2 ** attempt` between attempts (0.5s, then 1.0s with
+    defaults). If every attempt fails, re-raises the last `PyMongoError` unchanged — this helper
+    is for surviving a transient blip, not masking a persistent outage, so a real, ongoing failure
+    must still surface to the caller exactly as it would without this wrapper.
+    """
+    last_error: PyMongoError | None = None
+    for attempt in range(_MONGO_WRITE_MAX_ATTEMPTS):
+        try:
+            return await write()
+        except PyMongoError as exc:
+            last_error = exc
+            if attempt < _MONGO_WRITE_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(_MONGO_WRITE_BASE_DELAY_SECONDS * 2**attempt)
+
+    assert last_error is not None
+    raise last_error
+
 
 async def create_version(db: AsyncIOMotorDatabase, version: ChapterVersion) -> ChapterVersion:
-    """Insert `version` into the `chapter_versions` collection and return it unchanged."""
-    await db[_COLLECTION].insert_one(version.model_dump())
+    """Insert `version` into the `chapter_versions` collection and return it unchanged.
+
+    The insert itself is retried up to `_MONGO_WRITE_MAX_ATTEMPTS` times on `PyMongoError` (see
+    module docstring/`_retry_mongo_write`) before propagating a persistent failure.
+    """
+    await _retry_mongo_write(lambda: db[_COLLECTION].insert_one(version.model_dump()))
     return version
 
 
@@ -193,6 +244,9 @@ async def update_draft_manifest(
     pending draft as operations are reverted/reapplied against it. Raises `ValueError` if no
     version with `version_id` exists, or if it exists but isn't currently a draft — undo/redo
     only ever mutate a pending draft, never an already-accepted, immutable version (ADR-0004).
+
+    The update itself is retried on `PyMongoError` the same way `create_version`'s insert is —
+    see module docstring/`_retry_mongo_write`.
     """
     version = await get_version(db, version_id)
     if version is None:
@@ -200,9 +254,11 @@ async def update_draft_manifest(
     if version.status != "draft":
         raise ValueError(f"version {version_id!r} is not a draft (status={version.status!r})")
 
-    await db[_COLLECTION].update_one(
-        {"id": version_id},
-        {"$set": {"manifest": [block.model_dump() for block in manifest], "content": content}},
+    await _retry_mongo_write(
+        lambda: db[_COLLECTION].update_one(
+            {"id": version_id},
+            {"$set": {"manifest": [block.model_dump() for block in manifest], "content": content}},
+        )
     )
     version.manifest = manifest
     version.content = content

@@ -316,6 +316,54 @@ def _plagiarism_result_from_task_dict(precheck_dict: dict) -> PlagiarismCheckRes
     )
 
 
+def _default_precheck_result() -> PlagiarismCheckResult:
+    """All-clear fallback `PlagiarismCheckResult` for when `run_precheck_task` itself fails
+    outright (see `_run_precheck_with_fallback`).
+
+    `run_precheck.precheck.run_precheck` is pure/synchronous/no I/O and essentially cannot fail
+    in practice, but a resilience gap here is otherwise cheap to close and consistent with this
+    module's broader "already-generated content must never be discarded over a non-correctness-
+    critical stage" posture (see `_humanize_and_precheck`'s docstring): the precheck score is a
+    quality signal ("a human should take a second look," per `plagiarism.precheck`'s module
+    docstring), not a correctness gate, so a scoring failure must never discard an already-
+    generated, already-humanized draft. `flagged=False`/zero scores/empty `reasons` and
+    `sentence_flags` describe "nothing was flagged" rather than "this was actively checked and
+    found clean" — a caller/frontend surfacing this result should treat it as precheck being
+    unavailable for this draft, not as a clean bill of health.
+    """
+    return PlagiarismCheckResult(
+        plagiarism_score=0.0,
+        ai_fingerprint_score=0.0,
+        flagged=False,
+        reasons=[],
+    )
+
+
+async def _run_precheck_with_fallback(
+    humanized_content: str, rag_excerpts: list[str]
+) -> PlagiarismCheckResult:
+    """Run `run_precheck_task` against `humanized_content`, falling back to
+    `_default_precheck_result()` if dispatching or awaiting it raises anything at all.
+
+    Unlike `_run_humanize`'s `LLMRequestError`/`HumanizationError` handling, this catches a broad
+    `Exception` rather than a specific type: `run_precheck_task` has no internal `asyncio.run()`
+    (it calls the synchronous `run_precheck` directly), so only the blocking `.get()` needs
+    `asyncio.to_thread`, matching `plagiarism.router`'s existing `.delay()`-then-
+    `asyncio.to_thread(async_result.get, ...)` pattern for the same task — but both the dispatch
+    and the wait sit inside this one `try` so a failure at either point fails open the same way.
+    """
+    try:
+        async_result = run_precheck_task.delay(humanized_content, rag_excerpts)
+        precheck_dict = await asyncio.to_thread(
+            async_result.get, timeout=_PRECHECK_TASK_TIMEOUT_SECONDS
+        )
+        return _plagiarism_result_from_task_dict(precheck_dict)
+    except Exception:  # noqa: BLE001 -- precheck is a quality signal, not correctness-critical;
+        # see `_default_precheck_result`'s docstring for why a scoring failure must never
+        # discard an already-generated, already-humanized draft.
+        return _default_precheck_result()
+
+
 async def _humanize_and_precheck(
     content: str, rag_excerpts: list[str]
 ) -> tuple[str, PlagiarismCheckResult]:
@@ -340,11 +388,21 @@ async def _humanize_and_precheck(
     the caller's own event loop ("asyncio.run() cannot be called from a running event loop").
     Running both calls in a worker thread sidesteps that regardless of eager/real-worker mode.
 
-    Same contract as before: `HumanizationError` fails open (falls back to the
-    pre-humanization `content`, humanization being cosmetic, not correctness-critical); a genuine
-    `LLMRequestError` from the humanize call surfaces as `HTTPException(502)`. Per
-    `task_eager_propagates=True` (tests) / a real worker (production), both exception types
-    propagate through `asyncio.to_thread` unchanged (see `test_humanizer_tasks.py`).
+    Humanization is cosmetic, not correctness-critical (per `humanizer.pipeline`'s own framing),
+    and `humanize_text` already retries the underlying DeepSeek call itself up to 3 times
+    internally (`llm_routing.retry.generate_with_retry`) before ever raising — so BOTH failure
+    modes it can still surface after that fail open here to the pre-humanization `content` rather
+    than discarding an already-generated (and, for the "heavy" tier draft call, already
+    expensively-paid-for) piece of content: `HumanizationError` (the model dropped/mangled a
+    `__CITATION_N__` placeholder) and, as of this change, a genuine `LLMRequestError` too (every
+    retry attempt inside `humanize_text` was exhausted). No humanize failure of any kind should
+    ever discard already-generated content — only the raw generation call itself (still
+    dispatched separately, before this function is ever called) surfaces as a hard failure to the
+    caller. Per `task_eager_propagates=True` (tests) / a real worker (production), both exception
+    types propagate through `asyncio.to_thread` unchanged (see `test_humanizer_tasks.py`).
+
+    The precheck stage (`_run_precheck_with_fallback`) fails open the same way on ANY exception,
+    not just a specific type — see that helper's docstring.
 
     `run_precheck_task` returns a plain `dict` (`dataclasses.asdict` of a `PlagiarismCheckResult`,
     since Celery's JSON result backend can't carry the dataclass natively); it is converted back
@@ -358,23 +416,14 @@ async def _humanize_and_precheck(
 
     try:
         humanized_content = await asyncio.to_thread(_run_humanize)
-    except LLMRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    except HumanizationError:
-        # Fail-open: a mangled citation placeholder shouldn't block the user from seeing
-        # their draft at all, humanization being cosmetic, not correctness-critical (see
-        # docstring).
+    except (LLMRequestError, HumanizationError):
+        # Fail-open: neither a genuine infra failure (retries exhausted) nor a mangled citation
+        # placeholder should block the user from seeing their already-generated draft — see
+        # docstring.
         humanized_content = content
 
-    # Unlike `_run_humanize` above, `run_precheck_task` has no internal `asyncio.run()` (it calls
-    # the synchronous `run_precheck` directly — see that task's docstring), so only the blocking
-    # `.get()` needs `asyncio.to_thread`, matching `plagiarism.router`'s existing
-    # `.delay()`-then-`asyncio.to_thread(async_result.get, ...)` pattern for the same task.
-    async_result = run_precheck_task.delay(humanized_content, rag_excerpts)
-    precheck_dict = await asyncio.to_thread(
-        async_result.get, timeout=_PRECHECK_TASK_TIMEOUT_SECONDS
-    )
-    return humanized_content, _plagiarism_result_from_task_dict(precheck_dict)
+    precheck = await _run_precheck_with_fallback(humanized_content, rag_excerpts)
+    return humanized_content, precheck
 
 
 def _anchor_context_excerpts(
@@ -1052,14 +1101,16 @@ async def generate_chapter_draft_endpoint(
     (ADR-0013, TASK-E17-4) rather than running inline — see `_humanize_and_precheck` — to break up
     repetitive LLM-sounding patterns. Citation verification (ADR-0001) is not yet wired into this
     endpoint (see module docstring), so no citation markers are formatted into the raw text today,
-    and `humanize_text`'s `guard_citations` step should find nothing to guard in practice. It is
-    still handled defensively: a `LLMRequestError` from the humanize call (the DeepSeek call
-    itself failing after retries) is a genuine infra failure and surfaces as `HTTPException(502)`,
-    same as a failed generation. A `HumanizationError` (the model dropped/mangled a citation
-    placeholder) is deliberately fail-open here: humanization is a cosmetic polishing stage, not a
-    correctness-critical one (unlike citation verification itself, which fails closed per
-    ADR-0001), so this endpoint catches it and falls back to the pre-humanization content rather
-    than blocking the user from seeing their draft at all.
+    and `humanize_text`'s `guard_citations` step should find nothing to guard in practice. Any
+    humanize-stage failure — a `HumanizationError` (the model dropped/mangled a citation
+    placeholder) or a `LLMRequestError` (the humanize call's own internal retries, per
+    `llm_routing.retry.generate_with_retry`, were exhausted) — is deliberately fail-open here (see
+    `_humanize_and_precheck`'s docstring): humanization is a cosmetic polishing stage, not a
+    correctness-critical one (unlike citation verification itself, or the raw draft generation
+    call above, both of which still fail closed), so this endpoint falls back to the
+    pre-humanization content rather than discarding an already-generated draft and blocking the
+    user from seeing it at all. Precheck failures fail open the same way (`_run_precheck_with_
+    fallback`), to an all-clear `PlagiarismCheckResult`.
 
     The (possibly humanized, possibly raw-fallback) text is then run through
     `plagiarism.precheck.run_precheck` with the SAME RAG excerpts fetched above as
@@ -1285,22 +1336,29 @@ async def generate_chapter_draft_stream_endpoint(
       Stream via `XREAD` (catch-up from `0`, then `BLOCK`-ing reads) and re-emits each `"token"`
       entry as the same `event: token` SSE frame as before — the response contract is unchanged.
     - On successful completion of the stream: the accumulated raw text is run through the same
-      `humanize_text_task` (fail-open on `HumanizationError`, same reasoning as the non-streaming
-      endpoint) -> `run_precheck_task` (with the same live-searched RAG excerpts as
+      `humanize_text_task` -> `run_precheck_task` (with the same live-searched RAG excerpts as
       `source_excerpts`, see module docstring) -> `create_draft_version` pipeline as
       `generate_chapter_draft_endpoint`'s `_humanize_and_precheck`, both now dispatched to a
-      Celery worker (ADR-0013, TASK-E17-4) rather than running inline, but translated to an
-      `error` SSE event instead of an `HTTPException` on `LLMRequestError` since the response has
-      already started streaming — then a single `event: done` whose `data:` is the JSON
-      (via `.model_dump(mode="json")`) of a `GenerateDraftResponse`-shaped payload
-      (`{"version": ..., "precheck": ...}`) — same response shape as that endpoint's body.
+      Celery worker (ADR-0013, TASK-E17-4) rather than running inline. Both `HumanizationError`
+      and `LLMRequestError` from the humanize call fail open to the raw streamed text (see
+      `_humanize_and_precheck`'s docstring for why: humanization is cosmetic, not correctness-
+      critical, and already retries the underlying DeepSeek call internally, so its own retries
+      being exhausted must not discard the already-streamed draft) — then a single `event: done`
+      whose `data:` is the JSON (via `.model_dump(mode="json")`) of a `GenerateDraftResponse`-
+      shaped payload (`{"version": ..., "precheck": ...}`) — same response shape as that
+      endpoint's body.
     - On `LLMRequestError` from `generate_stream` (a non-2xx status before the stream starts, or a
       connection drop mid-stream) — now surfaced as an `"error"` entry on the Redis Stream by
       `stream_generation_task` rather than raised directly in this coroutine — a single
-      `event: error` whose `data:` is `{"detail": str(exc)}`, and the generator stops — per
-      TASK-E08-3's scope, streaming has no retry, so a failure here is a real, visible failure to
-      the user, not silently retried, and humanize/precheck/persist are not attempted on a
-      failed/incomplete generation.
+      `event: error` whose `data:` is `{"detail": str(exc)}`, and the generator stops. Per
+      TASK-E08-3's scope, streaming has no retry of the generation call itself, so this remains a
+      real, visible failure to the user, not silently retried — but if any tokens were already
+      streamed before the failure (`chunks` non-empty), they are persisted as a draft via
+      `create_draft_version` (raw, un-humanized/un-prechecked — the generation itself failed, so
+      there is nothing more to do with the partial text than save it) BEFORE the `error` event is
+      yielded, so already-generated partial content isn't discarded outright; it surfaces as the
+      chapter's pending draft the next time the frontend fetches chapter details. If no tokens
+      arrived before the failure, this is a no-op and only the `error` event is yielded, as before.
     - On any OTHER unexpected exception inside `stream_generation_task` (e.g. a Redis I/O error,
       not just `LLMRequestError`) — the task's own broad `except Exception` (see
       `llm_routing.tasks._stream_generation`) still publishes an `"error"` entry, which surfaces
@@ -1414,6 +1472,14 @@ async def generate_chapter_draft_stream_endpoint(
                 return
 
             if error_detail is not None:
+                if chunks:
+                    # `stream_generation_task` failed partway through (an "error" entry, not a
+                    # read/timeout failure on this endpoint's own side) after already streaming
+                    # some real, already-generated tokens — persist them as a draft, raw and
+                    # un-humanized/un-prechecked, rather than discarding them outright. See the
+                    # docstring above for why: the generation itself failed, so there is nothing
+                    # more to do with the partial text than save it as-is.
+                    await create_draft_version(db, chapter_id, content="".join(chunks))
                 yield _sse_event("error", json.dumps({"detail": error_detail}))
                 return
 
@@ -1428,24 +1494,17 @@ async def generate_chapter_draft_stream_endpoint(
                 # Humanization now runs on a Celery worker (ADR-0013, TASK-E17-4) via
                 # `humanizer.tasks.humanize_text_task`, matching `_humanize_and_precheck`'s
                 # non-streaming treatment of the same call (see that function's docstring for why
-                # `.delay()` and `.get()` both run inside one `asyncio.to_thread`); unlike that
-                # helper, a genuine `LLMRequestError` here is translated into an `error` SSE
-                # event rather than an `HTTPException`, since the response has already started
-                # streaming.
+                # `.delay()` and `.get()` both run inside one `asyncio.to_thread`). Both
+                # `HumanizationError` and `LLMRequestError` fail open to the raw streamed
+                # `content` here, exactly like `_humanize_and_precheck` does for the non-streaming
+                # endpoint (see that function's docstring): humanization is cosmetic, not
+                # correctness-critical, so a failure of either kind must never discard the
+                # already-streamed, already-generated draft.
                 humanized_content = await asyncio.to_thread(_run_humanize)
-            except LLMRequestError as exc:
-                yield _sse_event("error", json.dumps({"detail": str(exc)}))
-                return
-            except HumanizationError:
+            except (LLMRequestError, HumanizationError):
                 humanized_content = content
 
-            # See `_humanize_and_precheck`'s matching comment: `run_precheck_task` needs only
-            # `.get()` wrapped in `asyncio.to_thread`, not `.delay()` too.
-            async_result = run_precheck_task.delay(humanized_content, rag_excerpts)
-            precheck_dict = await asyncio.to_thread(
-                async_result.get, timeout=_PRECHECK_TASK_TIMEOUT_SECONDS
-            )
-            precheck = _plagiarism_result_from_task_dict(precheck_dict)
+            precheck = await _run_precheck_with_fallback(humanized_content, rag_excerpts)
             version = await create_draft_version(db, chapter_id, content=humanized_content)
             response_payload = GenerateDraftResponse(
                 version=version,

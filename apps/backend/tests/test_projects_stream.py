@@ -283,6 +283,74 @@ def test_generate_stream_humanize_dropped_citation_falls_back_to_raw_content(
 
 
 @respx.mock
+def test_generate_stream_humanize_llm_failure_falls_back_to_raw_content(
+    client: TestClient,
+) -> None:
+    """Mirrors `test_projects.py`'s
+    `test_generate_draft_humanize_llm_failure_falls_back_to_raw_content`: a genuine
+    `LLMRequestError` from the humanize call (every internal retry exhausted) must fail open to
+    the raw streamed content, yielding a normal `done` event, not an `error` event that would
+    discard the already-streamed generation."""
+    generated = "Draft chapter body."
+    _mock_empty_rag_search()
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_stream_body([generated]),
+        )
+    )
+    respx.post(_CHAT_URL, json__model="deepseek-v4-flash").mock(return_value=_fail_response())
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write something."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done_events = [data for event, data in events if event == "done"]
+    error_events = [data for event, data in events if event == "error"]
+    assert error_events == []
+    assert len(done_events) == 1
+    assert json.loads(done_events[0])["version"]["content"] == generated
+
+
+@respx.mock
+def test_generate_stream_precheck_failure_falls_back_to_all_clear_result(
+    client: TestClient, monkeypatch
+) -> None:
+    """Mirrors `test_projects.py`'s `test_generate_draft_precheck_failure_falls_back_to_all_clear_
+    result` for the streaming endpoint's own precheck dispatch."""
+    _mock_stream_and_humanize(deltas=["Draft ", "body."], humanized="Humanized body.")
+
+    def _raise_delay(*args, **kwargs):
+        raise RuntimeError("precheck worker unavailable")
+
+    monkeypatch.setattr(projects_router.run_precheck_task, "delay", _raise_delay)
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write something."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done_events = [data for event, data in events if event == "done"]
+    assert len(done_events) == 1
+    payload = json.loads(done_events[0])
+    assert payload["version"]["content"] == "Humanized body."
+    assert payload["precheck"] == {
+        "plagiarism_score": 0.0,
+        "ai_fingerprint_score": 0.0,
+        "flagged": False,
+        "reasons": [],
+    }
+
+
+@respx.mock
 def test_generate_stream_multiline_chunk_is_framed_correctly(client: TestClient) -> None:
     _mock_stream_and_humanize(deltas=["line one\nline two"], humanized="Humanized body.")
     project_id, chapter_id, _headers = _setup_project_and_chapter(client)
@@ -317,6 +385,47 @@ def test_generate_stream_llm_failure_emits_error_event(client: TestClient) -> No
 
     project_after = client.get(f"/projects/{project_id}", headers=headers).json()
     assert project_after["chapters"][0]["pending_draft"] is None
+
+
+@respx.mock
+def test_generate_stream_mid_stream_failure_persists_partial_draft(client: TestClient) -> None:
+    """If `stream_generation_task` fails partway through — after already publishing some
+    `"token"` entries but before a terminal `"done"` marker — the already-streamed, already-
+    generated tokens must not be discarded: the endpoint still yields an `error` SSE event (the
+    generation itself did fail), but also persists the partial text as a draft version, raw and
+    un-humanized/un-prechecked, so it isn't lost outright.
+
+    The malformed final chunk below (missing the `choices` shape `generate_stream` expects)
+    reproduces exactly the `LLMRequestError` `DeepSeekClient.generate_stream` raises mid-stream
+    (see `test_streaming.py`), after two well-formed chunks have already been yielded/published.
+    """
+    _mock_empty_rag_search()
+    body = (
+        b'data: {"choices":[{"delta":{"content":"Draft "}}]}\n\n'
+        b'data: {"choices":[{"delta":{"content":"chapter "}}]}\n\n'
+        b'data: {"bad": "shape"}\n\n'
+    )
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+    )
+    project_id, chapter_id, headers = _setup_project_and_chapter(client)
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write something."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    token_events = [data for event, data in events if event == "token"]
+    assert token_events == ["Draft ", "chapter "]
+    error_events = [data for event, data in events if event == "error"]
+    assert len(error_events) == 1
+
+    project_after = client.get(f"/projects/{project_id}", headers=headers).json()
+    pending_draft = project_after["chapters"][0]["pending_draft"]
+    assert pending_draft is not None
+    assert pending_draft["content"] == "Draft chapter "
 
 
 @respx.mock

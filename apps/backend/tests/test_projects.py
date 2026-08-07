@@ -499,7 +499,13 @@ def test_generate_draft_humanize_dropped_citation_falls_back_to_raw_content(
 
 
 @respx.mock
-def test_generate_draft_humanize_llm_failure_returns_502(client: TestClient) -> None:
+def test_generate_draft_humanize_llm_failure_falls_back_to_raw_content(client: TestClient) -> None:
+    """A genuine `LLMRequestError` from the humanize call (every internal retry inside
+    `humanize_text_task` exhausted) must fail open to the raw, pre-humanization draft content
+    rather than discarding an already-generated (and already-paid-for, "heavy" tier) draft with a
+    502 — humanization is cosmetic, not correctness-critical, so its own retries being exhausted
+    must never lose already-completed generation work (see `_humanize_and_precheck`'s
+    docstring)."""
     _mock_empty_rag_search()
     respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
         return_value=_success_response("Draft chapter body.")
@@ -518,7 +524,49 @@ def test_generate_draft_humanize_llm_failure_returns_502(client: TestClient) -> 
         headers=headers,
     )
 
-    assert response.status_code == 502
+    assert response.status_code == 201
+    assert response.json()["version"]["content"] == "Draft chapter body."
+
+
+@respx.mock
+def test_generate_draft_precheck_failure_falls_back_to_all_clear_result(
+    client: TestClient, monkeypatch
+) -> None:
+    """`run_precheck_task` failing outright (defensive: it is pure/synchronous/no I/O and
+    essentially cannot fail in practice, but must still fail open per `_run_precheck_with_
+    fallback`) must not discard the already-generated, already-humanized draft — the draft is
+    still persisted and returned, with an all-clear `PlagiarismCheckResult` standing in for the
+    unavailable precheck."""
+    import diploma_backend.projects.router as router_module
+
+    _mock_generate_and_humanize(generated="Draft chapter body.", humanized="Humanized body.")
+
+    def _raise_delay(*args, **kwargs):
+        raise RuntimeError("precheck worker unavailable")
+
+    monkeypatch.setattr(router_module.run_precheck_task, "delay", _raise_delay)
+
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write something."},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["version"]["content"] == "Humanized body."
+    assert body["precheck"] == {
+        "plagiarism_score": 0.0,
+        "ai_fingerprint_score": 0.0,
+        "flagged": False,
+        "reasons": [],
+    }
 
 
 @respx.mock
