@@ -223,6 +223,43 @@ ADR-0009)
   `humanizer.tasks`, `formatting.tasks`. Parsing, humanization, plagiarism precheck, and
   generation move off the request/response cycle; the API process no longer blocks on them, so a
   stuck task can no longer take down request handling for unrelated requests.
+- **Addendum (2026-08-07, implementation refinement, does not reopen the decision):**
+  1. **HTTP contracts are unchanged.** "The API process no longer blocks" describes an internal
+     execution-location change (work runs in a worker process instead of on the API process's own
+     event loop), not a client-visible async/polling contract. Every non-streaming endpoint this
+     epic touches still `await`s its Celery task's result before responding, with the exact same
+     response model/status code as before — no endpoint returns `202` + a `task_id` for the
+     caller to poll. This is deliberate: E17 has no frontend task anywhere in its breakdown, and
+     `apps/frontend/src/services/{projectService.ts,generateStream.ts}` are written against
+     synchronous-shaped contracts today. A future 202+polling redesign is explicitly out of scope
+     here and would need its own epic with a matching frontend task.
+  2. **Redis Streams, not literal Pub/Sub, back the progress channel.** Plain Pub/Sub has no
+     memory: a `PUBLISH` with no active `SUBSCRIBE` simply drops the message, which cannot satisfy
+     "buffer the last N events for a late subscriber" on its own — that would need a second
+     Pub/Sub-plus-List/TTL side-channel. A Redis Stream per `task_id` (`XADD`, capped via
+     `XTRIM MAXLEN` to the last N entries, with a `TTL`/`EXPIRE` set once the terminal event is
+     read) natively supports both live tailing (`XREAD` from `$`) and replay-from-start
+     (`XREAD` from `0`) with one primitive, exactly the two behaviors this decision asks for. This
+     only applies to `generate_chapter_draft_stream_endpoint` (TASK-E17-3) — the only existing SSE
+     consumer (ADR-0009); no other endpoint in this epic streams anything.
+  3. **Celery task bodies are sync, running async work via `asyncio.run(...)`.** This codebase's
+     I/O (Motor, httpx, DeepSeek calls) is thoroughly async, but Celery's worker dispatch is
+     fundamentally sync; each task function is a plain `def` whose body does
+     `return asyncio.run(_actual_async_coroutine(...))`, safe because a worker process runs one
+     task at a time and `asyncio.run()` creates/tears down its own loop per call, with no loop
+     reuse across tasks. Purely-sync CPU work already in this codebase (`plagiarism.precheck.
+     run_precheck`, `toc.parser.parse_toc`) is called directly by its task wrapper, with no
+     `asyncio.run()` needed.
+  4. **Tests run with `task_always_eager=True` (+ `task_eager_propagates=True`)** so `.delay()`/
+     `.apply_async()` executes synchronously in-process against the existing `TestClient`+`respx`
+     fixtures, with no real worker/Redis required. Constraint: every test must exercise a
+     Celery-backed endpoint only via `TestClient`, never by calling a task function directly from
+     `async def` test code — doing so risks "cannot run event loop within a running loop" from the
+     task body's own `asyncio.run()` colliding with the test's already-running
+     `pytest-asyncio` loop.
+  5. **Retry ownership**: `llm_routing.tasks`' generation task keeps `generate_with_retry`'s
+     existing internal retry/backoff as the sole retry mechanism; Celery-level `autoretry_for` is
+     NOT enabled for LLM tasks, to avoid retry-of-retries multiplying latency/cost.
 
 ### ADR-0014: Subchapter data model (first structural change to Chapter)
 - **Date:** 2026-08-06

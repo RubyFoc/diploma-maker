@@ -15,6 +15,12 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
   backend:
     build:
       context: ./apps/backend
@@ -23,12 +29,32 @@ services:
     environment:
       MONGODB_URI: mongodb://mongo:27017
       QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
       UPLOADS_DIR: /app/uploads
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - uploads-data:/app/uploads
     depends_on:
+      - mongo
+      - qdrant
+      - redis
+
+  worker:
+    build:
+      context: ./apps/backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongo:27017
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+      UPLOADS_DIR: /app/uploads
+    command: ["uv", "run", "celery", "-A", "diploma_backend.worker.celery_app:celery_app", "worker", "--loglevel=INFO"]
+    volumes:
+      - uploads-data:/app/uploads
+    depends_on:
+      - redis
       - mongo
       - qdrant
 
