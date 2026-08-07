@@ -67,9 +67,9 @@ from diploma_backend.llm_routing import (
     DeepSeekClient,
     LLMRequestError,
     generate_project_title,
-    generate_with_retry,
 )
 from diploma_backend.llm_routing.summary import assemble_prompt
+from diploma_backend.llm_routing.tasks import generate_with_retry_task
 from diploma_backend.locks.models import Block
 from diploma_backend.locks.service import (
     AnchorResolution,
@@ -128,6 +128,19 @@ _TOC_PARSE_TASK_TIMEOUT_SECONDS = 60.0
 # `plagiarism.router._PRECHECK_TASK_TIMEOUT_SECONDS`'s value.
 _HUMANIZE_TASK_TIMEOUT_SECONDS = 60.0
 _PRECHECK_TASK_TIMEOUT_SECONDS = 60.0
+
+# Applied to the non-streaming heavy-tier draft generation call, now dispatched to
+# `llm_routing.tasks.generate_with_retry_task` (ADR-0013, TASK-E17-4). Deliberately NOT the same
+# 60.0 as `_HUMANIZE_TASK_TIMEOUT_SECONDS`/`_PRECHECK_TASK_TIMEOUT_SECONDS`: `generate_with_retry`
+# (llm_routing/retry.py) can make up to `max_attempts=3` DeepSeek calls, each with its own
+# `DeepSeekClient._DEFAULT_TIMEOUT_SECONDS=60.0` ceiling, plus exponential backoff between them
+# (`base_delay_seconds * 2**attempt` for each of the 2 retries = 1s + 2s = 3s) — worst case
+# 3*60 + 3 = 183s before `generate_with_retry` itself would give up and raise `LLMRequestError`.
+# This timeout must stay comfortably above that worst case, or `.get()` fires first with
+# `celery.exceptions.TimeoutError` (NOT `LLMRequestError`, so NOT caught by this endpoint's
+# `except LLMRequestError` block) while the underlying task keeps running detached from the
+# already-abandoned HTTP request.
+_GENERATE_TASK_TIMEOUT_SECONDS = 200.0
 
 # Matches the frontend's `chapterContentEmpty` string (apps/frontend/src/strings/index.ts)
 # verbatim, so a user sees the same wording in the exported document as in the editor UI for a
@@ -989,9 +1002,15 @@ async def generate_chapter_draft_endpoint(
     authenticated user generating content into a project they don't own).
     Fetches live RAG excerpts via `_fetch_rag_excerpts` (external academic search, see module
     docstring) and builds messages via `assemble_prompt` with `chapter_summaries=[]` and those
-    excerpts, then calls the DeepSeek "heavy" tier (ADR-0003: chapter drafting) through
-    `generate_with_retry`. Raises `HTTPException(502)` if every retry attempt fails
-    (`LLMRequestError`).
+    excerpts, then calls the DeepSeek "heavy" tier (ADR-0003: chapter drafting), now dispatched to
+    a Celery worker via `llm_routing.tasks.generate_with_retry_task` (ADR-0013, TASK-E17-4) rather
+    than calling `generate_with_retry` inline. Both the `.delay()` call and the blocking `.get()`
+    are run together inside a single `asyncio.to_thread(...)` call, not just `.get()` alone
+    (ADR-0013 addendum point 3's caller-side corollary), since `generate_with_retry_task`'s body
+    drives its async work via `asyncio.run(...)` and would otherwise collide with this already-
+    running coroutine's own event loop under `task_always_eager=True` (tests) — same pattern as
+    `_humanize_and_precheck`'s `_run_humanize`. Raises `HTTPException(502)` if every retry attempt
+    fails (`LLMRequestError`), propagated unchanged through the worker thread.
 
     The raw generated content is then passed through `humanizer.pipeline.humanize_text` (fast
     tier per ADR-0003), now dispatched to a Celery worker via `humanizer.tasks.humanize_text_task`
@@ -1091,9 +1110,15 @@ async def generate_chapter_draft_endpoint(
 
     client = DeepSeekClient()
     title_task = _maybe_start_title_generation(client, project, body.instruction)
+
+    def _run_generate() -> str:
+        return generate_with_retry_task.delay("heavy", messages).get(
+            timeout=_GENERATE_TASK_TIMEOUT_SECONDS
+        )
+
     try:
         try:
-            content = await generate_with_retry(client, "heavy", messages)
+            content = await asyncio.to_thread(_run_generate)
         except LLMRequestError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
