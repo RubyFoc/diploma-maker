@@ -7,6 +7,7 @@ import { strings } from '../strings'
 import { deleteProject, getProject, listProjects } from '../services/projectService'
 import type { ProjectSummary } from '../types/project'
 import { toDocumentState } from '../utils/mapProject'
+import { NewProjectSetup } from './NewProjectSetup'
 
 interface ProjectLandingProps {
   /** Called once a project becomes active (created or opened), so the caller can enter the workspace view. */
@@ -29,6 +30,7 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null)
   const [deleteErrorId, setDeleteErrorId] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
+  const [isSettingUpNewProject, setIsSettingUpNewProject] = useState(false)
 
   const loadProjects = async () => {
     setLoadError(false)
@@ -44,13 +46,14 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
     void loadProjects()
   }, [])
 
-  const handleCreate = async () => {
+  const handleCreate = async (institutionId: string | null) => {
     if (isCreating) {
       return
     }
     setIsCreating(true)
     try {
-      await startNewProject()
+      await startNewProject(institutionId)
+      setIsSettingUpNewProject(false)
       onProjectActivated()
     } finally {
       setIsCreating(false)
@@ -65,7 +68,7 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
       return
     }
     const project = await getProject(projectId)
-    setDocument((previous) => toDocumentState(project, previous.institutionId))
+    setDocument(() => toDocumentState(project))
     resetChat()
     onProjectActivated()
   }
@@ -85,11 +88,29 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
     }
   }
 
+  const handleCancelNewProjectSetup = () => {
+    setIsSettingUpNewProject(false)
+    // Discard anything the user queued in the cancelled attempt — otherwise a required source
+    // entered here would silently resurface (and get submitted) the next time "New Project" is
+    // opened, even though the user explicitly backed out of this attempt.
+    setDocument((previous) => ({ ...previous, pendingRequiredSources: [] }))
+  }
+
+  if (isSettingUpNewProject) {
+    return (
+      <NewProjectSetup
+        onSubmit={(institutionId) => void handleCreate(institutionId)}
+        onCancel={handleCancelNewProjectSetup}
+        isSubmitting={isCreating}
+      />
+    )
+  }
+
   return (
     <section className="project-landing" aria-label={strings.projectLandingTitle}>
       <div className="project-landing-header">
         <h2>{strings.projectLandingTitle}</h2>
-        <button type="button" onClick={() => void handleCreate()} disabled={isCreating}>
+        <button type="button" onClick={() => setIsSettingUpNewProject(true)} disabled={isCreating}>
           {strings.newProjectButton}
         </button>
       </div>

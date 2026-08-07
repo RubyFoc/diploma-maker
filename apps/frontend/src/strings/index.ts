@@ -31,28 +31,30 @@ export const strings = {
   onboardingRegisterButton: 'Register',
   onboardingLoginButton: 'Log in',
   onboardingAuthError: 'Registration or login failed. Please check your details and try again.',
-  onboardingInstitutionStepTitle: 'Select your university',
-  onboardingInstitutionStepSubtitle:
-    'Pick your university’s formatting profile, or upload a sample document to create one.',
-  onboardingOrDivider: 'Or',
-  onboardingInstitutionSelectLabel: 'Choose an existing university profile',
-  onboardingInstitutionSelectPlaceholder: 'Select a university...',
-  onboardingInstitutionSelectError: 'Failed to load university list. Please try again.',
-  onboardingInstitutionUploadTitle: 'Or upload a new university sample',
-  onboardingInstitutionNameLabel: 'University name',
-  onboardingInstitutionFileLabel: 'Sample document',
-  onboardingInstitutionUploadButton: 'Upload',
-  onboardingInstitutionUploadError: 'Failed to upload university sample. Please try again.',
-  onboardingInstitutionAutoDetectTitle: 'Or try automatic detection',
-  onboardingInstitutionAutoDetectSubtitle:
+  newProjectSetupTitle: 'Set up your new project',
+  newProjectSetupSubtitle:
+    'Pick your university’s formatting profile, or upload a sample document to create one. You can also skip this and create the project without one.',
+  newProjectSetupOrDivider: 'Or',
+  newProjectSetupInstitutionSelectLabel: 'Choose an existing university profile',
+  newProjectSetupInstitutionSelectPlaceholder: 'Select a university...',
+  newProjectSetupInstitutionSelectError: 'Failed to load university list. Please try again.',
+  newProjectSetupInstitutionUploadTitle: 'Or upload a new university sample',
+  newProjectSetupInstitutionNameLabel: 'University name',
+  newProjectSetupInstitutionFileLabel: 'Sample document',
+  newProjectSetupInstitutionUploadButton: 'Upload',
+  newProjectSetupInstitutionUploadError: 'Failed to upload university sample. Please try again.',
+  newProjectSetupAutoDetectTitle: 'Or try automatic detection',
+  newProjectSetupAutoDetectSubtitle:
     "We'll search the web for your university's formatting requirements. This is best-effort and may not find anything.",
-  onboardingInstitutionAutoDetectNameLabel: 'University name to search for',
-  onboardingInstitutionAutoDetectButton: 'Try to auto-detect',
-  onboardingInstitutionAutoDetectButtonPending: 'Searching...',
-  onboardingInstitutionAutoDetectNotFoundMessage:
+  newProjectSetupAutoDetectNameLabel: 'University name to search for',
+  newProjectSetupAutoDetectButton: 'Try to auto-detect',
+  newProjectSetupAutoDetectButtonPending: 'Searching...',
+  newProjectSetupAutoDetectNotFoundMessage:
     "We couldn't automatically find formatting requirements for this university. Try picking it from the list above or uploading a sample document instead.",
-  onboardingInstitutionAutoDetectError:
+  newProjectSetupAutoDetectError:
     'Automatic detection is unavailable right now. Please try picking from the list above or uploading a sample document instead.',
+  newProjectSetupCreateButton: 'Create Project',
+  newProjectSetupCancelButton: 'Cancel',
   tabWorkspaceLabel: 'Workspace',
   tabPlagiarismCheckLabel: 'Plagiarism Check',
   plagiarismCheckTitle: 'Plagiarism Check',
@@ -104,11 +106,11 @@ export const strings = {
     'This chapter is fully locked, so there is no unlocked location to insert new content. Unlock at least one block and try again.',
   diffRerouteNoticeMessage:
     'The requested insertion point was locked, so the AI inserted this content at a nearby unlocked location instead.',
-  onboardingRequiredSourcesTitle: 'Required sources (optional)',
-  onboardingRequiredSourcesSubtitle:
+  newProjectSetupRequiredSourcesTitle: 'Required sources (optional)',
+  newProjectSetupRequiredSourcesSubtitle:
     'List any authors or works your thesis must cite. We will try to ground generated chapters in them.',
-  onboardingRequiredSourceAuthorLabel: 'Author',
-  onboardingRequiredSourceTitleLabel: 'Work title (optional)',
-  onboardingRequiredSourceAddButton: 'Add',
-  onboardingRequiredSourceRemoveButton: 'Remove',
+  newProjectSetupRequiredSourceAuthorLabel: 'Author',
+  newProjectSetupRequiredSourceTitleLabel: 'Work title (optional)',
+  newProjectSetupRequiredSourceAddButton: 'Add',
+  newProjectSetupRequiredSourceRemoveButton: 'Remove',
 } as const

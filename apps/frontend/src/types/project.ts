@@ -61,6 +61,9 @@ export interface ProjectDetail {
   title: string
   created_at: string
   chapters: ChapterDetail[]
+  /** University formatting profile chosen at project-creation time (TASK-INT-17/18), scoped
+   * per project rather than per account. `null` if the project has none. */
+  institution_id?: string | null
 }
 
 // Lightweight per-project listing entry backing `GET /projects` (TASK-E11-2/E11-4): no chapters,

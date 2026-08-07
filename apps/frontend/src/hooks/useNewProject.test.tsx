@@ -89,6 +89,31 @@ describe('useNewProject', () => {
     expect(result.current.doc.document.pendingRequiredSources).toEqual([])
   })
 
+  it('passes a chosen institution id through to project creation and reflects it on the created project', async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/projects') && init?.method === 'POST') {
+        expect(init.body).toBe(JSON.stringify({ institution_id: 'inst-1' }))
+        return Promise.resolve(
+          jsonResponse(
+            { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [], institution_id: 'inst-1' },
+            true,
+            201,
+          ),
+        )
+      }
+      return Promise.resolve(jsonResponse({ detail: 'unexpected request' }, false, 500))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(useTestHooks, { wrapper })
+
+    await act(async () => {
+      await result.current.newProject('inst-1')
+    })
+
+    expect(result.current.doc.document.institutionId).toBe('inst-1')
+  })
+
   it('still creates the project if a queued required source submission fails', async () => {
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
       if (String(url).endsWith('/projects') && init?.method === 'POST') {

@@ -80,8 +80,11 @@ describe('ProjectLanding', () => {
     expect(await screen.findByText(strings.projectLandingLoadErrorMessage)).toBeInTheDocument()
   })
 
-  it('creating a new project calls onProjectActivated', async () => {
+  it('clicking New Project opens the setup UI, and submitting it creates the project and calls onProjectActivated', async () => {
     const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes('/formatting/institution-configs')) {
+        return Promise.resolve(jsonResponse([]))
+      }
       if (String(url).endsWith('/projects')) {
         return Promise.resolve(jsonResponse({ id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }, true, 201))
       }
@@ -92,9 +95,45 @@ describe('ProjectLanding', () => {
     const { onProjectActivated } = renderLanding()
     fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
 
+    expect(await screen.findByLabelText(strings.newProjectSetupTitle)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupCreateButton }))
+
     await waitFor(() => {
       expect(onProjectActivated).toHaveBeenCalled()
     })
+  })
+
+  it('cancelling the new-project setup UI returns to the project list without creating a project', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse([])))
+
+    renderLanding()
+    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+    expect(await screen.findByLabelText(strings.newProjectSetupTitle)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupCancelButton }))
+
+    expect(await screen.findByLabelText(strings.projectLandingTitle)).toBeInTheDocument()
+  })
+
+  it('cancelling after adding a required source discards it, so it does not resurface on the next New Project attempt', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse([])))
+
+    renderLanding()
+    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+    expect(await screen.findByLabelText(strings.newProjectSetupTitle)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceAuthorLabel), {
+      target: { value: 'Jane Doe' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupRequiredSourceAddButton }))
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupCancelButton }))
+    expect(await screen.findByLabelText(strings.projectLandingTitle)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: strings.newProjectButton }))
+    expect(await screen.findByLabelText(strings.newProjectSetupTitle)).toBeInTheDocument()
+    expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument()
   })
 
   it('switching to a project fetches its detail, updates active document/chat state, and calls onProjectActivated', async () => {

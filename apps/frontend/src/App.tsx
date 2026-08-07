@@ -226,7 +226,7 @@ function DocumentPanel() {
     }
     if (doc.projectId !== null) {
       const project = await getProject(doc.projectId)
-      setDocument((previous) => toDocumentState(project, previous.institutionId))
+      setDocument(() => toDocumentState(project))
       return
     }
     setDocument((previous) => ({
@@ -453,9 +453,8 @@ function AuthenticatedApp() {
 
 function Gate() {
   const { auth } = useAuth()
-  const { document: doc } = useDocument()
 
-  if (auth.accessToken === null || doc.institutionId === null) {
+  if (auth.accessToken === null) {
     return <Onboarding />
   }
 

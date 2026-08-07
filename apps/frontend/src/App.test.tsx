@@ -74,10 +74,10 @@ function latestEventSource(): MockEventSource {
 }
 
 /**
- * Builds a fetch mock that resolves the onboarding gate's institution-list call from
+ * Builds a fetch mock that resolves the new-project setup UI's institution-list call from
  * `institutions`, and otherwise dispatches responses from `queued` in call order —
  * matching this codebase's existing per-test mockResolvedValueOnce style for the
- * project/chapter/generate calls exercised once onboarding is past.
+ * project/chapter/generate calls exercised once a project is created.
  */
 function createFetchMock(queued: Response[] = []) {
   const queue = [...queued]
@@ -110,21 +110,41 @@ function createFetchMock(queued: Response[] = []) {
   })
 }
 
-/** Selects the seeded institution to move past the onboarding gate's step 2. */
+/** Opens the "create new project" setup UI from the project-landing view. */
+async function openNewProjectSetup() {
+  fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+  await screen.findByLabelText(strings.newProjectSetupTitle)
+}
+
+/** Selects the seeded institution within the new-project setup UI. */
 async function selectInstitution() {
-  const select = await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)
+  const select = await screen.findByLabelText(strings.newProjectSetupInstitutionSelectLabel)
   fireEvent.change(select, { target: { value: institution.institution_id } })
 }
 
+/** Submits the new-project setup UI, creating the project. */
+async function submitNewProjectSetup() {
+  fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupCreateButton }))
+}
+
 /**
- * Moves past the new project-landing view (shown before any project is active) by clicking
- * "New Project" there, landing the caller in the chat+preview workspace. Callers that need a
- * created project in their fetch queue (e.g. to assert on chapter/generate calls) must include
- * that project response as the *first* queued response.
+ * Moves past the new project-landing view (shown before any project is active) by opening
+ * "New Project" and submitting the setup UI without picking an institution, landing the caller
+ * in the chat+preview workspace. Callers that need a created project in their fetch queue (e.g.
+ * to assert on chapter/generate calls) must include that project response as the *first* queued
+ * response.
  */
 async function enterWorkspace() {
+  await openNewProjectSetup()
+  await submitNewProjectSetup()
+  await screen.findByLabelText(strings.chatPanelTitle)
+}
+
+/** Same as `enterWorkspace`, but picks the seeded institution before submitting. */
+async function enterWorkspaceWithInstitution() {
+  await openNewProjectSetup()
   await selectInstitution()
-  fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+  await submitNewProjectSetup()
   await screen.findByLabelText(strings.chatPanelTitle)
 }
 
@@ -149,19 +169,19 @@ describe('App', () => {
     expect(screen.getByLabelText(strings.onboardingTitle)).toBeInTheDocument()
   })
 
-  it('shows the institution-selection step once a token exists', async () => {
+  it('shows the project landing view (not the chat panel or an institution gate) once a token exists', async () => {
     vi.stubGlobal('fetch', createFetchMock())
     render(<App />)
-    expect(await screen.findByLabelText(strings.onboardingInstitutionSelectLabel)).toBeInTheDocument()
-  })
-
-  it('shows the project landing view (not the chat panel) once onboarding is complete', async () => {
-    vi.stubGlobal('fetch', createFetchMock())
-    render(<App />)
-    await selectInstitution()
     expect(await screen.findByLabelText(strings.projectLandingTitle)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: strings.newProjectButton })).toBeInTheDocument()
     expect(screen.queryByLabelText(strings.chatPanelTitle)).not.toBeInTheDocument()
+  })
+
+  it('shows the new-project setup UI (university select/upload/auto-detect + required sources) after clicking New Project', async () => {
+    vi.stubGlobal('fetch', createFetchMock())
+    render(<App />)
+    await openNewProjectSetup()
+    expect(screen.getByLabelText(strings.newProjectSetupInstitutionSelectLabel)).toBeInTheDocument()
   })
 
   it('renders both the chat panel and the document panel once a project is entered', async () => {
@@ -252,9 +272,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    await selectInstitution()
-    const button = await screen.findByRole('button', { name: strings.newProjectButton })
-    fireEvent.click(button)
+    await enterWorkspaceWithInstitution()
     expect(await screen.findByText(strings.chatEmpty)).toBeInTheDocument()
     expect(await screen.findByText(strings.documentEmpty)).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledWith(
@@ -293,8 +311,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    await selectInstitution()
-    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+    await enterWorkspaceWithInstitution()
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
 
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
@@ -336,8 +353,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    await selectInstitution()
-    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+    await enterWorkspaceWithInstitution()
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
 
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
@@ -352,7 +368,7 @@ describe('App', () => {
   })
 
   it('accepting a draft records an approve feedback signal and refreshes the project', async () => {
-    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [], institution_id: institution.institution_id }
     const chapter = {
       id: 'c1',
       project_id: 'p1',
@@ -400,8 +416,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    await selectInstitution()
-    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+    await enterWorkspaceWithInstitution()
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
     fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
@@ -435,7 +450,7 @@ describe('App', () => {
   })
 
   it('still completes the accept flow when recording the feedback signal fails', async () => {
-    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [], institution_id: institution.institution_id }
     const chapter = {
       id: 'c1',
       project_id: 'p1',
@@ -475,8 +490,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    await selectInstitution()
-    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+    await enterWorkspaceWithInstitution()
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
     fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
@@ -632,7 +646,7 @@ describe('App', () => {
   })
 
   it('rejecting a draft records a reject feedback signal and clears the pending draft', async () => {
-    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [], institution_id: institution.institution_id }
     const chapter = {
       id: 'c1',
       project_id: 'p1',
@@ -672,8 +686,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
-    await selectInstitution()
-    fireEvent.click(await screen.findByRole('button', { name: strings.newProjectButton }))
+    await enterWorkspaceWithInstitution()
     const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
     fireEvent.change(input, { target: { value: 'Write the introduction' } })
     fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))

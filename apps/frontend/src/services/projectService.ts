@@ -48,10 +48,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-export function createProject(title?: string): Promise<ProjectDetail> {
+export function createProject(title?: string, institutionId?: string | null): Promise<ProjectDetail> {
+  const body: { title?: string; institution_id?: string } = {}
+  if (title !== undefined) {
+    body.title = title
+  }
+  if (institutionId) {
+    body.institution_id = institutionId
+  }
   return request<ProjectDetail>('/projects', {
     method: 'POST',
-    body: JSON.stringify(title === undefined ? {} : { title }),
+    body: JSON.stringify(body),
   })
 }
 

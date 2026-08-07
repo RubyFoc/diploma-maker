@@ -198,7 +198,7 @@ the account-level `Onboarding` gate into the "create new project" flow (`useNewP
 | ID | Task | Epic | Owner Role | Status |
 | --- | --- | --- | --- | --- |
 | TASK-INT-17 | Add `institution_id: str \| None` to `Project`; accept it in `CreateProjectRequest` (`POST /projects`) and use it (not the export-time query param) when applying formatting on export | E05 | python-developer | done |
-| TASK-INT-18 | Move university select/upload/auto-detect UI from the account-level `Onboarding` gate into the "create new project" flow (`useNewProject`/`ProjectLanding`), scoped per project instead of per account | E05 | frontend-developer | todo |
+| TASK-INT-18 | Move university select/upload/auto-detect UI from the account-level `Onboarding` gate into the "create new project" flow (`useNewProject`/`ProjectLanding`), scoped per project instead of per account | E05 | frontend-developer | done |
 
 ## Phase 7 — Multi-Project Management (added 2026-08-06, BA/architect epic breakdown for large onboarding/history/async epic)
 

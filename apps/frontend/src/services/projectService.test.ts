@@ -66,6 +66,32 @@ describe('projectService', () => {
     )
   })
 
+  it('createProject includes institution_id in the body when provided (TASK-INT-17/18)', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [], institution_id: 'inst-1' }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(project))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createProject(undefined, 'inst-1')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects`,
+      expect.objectContaining({ body: JSON.stringify({ institution_id: 'inst-1' }) }),
+    )
+  })
+
+  it('createProject omits institution_id from the body when null', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(project))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createProject(undefined, null)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects`,
+      expect.objectContaining({ body: JSON.stringify({}) }),
+    )
+  })
+
   it('getProject fetches /projects/{id}', async () => {
     const project = { id: 'p1', title: 'My Thesis', created_at: 'now', chapters: [] }
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(project))

@@ -25,14 +25,15 @@ export interface Chapter {
 
 export interface DocumentState {
   projectId: string | null
-  /** Selected/uploaded university config's id, per TASK-E10-1 onboarding flow. */
+  /** Active project's university formatting profile id (TASK-INT-17/18), scoped per project —
+   * read off the project itself (`toDocumentState`) rather than carried over between projects. */
   institutionId: string | null
   /** Active project's display title, shown in the workspace header; empty until a project is entered. */
   title: string
   chapters: Chapter[]
-  /** Must-cite authors/works entered during onboarding (TASK-E14-4), before any project exists
-   * to attach them to. `useNewProject` submits these against the newly created project and
-   * clears the list (via `toDocumentState`'s default) once flushed. */
+  /** Must-cite authors/works entered while setting up a new project (TASK-E14-4/TASK-INT-18),
+   * before that project exists to attach them to. `useNewProject` submits these against the
+   * newly created project and clears the list (via `toDocumentState`'s default) once flushed. */
   pendingRequiredSources: PendingRequiredSource[]
 }
 
