@@ -8,6 +8,7 @@ Builds tiny `.docx` fixtures on the fly with `python-docx`, matching
 from io import BytesIO
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from fastapi.testclient import TestClient
 
 from diploma_backend.toc.parser import TocParseError, parse_document_sections, parse_toc
@@ -60,6 +61,33 @@ def _build_empty_docx() -> bytes:
     return _docx_bytes(document)
 
 
+def _build_word_toc_field_docx() -> bytes:
+    """Mimics a `.docx` containing just Word's auto-generated "Table of Contents" field, copied
+    out on its own — the style Word actually gives each entry (`"TOC 1"`) rather than
+    `"Heading 1"` or a manually-typed number, with a tab-separated page number the way Word's
+    field renders it (not literal dot-leader text)."""
+    document = Document()
+    document.styles.add_style("TOC 1", WD_STYLE_TYPE.PARAGRAPH)
+    document.styles.add_style("TOC 2", WD_STYLE_TYPE.PARAGRAPH)
+    for title, page in [("Введение", 3), ("Обзор литературы", 5), ("Заключение", 20)]:
+        paragraph = document.add_paragraph(title, style="TOC 1")
+        paragraph.add_run(f"\t{page}")
+    subsection = document.add_paragraph("Подраздел 1.1", style="TOC 2")
+    subsection.add_run("\t6")
+    return _docx_bytes(document)
+
+
+def _build_list_numbered_docx() -> bytes:
+    """Mimics a TOC where the numbering came from clicking Word's numbered-list button (style
+    `"List Number"`) rather than typing "1. " by hand — the rendered number lives in the list
+    definition (`w:numPr`), not in the paragraph's own text."""
+    document = Document()
+    document.add_paragraph("Введение", style="List Number")
+    document.add_paragraph("Обзор литературы", style="List Number")
+    document.add_paragraph("Заключение", style="List Number")
+    return _docx_bytes(document)
+
+
 def test_parse_toc_uses_heading_1_paragraphs() -> None:
     titles = parse_toc(_build_heading_docx())
 
@@ -92,6 +120,18 @@ def test_parse_toc_no_headings_or_numbered_lines_raises() -> None:
         raise AssertionError("expected TocParseError")
     except TocParseError:
         pass
+
+
+def test_parse_toc_uses_word_toc_field_level_1_entries() -> None:
+    titles = parse_toc(_build_word_toc_field_docx())
+
+    assert titles == ["Введение", "Обзор литературы", "Заключение"]
+
+
+def test_parse_toc_uses_top_level_list_numbered_paragraphs() -> None:
+    titles = parse_toc(_build_list_numbered_docx())
+
+    assert titles == ["Введение", "Обзор литературы", "Заключение"]
 
 
 def test_upload_toc_creates_chapters_in_order(client: TestClient) -> None:
