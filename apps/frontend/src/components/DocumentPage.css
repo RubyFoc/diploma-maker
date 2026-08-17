@@ -18,6 +18,15 @@
   overflow: hidden;
 }
 
+/* `index.css` sets `color` directly on heading/paragraph elements (via `--color-text`, which
+   turns near-white in dark mode) for the rest of the app — an explicit element-selector rule
+   like that overrides inherited color regardless of specificity, so it would otherwise repaint
+   this page's rendered markdown near-white on top of the always-white sheet above. Force every
+   text element back to inherit this page's own near-black color instead. */
+.document-page :is(h1, h2, h3, h4, h5, h6, p, li, span, strong, em, blockquote, code) {
+  color: inherit;
+}
+
 .document-page-content {
   height: 100%;
   overflow: hidden;
