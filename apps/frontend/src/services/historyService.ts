@@ -1,4 +1,5 @@
 import { ACCESS_TOKEN_STORAGE_KEY } from '../context/AuthContext'
+import { notifyAuthExpired } from './authEvents'
 import type { OperationsListResponse, UndoRedoResponse } from '../types/history'
 
 /** Wraps `history.router` (ADR-0012, TASK-E16-2/3/4): undo/redo over a chapter's edit op-log,
@@ -28,6 +29,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
+    if (response.status === 401) {
+      notifyAuthExpired()
+    }
     const body = await response.text()
     throw new RequestError(`Request to ${path} failed with status ${response.status}: ${body}`, response.status)
   }

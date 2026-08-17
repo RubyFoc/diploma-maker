@@ -30,6 +30,7 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null)
   const [deleteErrorId, setDeleteErrorId] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
+  const [createError, setCreateError] = useState(false)
   const [isSettingUpNewProject, setIsSettingUpNewProject] = useState(false)
 
   const loadProjects = async () => {
@@ -51,10 +52,13 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
       return
     }
     setIsCreating(true)
+    setCreateError(false)
     try {
       await startNewProject(institutionId)
       setIsSettingUpNewProject(false)
       onProjectActivated()
+    } catch {
+      setCreateError(true)
     } finally {
       setIsCreating(false)
     }
@@ -102,6 +106,7 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
         onSubmit={(institutionId) => void handleCreate(institutionId)}
         onCancel={handleCancelNewProjectSetup}
         isSubmitting={isCreating}
+        submitError={createError ? strings.newProjectSetupCreateError : null}
       />
     )
   }

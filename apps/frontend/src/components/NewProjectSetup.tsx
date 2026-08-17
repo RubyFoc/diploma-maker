@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useDocument } from '../context/DocumentContext'
 import { autoDetectInstitution, listInstitutions, uploadInstitutionSample } from '../services/institutionService'
+import { parseRequiredSourcesBulk } from '../services/requiredSourcesService'
 import type { InstitutionSummary } from '../types/institution'
+import type { PendingRequiredSource } from '../types/project'
 import { strings } from '../strings'
+import { Linkify } from './Linkify'
 import './Onboarding.css'
 
 interface NewProjectSetupProps {
@@ -11,6 +14,8 @@ interface NewProjectSetupProps {
   onSubmit: (institutionId: string | null) => void
   onCancel: () => void
   isSubmitting: boolean
+  /** Set when the last submit attempt failed, so the user isn't left with a button that appears to do nothing. */
+  submitError: string | null
 }
 
 /**
@@ -25,7 +30,7 @@ interface NewProjectSetupProps {
  * Required sources still flow through `DocumentContext.pendingRequiredSources`, matching
  * `useNewProject`'s existing flush-on-create convention (TASK-E14-4).
  */
-export function NewProjectSetup({ onSubmit, onCancel, isSubmitting }: NewProjectSetupProps) {
+export function NewProjectSetup({ onSubmit, onCancel, isSubmitting, submitError }: NewProjectSetupProps) {
   const { document: doc, setDocument } = useDocument()
 
   const [institutions, setInstitutions] = useState<InstitutionSummary[]>([])
@@ -44,6 +49,10 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting }: NewProject
 
   const [requiredSourceAuthor, setRequiredSourceAuthor] = useState('')
   const [requiredSourceTitle, setRequiredSourceTitle] = useState('')
+
+  const [bulkText, setBulkText] = useState('')
+  const [isBulkDetecting, setIsBulkDetecting] = useState(false)
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null)
 
   useEffect(() => {
     listInstitutions()
@@ -116,6 +125,37 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting }: NewProject
     }))
   }
 
+  const handleBulkDetect = async (event: FormEvent) => {
+    event.preventDefault()
+    const text = bulkText.trim()
+    if (text === '') {
+      return
+    }
+    setIsBulkDetecting(true)
+    setBulkMessage(null)
+    try {
+      const detected = await parseRequiredSourcesBulk(text)
+      if (detected.length === 0) {
+        setBulkMessage(strings.newProjectSetupRequiredSourceBulkEmptyMessage)
+        return
+      }
+      setDocument((previous) => {
+        const key = (source: PendingRequiredSource) => `${source.author.toLowerCase()}|${(source.title ?? '').toLowerCase()}`
+        const existingKeys = new Set(previous.pendingRequiredSources.map(key))
+        const newOnes = detected.filter((source) => !existingKeys.has(key(source)))
+        return {
+          ...previous,
+          pendingRequiredSources: [...previous.pendingRequiredSources, ...newOnes],
+        }
+      })
+      setBulkText('')
+    } catch {
+      setBulkMessage(strings.newProjectSetupRequiredSourceBulkError)
+    } finally {
+      setIsBulkDetecting(false)
+    }
+  }
+
   return (
     <div className="onboarding-shell">
       <section className="onboarding-card" aria-label={strings.newProjectSetupTitle}>
@@ -147,7 +187,9 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting }: NewProject
           <ul className="onboarding-required-sources-list">
             {doc.pendingRequiredSources.map((source, index) => (
               <li key={index}>
-                <span>{source.title ? `${source.author} — ${source.title}` : source.author}</span>
+                <span>
+                  <Linkify text={source.title ? `${source.author} — ${source.title}` : source.author} />
+                </span>
                 <button type="button" onClick={() => handleRemoveRequiredSource(index)}>
                   {strings.newProjectSetupRequiredSourceRemoveButton}
                 </button>
@@ -155,6 +197,30 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting }: NewProject
             ))}
           </ul>
         )}
+
+        <h3 className="onboarding-section-title">{strings.newProjectSetupRequiredSourceBulkTitle}</h3>
+        <p className="onboarding-subtitle">{strings.newProjectSetupRequiredSourceBulkSubtitle}</p>
+        <form className="onboarding-form" onSubmit={(event) => void handleBulkDetect(event)}>
+          <label>
+            {strings.newProjectSetupRequiredSourceBulkLabel}
+            <textarea
+              rows={6}
+              placeholder={strings.newProjectSetupRequiredSourceBulkPlaceholder}
+              value={bulkText}
+              onChange={(event) => setBulkText(event.target.value)}
+            />
+          </label>
+          {bulkMessage !== null && (
+            <p className="onboarding-error" role="alert">
+              {bulkMessage}
+            </p>
+          )}
+          <button type="submit" disabled={isBulkDetecting || bulkText.trim() === ''}>
+            {isBulkDetecting
+              ? strings.newProjectSetupRequiredSourceBulkButtonPending
+              : strings.newProjectSetupRequiredSourceBulkButton}
+          </button>
+        </form>
 
         <div className="onboarding-divider">{strings.newProjectSetupOrDivider}</div>
 
@@ -235,6 +301,11 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting }: NewProject
           </button>
         </form>
 
+        {submitError !== null && (
+          <p className="onboarding-error" role="alert">
+            {submitError}
+          </p>
+        )}
         <div className="onboarding-actions">
           <button type="button" onClick={onCancel} disabled={isSubmitting}>
             {strings.newProjectSetupCancelButton}

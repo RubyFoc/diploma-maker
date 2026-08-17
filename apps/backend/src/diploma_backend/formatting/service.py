@@ -8,6 +8,7 @@ TASK-E05-2). Documents live in the `institution_configs` collection, keyed by `i
 `formatting.discovery`), and never touched again.
 """
 
+import re
 from datetime import UTC, datetime
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -34,6 +35,25 @@ async def get_institution_config(
 ) -> InstitutionConfig | None:
     """Fetch the institution config with `institution_id`, or `None` if it doesn't exist."""
     document = await db[_COLLECTION].find_one({"institution_id": institution_id})
+    if document is None:
+        return None
+    return InstitutionConfig.model_validate(document)
+
+
+async def get_institution_config_by_name(
+    db: AsyncIOMotorDatabase, institution_name: str
+) -> InstitutionConfig | None:
+    """Fetch a stored institution config by name (case-insensitive, ignoring surrounding
+    whitespace), or `None` if none exists.
+
+    Used by `formatting.router`'s upload/auto-detect endpoints to dedupe: repeating either flow
+    for the same university name should reuse the one shared config instead of inserting a new,
+    independently-drifting document every time (user report: repeated setup attempts for the same
+    university produced many duplicate configs).
+    """
+    document = await db[_COLLECTION].find_one(
+        {"institution_name": {"$regex": f"^{re.escape(institution_name.strip())}$", "$options": "i"}}
+    )
     if document is None:
         return None
     return InstitutionConfig.model_validate(document)

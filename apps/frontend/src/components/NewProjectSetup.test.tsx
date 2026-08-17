@@ -20,7 +20,7 @@ function renderSetup(overrides: Partial<{ onSubmit: (institutionId: string | nul
   const onCancel = overrides.onCancel ?? vi.fn()
   render(
     <DocumentProvider>
-      <NewProjectSetup onSubmit={onSubmit} onCancel={onCancel} isSubmitting={false} />
+      <NewProjectSetup onSubmit={onSubmit} onCancel={onCancel} isSubmitting={false} submitError={null} />
     </DocumentProvider>,
   )
   return { onSubmit, onCancel }
@@ -191,6 +191,66 @@ describe('NewProjectSetup', () => {
       fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupRequiredSourceRemoveButton }))
 
       expect(screen.queryByText('Jane Doe')).not.toBeInTheDocument()
+    })
+
+    it('renders a URL inside a queued source as a clickable link', async () => {
+      renderSetup()
+      await screen.findByLabelText(strings.newProjectSetupInstitutionSelectLabel)
+
+      fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceAuthorLabel), {
+        target: { value: 'Jane Doe — https://example.com/paper.pdf' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupRequiredSourceAddButton }))
+
+      const link = await screen.findByRole('link', { name: 'https://example.com/paper.pdf' })
+      expect(link).toHaveAttribute('href', 'https://example.com/paper.pdf')
+      expect(link).toHaveAttribute('target', '_blank')
+    })
+  })
+
+  describe('bulk auto-detect required sources', () => {
+    it('parses pasted text and queues the detected sources', async () => {
+      const fetchMock = vi.fn((url: string) => {
+        if (String(url).includes('/required-sources/parse-bulk')) {
+          return Promise.resolve(
+            jsonResponse([
+              { author: 'Jane Doe', title: 'A Study of Things' },
+              { author: 'John Smith' },
+            ]),
+          )
+        }
+        return Promise.resolve(jsonResponse([]))
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      renderSetup()
+      await screen.findByLabelText(strings.newProjectSetupInstitutionSelectLabel)
+
+      fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceBulkLabel), {
+        target: { value: 'Doe, J. A Study of Things. 2020.\nSmith, J. 2019.' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupRequiredSourceBulkButton }))
+
+      expect(await screen.findByText('Jane Doe — A Study of Things')).toBeInTheDocument()
+      expect(await screen.findByText('John Smith')).toBeInTheDocument()
+    })
+
+    it('shows an error message when bulk-parsing fails', async () => {
+      const fetchMock = vi.fn((url: string) => {
+        if (String(url).includes('/required-sources/parse-bulk')) {
+          return Promise.resolve(jsonResponse({ detail: 'boom' }, false, 502))
+        }
+        return Promise.resolve(jsonResponse([]))
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      renderSetup()
+      await screen.findByLabelText(strings.newProjectSetupInstitutionSelectLabel)
+
+      fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceBulkLabel), {
+        target: { value: 'Some pasted bibliography text.' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupRequiredSourceBulkButton }))
+
+      expect(await screen.findByText(strings.newProjectSetupRequiredSourceBulkError)).toBeInTheDocument()
     })
   })
 })

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { Dispatch, ReactNode, SetStateAction } from 'react'
+import { AUTH_EXPIRED_EVENT } from '../services/authEvents'
 
 export interface AuthState {
   accessToken: string | null
@@ -30,6 +31,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, auth.accessToken)
   }, [auth.accessToken])
+
+  useEffect(() => {
+    const handleAuthExpired = () => setAuth({ accessToken: null })
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired)
+  }, [])
 
   const value = useMemo(() => ({ auth, setAuth }), [auth])
 

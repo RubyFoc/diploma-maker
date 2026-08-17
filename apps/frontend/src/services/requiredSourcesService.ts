@@ -1,5 +1,6 @@
 import { ACCESS_TOKEN_STORAGE_KEY } from '../context/AuthContext'
-import type { RequiredSource } from '../types/project'
+import { notifyAuthExpired } from './authEvents'
+import type { PendingRequiredSource, RequiredSource } from '../types/project'
 
 /** Same bearer-token pattern as `projectService.ts` — the required-sources endpoints require auth. */
 function authHeaders(): Record<string, string> {
@@ -14,6 +15,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
+    if (response.status === 401) {
+      notifyAuthExpired()
+    }
     const body = await response.text()
     throw new Error(`Request to ${path} failed with status ${response.status}: ${body}`)
   }
@@ -34,4 +38,17 @@ export function createRequiredSource(
 
 export function listRequiredSources(projectId: string): Promise<RequiredSource[]> {
   return request<RequiredSource[]>(`/projects/${projectId}/required-sources`)
+}
+
+/**
+ * Auto-detects individual author/work entries out of a block of pasted bibliography text (user
+ * request: adding many required sources one-at-a-time via the Author/Work-title form doesn't
+ * scale to a full reference list). Project-independent — usable during new-project setup before
+ * a project exists.
+ */
+export function parseRequiredSourcesBulk(text: string): Promise<PendingRequiredSource[]> {
+  return request<PendingRequiredSource[]>('/projects/required-sources/parse-bulk', {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  })
 }

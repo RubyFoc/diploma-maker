@@ -298,6 +298,64 @@ def test_auto_detect_endpoint_returns_201_on_found(client: TestClient, monkeypat
     assert body["accuracy_weight"] == 0.3
 
 
+def test_auto_detect_endpoint_reuses_existing_config_and_skips_discovery(
+    client: TestClient, monkeypatch
+) -> None:
+    calls = []
+
+    async def _fake_discover(university_name: str) -> DiscoveryResult:
+        calls.append(university_name)
+        from diploma_backend.formatting.models import (
+            FontConfig,
+            Headings,
+            InstitutionConfig,
+            MarginsMm,
+            PageConfig,
+        )
+
+        config = InstitutionConfig(
+            institution_id="auto-test-id",
+            institution_name=university_name,
+            source="auto",
+            page=PageConfig(
+                size="A4",
+                orientation="portrait",
+                margins_mm=MarginsMm(top=20, bottom=20, left=30, right=15),
+            ),
+            font=FontConfig(family="Times New Roman", size_pt=14, line_spacing=1.5),
+            headings=Headings(),
+            citation_style="GOST",
+            citation_rules={},
+            toc_rules={},
+            accuracy_weight=0.3,
+            raw_sample_reference="",
+        )
+        return DiscoveryResult(status="found", config=config, source_url="https://example.edu/x")
+
+    monkeypatch.setattr(
+        "diploma_backend.formatting.router.discover_institution_config", _fake_discover
+    )
+
+    first_response = client.post(
+        "/formatting/institution-configs/auto-detect",
+        json={"institution_name": "БГУИЯ"},
+    )
+    assert first_response.status_code == 201
+    first_id = first_response.json()["institution_id"]
+
+    second_response = client.post(
+        "/formatting/institution-configs/auto-detect",
+        json={"institution_name": " бгуия "},
+    )
+
+    assert second_response.status_code == 201
+    assert second_response.json()["institution_id"] == first_id
+    assert calls == ["БГУИЯ"]  # the second call never reached `discover_institution_config`
+
+    listing = client.get("/formatting/institution-configs").json()
+    assert sum(1 for config in listing if config["institution_name"] == "БГУИЯ") == 1
+
+
 def test_auto_detect_endpoint_returns_404_on_not_found(client: TestClient, monkeypatch) -> None:
     async def _fake_discover(university_name: str) -> DiscoveryResult:
         return DiscoveryResult(status="not_found", config=None, source_url=None)

@@ -6,12 +6,22 @@ ownership pattern; duplicated here as a small standalone helper rather than impo
 `locks.router` used for its own `_get_owned_chapter`).
 """
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
 from diploma_backend.auth.dependencies import get_current_user_id
 from diploma_backend.db import get_database
+from diploma_backend.llm_routing.client import LLMRequestError
+from diploma_backend.llm_routing.required_sources_parse import (
+    PARSE_MAX_TOKENS,
+    RequiredSourcesParseError,
+    build_parse_messages,
+    parse_response,
+)
+from diploma_backend.llm_routing.tasks import generate_with_retry_task
 from diploma_backend.projects.service import get_project
 from diploma_backend.sources.required import (
     RequiredSource,
@@ -20,6 +30,8 @@ from diploma_backend.sources.required import (
 )
 
 router = APIRouter(prefix="/projects", tags=["sources"])
+
+_PARSE_TASK_TIMEOUT_SECONDS = 30.0
 
 
 async def _check_owned_project(db: AsyncIOMotorDatabase, project_id: str, owner_id: str) -> None:
@@ -73,3 +85,58 @@ async def list_required_sources_endpoint(
     """
     await _check_owned_project(db, project_id, owner_id)
     return await list_required_sources_for_project(db, project_id)
+
+
+class ParseRequiredSourcesBulkRequest(BaseModel):
+    """Body for `POST /projects/required-sources/parse-bulk`."""
+
+    text: str
+
+
+class ParsedRequiredSource(BaseModel):
+    """One auto-detected candidate from `parse_required_sources_bulk_endpoint` — not yet
+    persisted as a `RequiredSource` (that needs a `project_id`, which doesn't exist yet during
+    new-project setup)."""
+
+    author: str
+    title: str | None = None
+
+
+@router.post("/required-sources/parse-bulk", response_model=list[ParsedRequiredSource])
+async def parse_required_sources_bulk_endpoint(
+    body: ParseRequiredSourcesBulkRequest,
+    _owner_id: str = Depends(get_current_user_id),
+) -> list[ParsedRequiredSource]:
+    """Auto-detect individual author/work entries out of a block of pasted bibliography text
+    (user request), so a user with many must-cite sources doesn't have to add each one through
+    `create_required_source_endpoint`'s one-at-a-time form.
+
+    Project-independent by design (fixed path, no `{project_id}`): runs during new-project setup,
+    before a project exists to scope a `RequiredSource` to. Requires auth like every other
+    endpoint in this router, but doesn't otherwise touch project ownership. Returns an empty list
+    for blank input. Raises `HTTPException(502)` if the DeepSeek call itself fails, or if its
+    response couldn't be parsed as the expected JSON shape (both genuine infra/model failures,
+    not user error).
+    """
+    text = body.text.strip()
+    if not text:
+        return []
+
+    messages = build_parse_messages(text)
+
+    def _run_parse() -> str:
+        return generate_with_retry_task.delay("fast", messages, max_tokens=PARSE_MAX_TOKENS).get(
+            timeout=_PARSE_TASK_TIMEOUT_SECONDS
+        )
+
+    try:
+        content = await asyncio.to_thread(_run_parse)
+    except LLMRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    try:
+        entries = parse_response(content)
+    except RequiredSourcesParseError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    return [ParsedRequiredSource(**entry) for entry in entries]

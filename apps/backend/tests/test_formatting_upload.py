@@ -81,6 +81,28 @@ def test_upload_invalid_file_returns_4xx_not_500(client: TestClient) -> None:
     assert 400 <= response.status_code < 500
 
 
+def test_upload_reuses_existing_config_for_same_name_case_insensitive(client: TestClient) -> None:
+    first_response = client.post(
+        "/formatting/institution-configs/upload",
+        data={"institution_name": "БГУИЯ"},
+        files={"file": ("sample.docx", _build_valid_docx(), "application/vnd.openxmlformats")},
+    )
+    assert first_response.status_code == 201
+    first_id = first_response.json()["institution_id"]
+
+    second_response = client.post(
+        "/formatting/institution-configs/upload",
+        data={"institution_name": " бгуия "},
+        files={"file": ("sample.docx", _build_valid_docx(), "application/vnd.openxmlformats")},
+    )
+
+    assert second_response.status_code == 201
+    assert second_response.json()["institution_id"] == first_id
+
+    listing = client.get("/formatting/institution-configs").json()
+    assert sum(1 for config in listing if config["institution_name"] == "БГУИЯ") == 1
+
+
 def test_upload_missing_institution_name_returns_4xx(client: TestClient) -> None:
     docx_bytes = _build_valid_docx()
 

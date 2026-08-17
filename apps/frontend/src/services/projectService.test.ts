@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ACCESS_TOKEN_STORAGE_KEY } from '../context/AuthContext'
+import { AUTH_EXPIRED_EVENT } from './authEvents'
 import {
   RequestError,
   acceptDraft,
@@ -254,6 +255,17 @@ describe('projectService', () => {
       status: 409,
     })
     await expect(generateChapterDraft('p1', 'c1', 'Write the intro', 'b1')).rejects.toBeInstanceOf(RequestError)
+  })
+
+  it('dispatches AUTH_EXPIRED_EVENT when a request comes back 401 (stale/expired token)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ detail: 'Invalid or expired token' }, false, 401)))
+    const handler = vi.fn()
+    window.addEventListener(AUTH_EXPIRED_EVENT, handler)
+
+    await expect(listProjects()).rejects.toBeInstanceOf(RequestError)
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    window.removeEventListener(AUTH_EXPIRED_EVENT, handler)
   })
 
   it('acceptDraft posts to /versions/{id}/accept', async () => {

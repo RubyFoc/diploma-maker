@@ -24,6 +24,7 @@ from diploma_backend.formatting.models import Headings, InstitutionConfig
 from diploma_backend.formatting.service import (
     create_institution_config,
     get_institution_config,
+    get_institution_config_by_name,
     list_institution_configs,
 )
 from diploma_backend.formatting.upload import (
@@ -53,12 +54,22 @@ async def upload_institution_config(
 ) -> InstitutionConfig:
     """Save `file` as a raw formatting sample and create an `InstitutionConfig` from it.
 
+    If a config already exists for `institution_name` (case-insensitive), that existing config is
+    returned unchanged instead of inserting a duplicate — every project using this university
+    name then shares one formatting plan rather than each upload attempt diverging on its own.
+    Delete the existing config first (or pick a different name) if you actually want to replace
+    it with a fresh sample.
+
     Parses page/font/citation-style fields via `formatting.upload.parse_formatting_sample`.
     `headings`, `citation_rules`, and `toc_rules` are left at ADR-0005's empty-dict defaults and
     `accuracy_weight` at `0.0` — extracting those is out of scope for this task. Raises
     `HTTPException(422)` if `file` isn't a parseable `.docx` sample (fail-closed: this endpoint
     never guesses page/font values it couldn't read).
     """
+    existing = await get_institution_config_by_name(db, institution_name)
+    if existing is not None:
+        return existing
+
     content = await file.read()
 
     try:
@@ -97,13 +108,23 @@ async def auto_detect_institution_config(
 ) -> InstitutionConfig:
     """Try to auto-discover `request.institution_name`'s formatting requirements from the web.
 
-    Delegates to `formatting.discovery.discover_institution_config`. On a `"found"` result,
-    persists the built `source="auto"` config and returns it with `201`. Raises
+    If a config already exists for `request.institution_name` (case-insensitive), that existing
+    config is returned unchanged and the web search is skipped entirely — repeating auto-detect
+    for the same university (e.g. across several project-setup attempts) reuses one shared
+    formatting plan instead of accumulating duplicate configs that could each discover slightly
+    different values.
+
+    Otherwise delegates to `formatting.discovery.discover_institution_config`. On a `"found"`
+    result, persists the built `source="auto"` config and returns it with `201`. Raises
     `HTTPException(404)` if nothing could be determined (a real, expected outcome — like a
     citation-verification rejection elsewhere in this codebase — not a server error) so the
     frontend can fall back to prompting for a manual upload or the default GOST template.
     Raises `HTTPException(502)` if the search step itself failed (genuine infra failure).
     """
+    existing = await get_institution_config_by_name(db, request.institution_name)
+    if existing is not None:
+        return existing
+
     try:
         result = await discover_institution_config(request.institution_name)
     except FormattingDiscoveryError as exc:

@@ -1,4 +1,5 @@
 import { ACCESS_TOKEN_STORAGE_KEY } from '../context/AuthContext'
+import { notifyAuthExpired } from './authEvents'
 import type { CharRange, Lock } from '../types/project'
 
 /** Same bearer-token pattern as `projectService.ts` — the `/chapters` lock endpoints require auth (TASK-E13-4). */
@@ -14,6 +15,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
+    if (response.status === 401) {
+      notifyAuthExpired()
+    }
     const body = await response.text()
     throw new Error(`Request to ${path} failed with status ${response.status}: ${body}`)
   }
