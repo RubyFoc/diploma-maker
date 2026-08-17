@@ -20,8 +20,7 @@ export const strings = {
   tocUploadLabel: 'Upload table of contents (.docx)',
   tocUploadButton: 'Upload TOC',
   tocUploadButtonPending: 'Uploading...',
-  tocUploadErrorMessage:
-    'Failed to find a chapter list in that file. Each title needs to either use the "Heading 1" style, be a Word-generated table of contents entry, use numbered-list formatting, start with a number (e.g. "1. Introduction"), or end with a page number (e.g. "Introduction .......... 5").',
+  tocUploadErrorMessage: 'That file appears to be empty. Please upload a .docx file listing your chapter titles.',
   chapterDraftUploadLabel: 'Upload your own draft for this chapter (.docx/.pdf)',
   chapterDraftUploadButton: 'Upload draft',
   chapterDraftUploadButtonPending: 'Uploading...',

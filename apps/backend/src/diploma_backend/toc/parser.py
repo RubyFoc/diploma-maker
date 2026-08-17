@@ -2,7 +2,8 @@
 
 Extracts an ordered list of chapter titles from an uploaded `.docx` file. A thesis TOC upload on
 this platform is really "tell me your chapter structure," not necessarily Word's auto-generated
-TOC field, so this module supports five shapes of input, tried in order:
+TOC field, so this module supports six shapes of input, tried in order, each requiring
+progressively less structure in the source file:
 
 1. A sequence of `Heading 1`-styled paragraphs (mirroring how a real thesis document's actual
    chapter headings look) — preferred when present, since it's the least ambiguous signal.
@@ -17,14 +18,19 @@ TOC field, so this module supports five shapes of input, tried in order:
    of the text-based checks above nor the numbered-line regex below can see it. Detected via the
    paragraph's raw `w:numPr`/`w:ilvl` XML instead (level 0 only, i.e. not an indented sub-item).
 4. Plain numbered lines like `"1. Introduction"`, `"2) Literature Review"`, or `"3 Conclusion"`,
-   scanned across all paragraphs when none of the above is found.
-5. Lines with a page-number suffix (a dot-leader or tab before the trailing digits) but no
-   leading chapter number at all — e.g. a thesis's unnumbered front/back matter ("ВВЕДЕНИЕ",
-   "ЗАКЛЮЧЕНИЕ", "СПИСОК ЛИТЕРАТУРЫ") sitting alongside numbered chapters, which (4) alone would
-   silently drop.
+   combined with (5) unnumbered lines that have a page-number suffix instead (a dot-leader or tab
+   before the trailing digits) — e.g. a thesis's unnumbered front/back matter ("ВВЕДЕНИЕ",
+   "ЗАКЛЮЧЕНИЕ", "СПИСОК ЛИТЕРАТУРЫ") sitting alongside numbered chapters, scanned together in
+   one pass so neither shape drops the other.
+6. Absolute last resort: every remaining non-blank line, when a real TOC was typed by hand with
+   no styling, numbering, or page numbers at all — the only signal left at that point is that the
+   caller chose this specific "upload a table of contents" endpoint, which this module trusts
+   (excluding lines recognizable as a subsection or the page's own heading — see
+   `_is_toc_subsection_or_page_title`).
 
-If none of these shapes is found, `parse_toc` raises `TocParseError` rather than guessing a
-chapter list from unrelated prose (fail-closed, matching `formatting.upload`'s philosophy).
+Raises `TocParseError` only if `content` isn't a valid `.docx` file, or the document has no
+non-blank paragraphs at all — tier 6 means an uploaded document essentially always yields
+*something*, by design (see that tier's inline comment in `parse_toc` for the trade-off).
 """
 
 import re
@@ -70,6 +76,38 @@ _PAGE_NUMBER_SUFFIX_RE = re.compile(r"(\t+\d+|[.\s]{2,}\d+)\s*$")
 
 def _has_page_number_suffix(text: str) -> bool:
     return _PAGE_NUMBER_SUFFIX_RE.search(text) is not None
+
+
+# Matches a multi-level dotted subsection number ("1.1 ...", "2.3.1 ...") — always a subsection
+# in this platform's chapter model (`Chapter`/subchapter, ADR-0014), never a top-level chapter,
+# regardless of how the rest of the TOC is (un)structured.
+_DOTTED_SUBSECTION_RE = re.compile(r"^\d+(\.\d+)+[.):]?\s")
+
+# Matches a lettered appendix sub-item ("Приложение А. ...", "Appendix A ...") — a sub-item of
+# the single top-level "ПРИЛОЖЕНИЯ"/"Appendices" entry, not a chapter of its own.
+_APPENDIX_SUBITEM_RE = re.compile(r"^(приложение|appendix)\s+[a-zа-яё0-9]+\b", re.IGNORECASE)
+
+# Matches a per-chapter conclusion line ("Выводы по главе 1") — always a subsection of the
+# chapter it summarizes, never a chapter of its own.
+_CHAPTER_CONCLUSION_RE = re.compile(r"^выводы\s+по\s+глав", re.IGNORECASE)
+
+# A TOC page's own heading ("ОГЛАВЛЕНИЕ"/"СОДЕРЖАНИЕ"/"Table of Contents"/"Contents") — never a
+# chapter title itself, just the label of the page listing them.
+_TOC_PAGE_TITLE_WORDS = frozenset({"оглавление", "содержание", "table of contents", "contents"})
+
+
+def _is_toc_subsection_or_page_title(text: str) -> bool:
+    """`True` if `text` is a recognizable subsection/noise line that should never be treated as
+    a top-level chapter title, even under `parse_toc`'s last-resort "every remaining line is a
+    title" pass (see that pass's docstring for why it exists and why this filter matters)."""
+    stripped = text.strip()
+    if stripped.casefold() in _TOC_PAGE_TITLE_WORDS:
+        return True
+    return bool(
+        _DOTTED_SUBSECTION_RE.match(stripped)
+        or _APPENDIX_SUBITEM_RE.match(stripped)
+        or _CHAPTER_CONCLUSION_RE.match(stripped)
+    )
 
 
 def _clean_toc_entry_title(text: str) -> str:
@@ -131,14 +169,14 @@ def parse_toc(content: bytes) -> list[str]:
     """Parse `content` (raw `.docx` bytes) into an ordered list of chapter titles.
 
     Tried in order (see module docstring): `Heading 1` paragraphs, then Word TOC-field level-1
-    paragraphs, then top-level Word-list-numbered paragraphs, then plain numbered lines (e.g.
-    `"1. Introduction"`), then unnumbered lines with a page-number suffix. The first shape that
+    paragraphs, then top-level Word-list-numbered paragraphs, then plain-numbered/page-numbered
+    lines together, then (last resort) every remaining non-blank line. The first tier that
     yields any entries wins; a trailing dot-leader/tab/page-number artifact (e.g.
     `"Introduction .......... 5"` or `"Introduction\t5"`) is stripped from each entry as a
     best-effort cleanup (see `_TRAILING_PAGE_NUMBER_RE`).
 
-    Raises `TocParseError` if `content` is not a valid `.docx` file, or if none of the five
-    shapes yields a chapter list.
+    Raises `TocParseError` if `content` is not a valid `.docx` file, or if it has no non-blank
+    paragraphs at all.
     """
     try:
         document = Document(BytesIO(content))
@@ -199,11 +237,28 @@ def parse_toc(content: bytes) -> list[str]:
     if entries:
         return entries
 
+    # Absolute last resort: some real thesis TOCs (typed by hand, in "Normal" style throughout,
+    # with no page numbers listed at all) carry no structural signal whatsoever beyond being a
+    # short list of lines — every check above requires *some* marker (a style, a leading number,
+    # a page-number suffix) and finds none. Since the caller specifically chose "upload a table
+    # of contents" (a distinct, single-purpose upload from `parse_document_sections`'s "upload a
+    # whole document", which never reaches this far — it requires `Heading 1` unconditionally),
+    # that choice itself is the signal: trust every remaining non-blank line as a chapter title,
+    # excluding only lines recognizable as a subsection/the page's own heading (see
+    # `_is_toc_subsection_or_page_title`). This does mean a genuinely unrelated document dropped
+    # into this upload gets misread as a one-line-per-chapter TOC rather than rejected — an
+    # acceptable trade-off here specifically, since a wrong result just creates chapters the user
+    # can immediately see and delete (`TASK-E11-3`), rather than silently corrupting anything.
+    plain_entries = [
+        paragraph.text.strip()
+        for paragraph in document.paragraphs
+        if paragraph.text.strip() and not _is_toc_subsection_or_page_title(paragraph.text)
+    ]
+    if plain_entries:
+        return plain_entries
+
     raise TocParseError(
-        "Could not find a chapter list in the .docx document. Each chapter title needs to either "
-        "use the \"Heading 1\" style, be a Word-generated table of contents entry, use numbered-"
-        "list formatting, start with a number (e.g. \"1. Introduction\"), or end with a page "
-        "number (e.g. \"Introduction .......... 5\")."
+        "Could not find any chapter titles in the .docx document — it appears to be empty."
     )
 
 

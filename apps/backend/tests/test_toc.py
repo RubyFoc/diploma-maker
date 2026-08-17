@@ -140,12 +140,50 @@ def test_parse_toc_invalid_file_raises() -> None:
         pass
 
 
-def test_parse_toc_no_headings_or_numbered_lines_raises() -> None:
+def test_parse_toc_falls_back_to_every_line_when_nothing_else_matches() -> None:
+    """Tier 6 (last resort, see module docstring): a document with no `Heading 1`/TOC-field/
+    list-numbering/numbered-line/page-number-suffix signal at all still yields a chapter per
+    non-blank line, trusting the caller's choice of "upload a table of contents" over raising."""
+    titles = parse_toc(_build_empty_docx())
+
+    assert titles == ["Just some unrelated prose.", "Nothing here looks like a TOC entry at all."]
+
+
+def test_parse_toc_raises_for_a_document_with_no_non_blank_paragraphs() -> None:
+    document = Document()
+    document.add_paragraph("")
+    document.add_paragraph("   ")
+
     try:
-        parse_toc(_build_empty_docx())
+        parse_toc(_docx_bytes(document))
         raise AssertionError("expected TocParseError")
     except TocParseError:
         pass
+
+
+def test_parse_toc_excludes_subsections_appendix_subitems_and_toc_page_title() -> None:
+    document = Document()
+    document.add_paragraph("ОГЛАВЛЕНИЕ")
+    document.add_paragraph("ВВЕДЕНИЕ")
+    document.add_paragraph("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ")
+    document.add_paragraph("1.1 Подраздел первый")
+    document.add_paragraph("1.2 Подраздел второй")
+    document.add_paragraph("Выводы по главе 1")
+    document.add_paragraph("ЗАКЛЮЧЕНИЕ")
+    document.add_paragraph("СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ")
+    document.add_paragraph("ПРИЛОЖЕНИЯ")
+    document.add_paragraph("Приложение А. Первое приложение")
+    document.add_paragraph("Приложение Б. Второе приложение")
+
+    titles = parse_toc(_docx_bytes(document))
+
+    assert titles == [
+        "ВВЕДЕНИЕ",
+        "ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ",
+        "ЗАКЛЮЧЕНИЕ",
+        "СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ",
+        "ПРИЛОЖЕНИЯ",
+    ]
 
 
 def test_parse_toc_uses_word_toc_field_level_1_entries() -> None:
