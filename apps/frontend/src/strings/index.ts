@@ -4,6 +4,7 @@ export const strings = {
   appTitle: 'diploma-maker',
   logoutButton: 'Log out',
   chatPanelTitle: 'AI Chat',
+  chatTargetLabel: 'Write into',
   chatEmpty: 'No messages yet.',
   documentPanelTitle: 'Document',
   documentEmpty: 'No chapters yet. Start a new project to begin.',

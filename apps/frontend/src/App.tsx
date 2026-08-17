@@ -30,11 +30,59 @@ import type { Chapter } from './context/DocumentContext'
 import type { InstitutionConfig } from './types/institution'
 import type { ChapterDetail, ChapterVersion } from './types/project'
 
+interface ChapterTarget {
+  id: string
+  label: string
+}
+
+/**
+ * Flattens `chapters` (top-level only) plus each one's subchapters into a single pickable list
+ * for `ChatPanel`'s target selector, so a chat instruction can be aimed at a subchapter — not
+ * stored in `DocumentContext` at all (see `SubchaptersList`) — the same way it can a top-level
+ * chapter. Refetches whenever the top-level chapter set changes; does not react to
+ * `subchaptersRefreshToken` since a newly-generated draft doesn't add/remove any subchapters,
+ * only fills one in.
+ */
+function useChapterTargets(projectId: string | null, chapters: Chapter[]): ChapterTarget[] {
+  const [targets, setTargets] = useState<ChapterTarget[]>([])
+  const chapterIdsKey = chapters.map((chapter) => chapter.id).join(',')
+
+  useEffect(() => {
+    if (projectId === null || chapters.length === 0) {
+      setTargets([])
+      return
+    }
+    let cancelled = false
+    Promise.all(
+      chapters.map((chapter) => listSubchapters(projectId, chapter.id).catch(() => [] as ChapterDetail[])),
+    ).then((subchaptersByChapter) => {
+      if (cancelled) {
+        return
+      }
+      const flat: ChapterTarget[] = []
+      chapters.forEach((chapter, index) => {
+        flat.push({ id: chapter.id, label: chapter.title })
+        for (const subchapter of subchaptersByChapter[index]) {
+          flat.push({ id: subchapter.id, label: `— ${subchapter.title}` })
+        }
+      })
+      setTargets(flat)
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, chapterIdsKey])
+
+  return targets
+}
+
 function ChatPanel() {
   const { chat, appendMessage } = useChat()
   const { document: doc, setDocument } = useDocument()
   const [inputValue, setInputValue] = useState('')
   const [isSending, setIsSending] = useState(false)
+  const targets = useChapterTargets(doc.projectId, doc.chapters)
 
   const setChapterStreamingContent = (chapterId: string, streamingContent: string | null) => {
     setDocument((previous) => ({
@@ -54,8 +102,16 @@ function ChatPanel() {
     }))
   }
 
-  const anchorChapter = doc.chapters[0]
-  const selectedAnchorBlockId = anchorChapter?.selectedAnchorBlockId ?? null
+  // The target may be a subchapter (not in `doc.chapters` at all — see `SubchaptersList`), in
+  // which case anchor-mode "insert here" selection doesn't apply (subchapters carry no
+  // `selectedAnchorBlockId` of their own) and streaming/pending-draft updates below go through
+  // `subchaptersRefreshToken` instead of `doc.chapters`.
+  const targetTopLevelChapter = doc.chapters.find((chapter) => chapter.id === doc.selectedChatTargetId) ?? null
+  const selectedAnchorBlockId = targetTopLevelChapter?.selectedAnchorBlockId ?? null
+
+  const bumpSubchaptersRefreshToken = () => {
+    setDocument((previous) => ({ ...previous, subchaptersRefreshToken: previous.subchaptersRefreshToken + 1 }))
+  }
 
   const handleSend = async () => {
     const text = inputValue.trim()
@@ -69,10 +125,13 @@ function ChatPanel() {
     appendMessage({ id: crypto.randomUUID(), role: 'user', text })
 
     try {
-      let chapter = doc.chapters[0]
-      if (!chapter) {
+      let chapterId = doc.selectedChatTargetId
+      let isTopLevel = doc.chapters.some((chapter) => chapter.id === chapterId)
+      if (chapterId === null) {
+        // Bootstrap: no chapter exists/is selected yet — create the first default chapter, same
+        // as this app's original single-chapter behavior.
         const created = await createChapter(projectId, strings.defaultChapterTitle)
-        chapter = {
+        const newChapter: Chapter = {
           id: created.id,
           title: created.title,
           content: created.accepted_content ?? '',
@@ -82,15 +141,20 @@ function ChatPanel() {
           selectedAnchorBlockId: null,
           pendingDraftReroute: null,
         }
-        setDocument((previous) => ({ ...previous, chapters: [...previous.chapters, chapter] }))
+        setDocument((previous) => ({
+          ...previous,
+          chapters: [...previous.chapters, newChapter],
+          selectedChatTargetId: newChapter.id,
+        }))
+        chapterId = newChapter.id
+        isTopLevel = true
       }
 
-      const chapterId = chapter.id
       // "Insert at anchor" mode (TASK-E15-1/3): a block was selected via the "insert here"
       // toggle in DocumentPreview. Clear the selection now — before generation starts, per this
       // task's spec — rather than only on accept/reject, so a stale selection can't silently
-      // reapply to an unrelated follow-up instruction.
-      const anchorBlockId = chapter.selectedAnchorBlockId
+      // reapply to an unrelated follow-up instruction. Only ever set for the top-level target.
+      const anchorBlockId = isTopLevel ? (doc.chapters.find((c) => c.id === chapterId)?.selectedAnchorBlockId ?? null) : null
       if (anchorBlockId !== null) {
         clearChapterAnchor(chapterId)
       }
@@ -134,23 +198,34 @@ function ChatPanel() {
       }
 
       let streamedText = ''
-      setChapterStreamingContent(chapterId, '')
+      if (isTopLevel) {
+        setChapterStreamingContent(chapterId, '')
+      }
 
       await new Promise<void>((resolve) => {
         const cleanup = streamChapterDraft(projectId, chapterId, text, {
           onToken: (chunk) => {
             streamedText += chunk
-            setChapterStreamingContent(chapterId, streamedText)
+            if (isTopLevel) {
+              setChapterStreamingContent(chapterId, streamedText)
+            }
           },
           onDone: ({ version: draft, precheck }) => {
-            setDocument((previous) => ({
-              ...previous,
-              chapters: previous.chapters.map((existing) =>
-                existing.id === chapterId
-                  ? { ...existing, pendingDraft: draft, pendingDraftReroute: null, streamingContent: null }
-                  : existing,
-              ),
-            }))
+            if (isTopLevel) {
+              setDocument((previous) => ({
+                ...previous,
+                chapters: previous.chapters.map((existing) =>
+                  existing.id === chapterId
+                    ? { ...existing, pendingDraft: draft, pendingDraftReroute: null, streamingContent: null }
+                    : existing,
+                ),
+              }))
+            } else {
+              // The target was a subchapter: its pending draft already landed on the backend,
+              // but subchapters live in `SubchaptersList`'s own fetched state, not here — bump
+              // the shared refresh token so it refetches and picks the new draft up.
+              bumpSubchaptersRefreshToken()
+            }
             appendMessage({
               id: crypto.randomUUID(),
               role: 'assistant',
@@ -169,7 +244,9 @@ function ChatPanel() {
             resolve()
           },
           onError: () => {
-            setChapterStreamingContent(chapterId, null)
+            if (isTopLevel) {
+              setChapterStreamingContent(chapterId, null)
+            }
             appendMessage({ id: crypto.randomUUID(), role: 'assistant', text: strings.chatGenerationErrorMessage })
             cleanup()
             resolve()
@@ -186,6 +263,23 @@ function ChatPanel() {
   return (
     <section className="panel chat-panel" aria-label={strings.chatPanelTitle}>
       <h2>{strings.chatPanelTitle}</h2>
+      {targets.length > 0 && (
+        <label className="chat-target-select">
+          {strings.chatTargetLabel}
+          <select
+            value={doc.selectedChatTargetId ?? ''}
+            onChange={(event) =>
+              setDocument((previous) => ({ ...previous, selectedChatTargetId: event.target.value || null }))
+            }
+          >
+            {targets.map((target) => (
+              <option key={target.id} value={target.id}>
+                {target.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <div className="chat-messages">
         {chat.messages.length === 0 ? (
           <p className="chat-empty">{strings.chatEmpty}</p>
@@ -198,10 +292,10 @@ function ChatPanel() {
           ))
         )}
       </div>
-      {selectedAnchorBlockId !== null && anchorChapter && (
+      {selectedAnchorBlockId !== null && targetTopLevelChapter && (
         <div className="chat-anchor-indicator">
           <span>{strings.chatInsertingAtIndicator}</span>
-          <button type="button" onClick={() => clearChapterAnchor(anchorChapter.id)}>
+          <button type="button" onClick={() => clearChapterAnchor(targetTopLevelChapter.id)}>
             {strings.chatCancelInsertionPointButton}
           </button>
         </div>
@@ -515,11 +609,16 @@ function SubchaptersList({
   parentChapterId,
   institutionId,
   institutionConfig,
+  refreshToken,
 }: {
   projectId: string
   parentChapterId: string
   institutionId: string | null
   institutionConfig: InstitutionConfig | null
+  /** Bumped by `ChatPanel` after a chat generation targets a subchapter (see
+   * `DocumentContext.subchaptersRefreshToken`'s doc comment), forcing a refetch to pick up the
+   * new pending draft — this component's own state is otherwise the only copy of it. */
+  refreshToken: number
 }) {
   const [subchapters, setSubchapters] = useState<ChapterDetail[]>([])
 
@@ -539,7 +638,7 @@ function SubchaptersList({
     return () => {
       cancelled = true
     }
-  }, [projectId, parentChapterId])
+  }, [projectId, parentChapterId, refreshToken])
 
   if (subchapters.length === 0) {
     return null
@@ -623,12 +722,13 @@ function DocumentPanel() {
         <p className="document-empty">{strings.documentEmpty}</p>
       ) : (
         <ul className="chapter-list">
-          {doc.chapters.map((chapter, index) => {
+          {doc.chapters.map((chapter) => {
             const { pendingDraft, streamingContent } = chapter
-            // ChatPanel.handleSend only ever generates into doc.chapters[0] (there is no
-            // chapter-picker concept yet), so the "insert here" toggle must only be offered
-            // there too — otherwise a selection on any other chapter would be inert.
-            const isChatTargetChapter = index === 0
+            // ChatPanel.handleSend generates into whichever chapter `doc.selectedChatTargetId`
+            // names (user-picked via its target selector), so the "insert here" toggle must
+            // only be offered there too — otherwise a selection on any other chapter would be
+            // inert. Subchapters never get this toggle at all (see `SubchapterItem`).
+            const isChatTargetChapter = chapter.id === doc.selectedChatTargetId
             return (
               <li key={chapter.id} className="chapter-item">
                 <h3>{chapter.title}</h3>
@@ -670,6 +770,7 @@ function DocumentPanel() {
                     parentChapterId={chapter.id}
                     institutionId={doc.institutionId}
                     institutionConfig={institutionConfig}
+                    refreshToken={doc.subchaptersRefreshToken}
                   />
                 )}
               </li>

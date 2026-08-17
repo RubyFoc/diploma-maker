@@ -24,5 +24,9 @@ export function toDocumentState(project: ProjectDetail): DocumentState {
     // Always starts empty: pending required sources (TASK-E14-4) are creation-flow-scoped and
     // either already flushed by `useNewProject` or belong to a project this fetch didn't create.
     pendingRequiredSources: [],
+    // Defaults chat generation to the first top-level chapter, matching this app's previous
+    // hardcoded "always chapters[0]" behavior — `ChatPanel` lets the user redirect it from here.
+    selectedChatTargetId: project.chapters[0]?.id ?? null,
+    subchaptersRefreshToken: 0,
   }
 }

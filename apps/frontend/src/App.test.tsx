@@ -355,6 +355,49 @@ describe('App', () => {
     expect(await screen.findByText(strings.documentUploadErrorMessage)).toBeInTheDocument()
   })
 
+  it('sends chat generation to the chapter picked in the target selector, not always the first one', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const chapterBase = {
+      project_id: 'p1',
+      parent_chapter_id: null,
+      order: 0,
+      created_at: 'now',
+      accepted_content: null,
+      accepted_manifest: null,
+      pending_draft: null,
+    }
+    const projectWithChapters = {
+      ...project,
+      chapters: [
+        { ...chapterBase, id: 'c1', title: 'ВВЕДЕНИЕ' },
+        { ...chapterBase, id: 'c2', title: 'Имена собственные и коммерческие наименования как объект перевода', order: 1 },
+      ],
+    }
+    const fetchMock = createFetchMock([jsonResponse(project, true, 201), jsonResponse(projectWithChapters, true, 201)])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
+
+    const file = new File(['thesis'], 'thesis.docx')
+    fireEvent.change(screen.getByLabelText(strings.documentUploadLabel), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: strings.documentUploadButton }))
+    await findVisibleByText('ВВЕДЕНИЕ')
+
+    // Default target is the first chapter ("ВВЕДЕНИЕ") — redirect it to the second one instead.
+    const select = await screen.findByLabelText(strings.chatTargetLabel)
+    fireEvent.change(select, { target: { value: 'c2' } })
+
+    const input = screen.getByPlaceholderText(strings.chatInputPlaceholder)
+    fireEvent.change(input, {
+      target: { value: 'Напиши подглаву "Имена собственные и коммерческие наименования как объект перевода"' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+
+    const source = await waitFor(() => latestEventSource())
+    expect(source.url).toContain('/projects/p1/chapters/c2/generate/stream')
+    expect(source.url).not.toContain('/chapters/c1/generate/stream')
+  })
+
   it('renders a chapter\'s subchapters with their own content and lets the user accept a pending one', async () => {
     const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
     const projectWithChapter = {
@@ -744,7 +787,7 @@ describe('App', () => {
     expect(screen.queryByText(strings.chatInsertingAtIndicator)).not.toBeInTheDocument()
   })
 
-  it('only offers the "insert here" toggle on the first chapter, since chat generation always targets chapters[0]', async () => {
+  it('only offers the "insert here" toggle on the current chat target chapter (defaults to the first one)', async () => {
     const firstChapter = {
       id: 'c1',
       project_id: 'p1',

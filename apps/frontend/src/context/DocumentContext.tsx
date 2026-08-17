@@ -35,6 +35,19 @@ export interface DocumentState {
    * before that project exists to attach them to. `useNewProject` submits these against the
    * newly created project and clears the list (via `toDocumentState`'s default) once flushed. */
   pendingRequiredSources: PendingRequiredSource[]
+  /** Which chapter or subchapter the next chat instruction generates into (user request: chat
+   * generation used to always target `chapters[0]` unconditionally, regardless of which chapter
+   * the instruction was actually about, silently writing drafts into the wrong chapter once a
+   * project grew past one chapter). `null` before any chapter exists yet, or once one is picked
+   * initializes to the first top-level chapter — see `App.tsx`'s `ChatPanel`. Can be a
+   * subchapter's id, not just a top-level chapter's, since a subchapter is just a `chapter_id`
+   * to the generation endpoints. */
+  selectedChatTargetId: string | null
+  /** Bumped whenever a chat generation targets a subchapter (`selectedChatTargetId` not among
+   * `chapters`), so `App.tsx`'s `SubchaptersList` (which owns its own fetched subchapter state,
+   * not part of this context) knows to refetch and pick up the new pending draft — there's no
+   * other path for that update to reach it, since subchapters aren't stored here. */
+  subchaptersRefreshToken: number
 }
 
 export const emptyDocumentState: DocumentState = {
@@ -43,6 +56,8 @@ export const emptyDocumentState: DocumentState = {
   title: '',
   chapters: [],
   pendingRequiredSources: [],
+  selectedChatTargetId: null,
+  subchaptersRefreshToken: 0,
 }
 
 interface DocumentContextValue {
