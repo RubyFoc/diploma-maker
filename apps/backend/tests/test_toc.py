@@ -88,6 +88,20 @@ def _build_list_numbered_docx() -> bytes:
     return _docx_bytes(document)
 
 
+def _build_mixed_numbered_and_unnumbered_docx() -> bytes:
+    """Mimics a real Russian thesis TOC: numbered chapters plus conventionally-unnumbered
+    front/back matter (introduction/conclusion/references), each with a dot-leader or
+    tab-separated page number but no leading digit on the unnumbered entries."""
+    document = Document()
+    document.add_paragraph("ВВЕДЕНИЕ .......... 3")
+    document.add_paragraph("1 Теоретические основы .......... 5")
+    document.add_paragraph("2 Практическая часть .......... 15")
+    document.add_paragraph("ЗАКЛЮЧЕНИЕ .......... 25")
+    section = document.add_paragraph("СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ")
+    section.add_run("\t27")
+    return _docx_bytes(document)
+
+
 def test_parse_toc_uses_heading_1_paragraphs() -> None:
     titles = parse_toc(_build_heading_docx())
 
@@ -104,6 +118,18 @@ def test_parse_toc_strips_trailing_page_numbers() -> None:
     titles = parse_toc(_build_numbered_with_page_numbers_docx())
 
     assert titles == ["Introduction", "Literature Review"]
+
+
+def test_parse_toc_includes_unnumbered_entries_alongside_numbered_ones() -> None:
+    titles = parse_toc(_build_mixed_numbered_and_unnumbered_docx())
+
+    assert titles == [
+        "ВВЕДЕНИЕ",
+        "Теоретические основы",
+        "Практическая часть",
+        "ЗАКЛЮЧЕНИЕ",
+        "СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ",
+    ]
 
 
 def test_parse_toc_invalid_file_raises() -> None:

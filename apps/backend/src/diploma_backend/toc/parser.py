@@ -2,7 +2,7 @@
 
 Extracts an ordered list of chapter titles from an uploaded `.docx` file. A thesis TOC upload on
 this platform is really "tell me your chapter structure," not necessarily Word's auto-generated
-TOC field, so this module supports four shapes of input, tried in order:
+TOC field, so this module supports five shapes of input, tried in order:
 
 1. A sequence of `Heading 1`-styled paragraphs (mirroring how a real thesis document's actual
    chapter headings look) — preferred when present, since it's the least ambiguous signal.
@@ -18,6 +18,10 @@ TOC field, so this module supports four shapes of input, tried in order:
    paragraph's raw `w:numPr`/`w:ilvl` XML instead (level 0 only, i.e. not an indented sub-item).
 4. Plain numbered lines like `"1. Introduction"`, `"2) Literature Review"`, or `"3 Conclusion"`,
    scanned across all paragraphs when none of the above is found.
+5. Lines with a page-number suffix (a dot-leader or tab before the trailing digits) but no
+   leading chapter number at all — e.g. a thesis's unnumbered front/back matter ("ВВЕДЕНИЕ",
+   "ЗАКЛЮЧЕНИЕ", "СПИСОК ЛИТЕРАТУРЫ") sitting alongside numbered chapters, which (4) alone would
+   silently drop.
 
 If none of these shapes is found, `parse_toc` raises `TocParseError` rather than guessing a
 chapter list from unrelated prose (fail-closed, matching `formatting.upload`'s philosophy).
@@ -53,6 +57,19 @@ _HEADING_1_STYLE = "Heading 1"
 # is matched, mirroring `_HEADING_1_STYLE`'s "top-level chapters only" scope: level 2+ entries
 # (`"TOC 2"`, ...) are a document's subsections, not its chapters.
 _TOC_FIELD_LEVEL_1_STYLE_RE = re.compile(r"^toc\s*1$", re.IGNORECASE)
+
+# Detects a page-number suffix on its own, independent of a leading chapter number — a thesis's
+# front/back matter entries (e.g. Russian "ВВЕДЕНИЕ"/"ЗАКЛЮЧЕНИЕ"/"СПИСОК ЛИТЕРАТУРЫ") are
+# conventionally unnumbered even when the numbered chapters between them (e.g. "1 ...", "2 ...")
+# are, so `_NUMBERED_ENTRY_RE` alone would silently drop them. Requires either a real tab
+# character or a 2+-character dot-leader run before the trailing digits — deliberately stricter
+# than `_TRAILING_PAGE_NUMBER_RE`'s cleanup regex, so a single space before an incidental trailing
+# number in unrelated prose (e.g. "...took only 5") doesn't get mistaken for a TOC line.
+_PAGE_NUMBER_SUFFIX_RE = re.compile(r"(\t+\d+|[.\s]{2,}\d+)\s*$")
+
+
+def _has_page_number_suffix(text: str) -> bool:
+    return _PAGE_NUMBER_SUFFIX_RE.search(text) is not None
 
 
 def _clean_toc_entry_title(text: str) -> str:
@@ -115,12 +132,12 @@ def parse_toc(content: bytes) -> list[str]:
 
     Tried in order (see module docstring): `Heading 1` paragraphs, then Word TOC-field level-1
     paragraphs, then top-level Word-list-numbered paragraphs, then plain numbered lines (e.g.
-    `"1. Introduction"`) scanned across all paragraphs. The first shape that yields any entries
-    wins; a trailing dot-leader/tab/page-number artifact (e.g. `"Introduction .......... 5"` or
-    `"Introduction\t5"`) is stripped from each entry as a best-effort cleanup (see
-    `_TRAILING_PAGE_NUMBER_RE`).
+    `"1. Introduction"`), then unnumbered lines with a page-number suffix. The first shape that
+    yields any entries wins; a trailing dot-leader/tab/page-number artifact (e.g.
+    `"Introduction .......... 5"` or `"Introduction\t5"`) is stripped from each entry as a
+    best-effort cleanup (see `_TRAILING_PAGE_NUMBER_RE`).
 
-    Raises `TocParseError` if `content` is not a valid `.docx` file, or if none of the four
+    Raises `TocParseError` if `content` is not a valid `.docx` file, or if none of the five
     shapes yields a chapter list.
     """
     try:
@@ -155,20 +172,38 @@ def parse_toc(content: bytes) -> list[str]:
     if list_numbered_entries:
         return list_numbered_entries
 
-    titles = []
+    # Plain numbered lines (e.g. "1. Introduction") and unnumbered-but-page-numbered lines (e.g.
+    # "ВВЕДЕНИЕ .......... 3") are scanned together, in one pass over document order, rather than
+    # as two separate "first non-empty list wins" fallbacks: a real thesis TOC commonly mixes
+    # both in the same document (numbered chapters alongside conventionally-unnumbered
+    # introduction/conclusion/references entries), and if the numbered-only scan ran first and
+    # found even one match, a strictly-sequential fallback would return early with just that
+    # partial list, silently dropping every unnumbered entry instead of ever trying the
+    # page-number-suffix check at all.
+    entries = []
     for paragraph in document.paragraphs:
-        match = _NUMBERED_ENTRY_RE.match(paragraph.text.strip())
-        if match is None:
+        text = paragraph.text.strip()
+        match = _NUMBERED_ENTRY_RE.match(text)
+        if match is not None:
+            title = _clean_toc_entry_title(match.group(1))
+        elif _has_page_number_suffix(paragraph.text):
+            # Requires the page-number-suffix signal specifically (see
+            # `_PAGE_NUMBER_SUFFIX_RE`'s docstring) rather than treating every non-blank
+            # paragraph as a title, so unrelated prose with no such structure still correctly
+            # falls through to `TocParseError` below instead of being guessed at.
+            title = _clean_toc_entry_title(paragraph.text)
+        else:
             continue
-        title = _clean_toc_entry_title(match.group(1))
         if title:
-            titles.append(title)
-    if titles:
-        return titles
+            entries.append(title)
+    if entries:
+        return entries
 
     raise TocParseError(
-        "Could not find any Heading 1 paragraphs, Word TOC-field entries, list-numbered "
-        "paragraphs, or numbered TOC entries in the .docx document"
+        "Could not find a chapter list in the .docx document. Each chapter title needs to either "
+        "use the \"Heading 1\" style, be a Word-generated table of contents entry, use numbered-"
+        "list formatting, start with a number (e.g. \"1. Introduction\"), or end with a page "
+        "number (e.g. \"Introduction .......... 5\")."
     )
 
 
