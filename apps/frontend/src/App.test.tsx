@@ -111,6 +111,12 @@ function createFetchMock(queued: Response[] = []) {
     if (/\/chapters\/.+\/operations$/.test(String(url)) && (!init?.method || init.method === 'GET')) {
       return Promise.resolve(jsonResponse({ operations: [], applied_count: 0, total_operations: 0 }))
     }
+    // `SubchaptersList` fetches `/projects/{id}/chapters/{id}/subchapters` for every rendered
+    // chapter — respond with an empty list rather than consuming a queue slot, same reasoning as
+    // institution-configs/projects/locks/operations above.
+    if (/\/chapters\/.+\/subchapters$/.test(String(url)) && (!init?.method || init.method === 'GET')) {
+      return Promise.resolve(jsonResponse([]))
+    }
     const next = queue.shift()
     return Promise.resolve(next ?? jsonResponse({ detail: 'unexpected request' }, false, 500))
   })
@@ -347,6 +353,99 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: strings.documentUploadButton }))
 
     expect(await screen.findByText(strings.documentUploadErrorMessage)).toBeInTheDocument()
+  })
+
+  it('renders a chapter\'s subchapters with their own content and lets the user accept a pending one', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const projectWithChapter = {
+      ...project,
+      chapters: [
+        {
+          id: 'c1',
+          project_id: 'p1',
+          parent_chapter_id: null,
+          title: 'Chapter 1',
+          order: 0,
+          created_at: 'now',
+          accepted_content: null,
+          accepted_manifest: null,
+          pending_draft: null,
+        },
+      ],
+    }
+    const subchapter = {
+      id: 'sub1',
+      project_id: 'p1',
+      parent_chapter_id: 'c1',
+      title: 'Subsection 1.1',
+      order: 0,
+      created_at: 'now',
+      accepted_content: null,
+      accepted_manifest: null,
+      pending_draft: {
+        id: 'v-sub1',
+        chapter_id: 'sub1',
+        version_number: 0,
+        content: 'Subsection body text.',
+        manifest: null,
+        created_at: 'now',
+        status: 'draft',
+        parent_version_id: null,
+      },
+    }
+    const acceptedSubVersion = {
+      id: 'v-sub1',
+      chapter_id: 'sub1',
+      version_number: 0,
+      content: 'Subsection body text.',
+      manifest: null,
+      created_at: 'now',
+      status: 'accepted',
+      parent_version_id: null,
+    }
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/formatting/institution-configs')) {
+        return Promise.resolve(jsonResponse([institution]))
+      }
+      if (String(url).endsWith('/projects') && (!init?.method || init.method === 'GET')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      if (/\/chapters\/c1\/subchapters$/.test(String(url))) {
+        return Promise.resolve(jsonResponse([subchapter]))
+      }
+      if (/\/chapters\/.+\/locks$/.test(String(url))) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      if (String(url).endsWith('/versions/v-sub1/accept')) {
+        return Promise.resolve(jsonResponse(acceptedSubVersion))
+      }
+      if (String(url).endsWith('/projects/p1/document/upload')) {
+        return Promise.resolve(jsonResponse(projectWithChapter, true, 201))
+      }
+      if (String(url).endsWith('/projects') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse(project, true, 201))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'unexpected request' }, false, 500))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
+
+    const file = new File(['thesis'], 'thesis.docx')
+    fireEvent.change(screen.getByLabelText(strings.documentUploadLabel), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: strings.documentUploadButton }))
+
+    await findVisibleByText('Subsection 1.1')
+    expect(await findVisibleByText('Subsection body text.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: strings.diffAcceptButton }))
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:8010/versions/v-sub1/accept',
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
   })
 
   it('sends a chat message, creates a default chapter, and shows the generated draft in the diff viewer', async () => {

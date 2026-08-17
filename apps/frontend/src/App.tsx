@@ -19,6 +19,7 @@ import {
   createChapter,
   generateChapterDraft,
   getProject,
+  listSubchapters,
   uploadChapterDraft,
   uploadDocument,
   uploadToc,
@@ -27,7 +28,7 @@ import { streamChapterDraft } from './services/generateStream'
 import { toDocumentState } from './utils/mapProject'
 import type { Chapter } from './context/DocumentContext'
 import type { InstitutionConfig } from './types/institution'
-import type { ChapterVersion } from './types/project'
+import type { ChapterDetail, ChapterVersion } from './types/project'
 
 function ChatPanel() {
   const { chat, appendMessage } = useChat()
@@ -442,6 +443,122 @@ function ChapterDraftUploadForm({
   )
 }
 
+/**
+ * Renders one subchapter (title, content/diff, draft upload) inline under its parent chapter in
+ * `DocumentPanel` (user request: subchapters created via TOC/whole-document upload, TASK-E12-1/
+ * E12-2, had no UI showing them anywhere — `ChapterTree` exists but was never wired into the
+ * workspace). Keeps its own local state rather than folding into `DocumentContext.chapters`
+ * (which only ever held top-level chapters) — simplest way to make subchapters reviewable
+ * without restructuring that top-level-only state shape.
+ */
+function SubchapterItem({
+  subchapter,
+  institutionId,
+  institutionConfig,
+}: {
+  subchapter: ChapterDetail
+  institutionId: string | null
+  institutionConfig: InstitutionConfig | null
+}) {
+  const [content, setContent] = useState(subchapter.accepted_content ?? '')
+  const [acceptedManifest, setAcceptedManifest] = useState(subchapter.accepted_manifest)
+  const [pendingDraft, setPendingDraft] = useState<ChapterVersion | null>(subchapter.pending_draft)
+
+  const handleAccept = async () => {
+    if (!pendingDraft) {
+      return
+    }
+    const accepted = await acceptDraft(pendingDraft.id)
+    if (institutionId !== null) {
+      void recordSignal(institutionId, subchapter.id, accepted.id, 'approve').catch(() => {})
+    }
+    setContent(accepted.content)
+    setAcceptedManifest(accepted.manifest)
+    setPendingDraft(null)
+  }
+
+  const handleReject = () => {
+    if (pendingDraft && institutionId !== null) {
+      void recordSignal(institutionId, subchapter.id, pendingDraft.id, 'reject').catch(() => {})
+    }
+    setPendingDraft(null)
+  }
+
+  return (
+    <li className="subchapter-item">
+      <h4>{subchapter.title}</h4>
+      <DocumentPreview
+        content={content}
+        institutionConfig={institutionConfig}
+        chapterId={subchapter.id}
+        acceptedManifest={acceptedManifest}
+      />
+      {pendingDraft ? (
+        <DiffViewer
+          before={content}
+          after={pendingDraft.content}
+          onAccept={() => void handleAccept()}
+          onReject={handleReject}
+          institutionConfig={institutionConfig}
+          manifest={pendingDraft.manifest}
+        />
+      ) : (
+        <ChapterDraftUploadForm chapterId={subchapter.id} onUploaded={setPendingDraft} />
+      )}
+    </li>
+  )
+}
+
+/** Fetches and renders `parentChapterId`'s subchapters (TASK-E12-2), or nothing if it has none. */
+function SubchaptersList({
+  projectId,
+  parentChapterId,
+  institutionId,
+  institutionConfig,
+}: {
+  projectId: string
+  parentChapterId: string
+  institutionId: string | null
+  institutionConfig: InstitutionConfig | null
+}) {
+  const [subchapters, setSubchapters] = useState<ChapterDetail[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    listSubchapters(projectId, parentChapterId)
+      .then((result) => {
+        if (!cancelled) {
+          setSubchapters(result)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSubchapters([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, parentChapterId])
+
+  if (subchapters.length === 0) {
+    return null
+  }
+
+  return (
+    <ul className="subchapter-list">
+      {subchapters.map((subchapter) => (
+        <SubchapterItem
+          key={subchapter.id}
+          subchapter={subchapter}
+          institutionId={institutionId}
+          institutionConfig={institutionConfig}
+        />
+      ))}
+    </ul>
+  )
+}
+
 function DocumentPanel() {
   const { document: doc, setDocument } = useDocument()
   const { config: institutionConfig } = useInstitutionConfig(doc.institutionId)
@@ -545,6 +662,14 @@ function DocumentPanel() {
                   <ChapterDraftUploadForm
                     chapterId={chapter.id}
                     onUploaded={(version) => handleDraftUpdated(chapter.id, version)}
+                  />
+                )}
+                {doc.projectId && (
+                  <SubchaptersList
+                    projectId={doc.projectId}
+                    parentChapterId={chapter.id}
+                    institutionId={doc.institutionId}
+                    institutionConfig={institutionConfig}
                   />
                 )}
               </li>
