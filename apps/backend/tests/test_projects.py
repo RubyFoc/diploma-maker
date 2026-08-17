@@ -529,6 +529,49 @@ def test_generate_draft_humanize_llm_failure_falls_back_to_raw_content(client: T
 
 
 @respx.mock
+def test_generate_draft_humanize_timeout_falls_back_to_raw_content(
+    client: TestClient, monkeypatch
+) -> None:
+    """A `celery.exceptions.TimeoutError` from `_run_humanize`'s `.get(timeout=...)` — this
+    handler's own wait giving up, not a failure of the humanize call itself, e.g. because the
+    task is still legitimately running past `_HUMANIZE_TASK_TIMEOUT_SECONDS` (observed in
+    production: 90-100s for a single `generate_with_retry` attempt) — must fail open to the raw,
+    pre-humanization draft content the same way `LLMRequestError`/`HumanizationError` do, not
+    crash the request (this was previously uncaught and propagated as an unhandled exception)."""
+    from celery.exceptions import TimeoutError as CeleryTimeoutError
+
+    import diploma_backend.projects.router as router_module
+
+    _mock_empty_rag_search()
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=_success_response("Draft chapter body.")
+    )
+
+    class _SlowAsyncResult:
+        def get(self, timeout=None):
+            raise CeleryTimeoutError("The operation timed out.")
+
+    monkeypatch.setattr(
+        router_module.humanize_text_task, "delay", lambda *args, **kwargs: _SlowAsyncResult()
+    )
+
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write something."},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["version"]["content"] == "Draft chapter body."
+
+
+@respx.mock
 def test_generate_draft_precheck_failure_falls_back_to_all_clear_result(
     client: TestClient, monkeypatch
 ) -> None:

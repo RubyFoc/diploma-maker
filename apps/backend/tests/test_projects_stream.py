@@ -318,6 +318,49 @@ def test_generate_stream_humanize_llm_failure_falls_back_to_raw_content(
 
 
 @respx.mock
+def test_generate_stream_humanize_timeout_falls_back_to_raw_content(
+    client: TestClient, monkeypatch
+) -> None:
+    """Mirrors `test_projects.py`'s `test_generate_draft_humanize_timeout_falls_back_to_raw_
+    content` for the streaming endpoint: a `celery.exceptions.TimeoutError` from this handler's
+    own `.get(timeout=...)` wait (not a failure of the humanize call itself) must fail open to
+    the raw streamed content, not emit an `error` event."""
+    from celery.exceptions import TimeoutError as CeleryTimeoutError
+
+    generated = "Draft chapter body."
+    _mock_empty_rag_search()
+    respx.post(_CHAT_URL, json__model="deepseek-v4-pro").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_stream_body([generated]),
+        )
+    )
+    project_id, chapter_id, _headers = _setup_project_and_chapter(client)
+
+    class _SlowAsyncResult:
+        def get(self, timeout=None):
+            raise CeleryTimeoutError("The operation timed out.")
+
+    monkeypatch.setattr(
+        projects_router.humanize_text_task, "delay", lambda *args, **kwargs: _SlowAsyncResult()
+    )
+
+    response = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate/stream",
+        params={"instruction": "Write something."},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done_events = [data for event, data in events if event == "done"]
+    error_events = [data for event, data in events if event == "error"]
+    assert error_events == []
+    assert len(done_events) == 1
+    assert json.loads(done_events[0])["version"]["content"] == generated
+
+
+@respx.mock
 def test_generate_stream_precheck_failure_falls_back_to_all_clear_result(
     client: TestClient, monkeypatch
 ) -> None:

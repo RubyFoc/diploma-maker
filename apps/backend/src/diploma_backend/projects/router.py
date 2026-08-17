@@ -61,6 +61,7 @@ from io import BytesIO
 from urllib.parse import quote
 
 import redis.asyncio as redis_asyncio
+from celery.exceptions import TimeoutError as CeleryTimeoutError
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -188,10 +189,20 @@ def _match_existing_chapter(
     candidates = by_number.get(number_match.group(1), [])
     return candidates[0] if len(candidates) == 1 else None
 
+
 # Same rationale/precedent as `_TOC_PARSE_TASK_TIMEOUT_SECONDS`, applied to the humanize/precheck
 # tasks the generation pipeline now awaits (ADR-0013, TASK-E17-4). Matches
 # `plagiarism.router._PRECHECK_TASK_TIMEOUT_SECONDS`'s value.
-_HUMANIZE_TASK_TIMEOUT_SECONDS = 60.0
+#
+# `_HUMANIZE_TASK_TIMEOUT_SECONDS` is NOT 60.0 like precheck (a single fast-tier call, so 60s —
+# `DeepSeekClient._DEFAULT_TIMEOUT_SECONDS` — is the real worst case): `humanize_text` retries its
+# DeepSeek call up to 3 times internally via `generate_with_retry` (see that function's own
+# docstring), the same shape `_GENERATE_TASK_TIMEOUT_SECONDS` already budgets for. A 60s ceiling
+# here fires `celery.exceptions.TimeoutError` (not `LLMRequestError`) well before a real multi-
+# attempt humanize call can finish — observed in production taking 90-100s for a single retry
+# even without hitting a second attempt — which used to crash the whole SSE response instead of
+# falling open to the pre-humanization draft (see `_run_humanize`'s `except` clause below).
+_HUMANIZE_TASK_TIMEOUT_SECONDS = 200.0
 _PRECHECK_TASK_TIMEOUT_SECONDS = 60.0
 
 # Applied to `summarize_chapter_task`, dispatched from `accept_draft_version_endpoint` (ADR-0003
@@ -501,10 +512,11 @@ async def _humanize_and_precheck(
 
     try:
         humanized_content = await asyncio.to_thread(_run_humanize)
-    except (LLMRequestError, HumanizationError):
-        # Fail-open: neither a genuine infra failure (retries exhausted) nor a mangled citation
-        # placeholder should block the user from seeing their already-generated draft — see
-        # docstring.
+    except (LLMRequestError, HumanizationError, CeleryTimeoutError):
+        # Fail-open: neither a genuine infra failure (retries exhausted or, per
+        # `_HUMANIZE_TASK_TIMEOUT_SECONDS`'s comment, this handler's own wait timing out before a
+        # slow-but-still-running task finishes) nor a mangled citation placeholder should block
+        # the user from seeing their already-generated draft — see docstring.
         humanized_content = content
 
     precheck = await _run_precheck_with_fallback(humanized_content, rag_excerpts)
@@ -1714,13 +1726,15 @@ async def generate_chapter_draft_stream_endpoint(
                 # `humanizer.tasks.humanize_text_task`, matching `_humanize_and_precheck`'s
                 # non-streaming treatment of the same call (see that function's docstring for why
                 # `.delay()` and `.get()` both run inside one `asyncio.to_thread`). Both
-                # `HumanizationError` and `LLMRequestError` fail open to the raw streamed
-                # `content` here, exactly like `_humanize_and_precheck` does for the non-streaming
-                # endpoint (see that function's docstring): humanization is cosmetic, not
-                # correctness-critical, so a failure of either kind must never discard the
-                # already-streamed, already-generated draft.
+                # `HumanizationError`, `LLMRequestError`, and `CeleryTimeoutError` (this
+                # handler's own wait timing out — see `_HUMANIZE_TASK_TIMEOUT_SECONDS`'s comment)
+                # all fail open to the raw streamed `content` here, exactly like
+                # `_humanize_and_precheck` does for the non-streaming endpoint (see that
+                # function's docstring): humanization is cosmetic, not correctness-critical, so a
+                # failure of any of these kinds must never discard the already-streamed,
+                # already-generated draft.
                 humanized_content = await asyncio.to_thread(_run_humanize)
-            except (LLMRequestError, HumanizationError):
+            except (LLMRequestError, HumanizationError, CeleryTimeoutError):
                 humanized_content = content
 
             precheck = await _run_precheck_with_fallback(humanized_content, rag_excerpts)
