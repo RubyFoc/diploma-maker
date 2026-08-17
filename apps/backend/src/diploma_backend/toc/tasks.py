@@ -14,6 +14,7 @@ import base64
 
 from diploma_backend.toc.parser import (
     parse_document_sections,
+    parse_document_sections_with_subchapters,
     parse_toc,
     parse_toc_with_subchapters,
 )
@@ -66,3 +67,22 @@ def parse_document_sections_task(content_b64: str) -> list[list[str]]:
     """
     content = base64.b64decode(content_b64)
     return [[title, section_content] for title, section_content in parse_document_sections(content)]
+
+
+@celery_app.task(name="toc.parse_document_sections_with_subchapters")
+def parse_document_sections_with_subchapters_task(content_b64: str) -> list[list]:
+    """Run `parse_document_sections_with_subchapters` in a worker process (user request:
+    subsections like "3.1"/"3.2" within a chapter's body were left as undifferentiated text
+    under the parent chapter instead of becoming their own subchapters).
+
+    Same base64-in/decode-first convention as `parse_toc_task`. Returns a list of
+    `[title, content, [[subchapter_title, subchapter_content], ...]]` triples rather than
+    `list[tuple[str, str, list[tuple[str, str]]]]` — tuples aren't a JSON-native type, matching
+    `parse_document_sections_task`'s identical reasoning. Raises `TocParseError` unchanged if the
+    decoded content isn't a valid `.docx` file or has no `Heading 1` paragraphs.
+    """
+    content = base64.b64decode(content_b64)
+    return [
+        [title, section_content, [[sub_title, sub_content] for sub_title, sub_content in subchapters]]
+        for title, section_content, subchapters in parse_document_sections_with_subchapters(content)
+    ]

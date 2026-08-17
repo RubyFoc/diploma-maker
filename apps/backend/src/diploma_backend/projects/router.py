@@ -113,7 +113,7 @@ from diploma_backend.sources.required import list_required_sources_for_project
 from diploma_backend.sources.search import SourceSearchError, search_sources
 from diploma_backend.toc.parser import TocParseError
 from diploma_backend.toc.tasks import (
-    parse_document_sections_task,
+    parse_document_sections_with_subchapters_task,
     parse_toc_with_subchapters_task,
 )
 from diploma_backend.versions.models import ChapterVersion
@@ -139,6 +139,54 @@ _DEFAULT_PROJECT_TITLE = "Untitled Thesis"
 # (ADR-0013 addendum point 1). `parse_toc` itself is fast in-memory `.docx` parsing; this mostly
 # bounds how long a request waits on a busy/unreachable Celery worker, not the parse itself.
 _TOC_PARSE_TASK_TIMEOUT_SECONDS = 60.0
+
+# Same heuristic as `projects.service._LEADING_NUMBER_RE` (duplicated locally rather than
+# imported, matching `locks.router`'s precedent of duplicating a small private helper across a
+# module boundary rather than reaching into another module's private name): pulls a leading
+# chapter number out of a title regardless of the surrounding words. Used by
+# `upload_document_endpoint` to match a whole-document upload's `Heading 1` sections against
+# chapters a prior `upload_toc_endpoint` call already created, since a real thesis's actual
+# chapter heading and its TOC entry frequently word the rest of the title differently even when
+# they share the same chapter number (e.g. TOC: "ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ ...", the
+# document's real heading: "ГЛАВА 1 ТЕОРЕТИКО-МЕТОДОЛОГИЧЕСКИЕ ПРЕДПОСЫЛКИ ...") — an exact-text
+# match alone would treat these as unrelated and create a duplicate chapter.
+_LEADING_CHAPTER_NUMBER_RE = re.compile(r"^\D*(\d+)")
+
+
+def _index_existing_chapters(
+    chapters: list[Chapter],
+) -> tuple[dict[str, Chapter], dict[str, list[Chapter]]]:
+    """Builds the two lookup indexes `_match_existing_chapter` needs from a flat chapter list:
+    by exact (trimmed, case-insensitive) title, and by leading chapter number. Callers pass an
+    already-scoped list (e.g. just one chapter's subchapters, or just a project's top-level
+    chapters) — this function does no scoping of its own.
+    """
+    by_title: dict[str, Chapter] = {}
+    by_number: dict[str, list[Chapter]] = {}
+    for chapter in chapters:
+        by_title[chapter.title.strip().casefold()] = chapter
+        number_match = _LEADING_CHAPTER_NUMBER_RE.match(chapter.title)
+        if number_match is not None:
+            by_number.setdefault(number_match.group(1), []).append(chapter)
+    return by_title, by_number
+
+
+def _match_existing_chapter(
+    title: str, by_title: dict[str, Chapter], by_number: dict[str, list[Chapter]]
+) -> Chapter | None:
+    """Finds `title`'s existing counterpart, if any: an exact (trimmed, case-insensitive) title
+    match first, else a leading-chapter-number match — but only when exactly one existing
+    chapter shares that number, since matching against an ambiguous number would risk merging
+    two genuinely different chapters that happen to both start with e.g. "1".
+    """
+    exact = by_title.get(title.strip().casefold())
+    if exact is not None:
+        return exact
+    number_match = _LEADING_CHAPTER_NUMBER_RE.match(title)
+    if number_match is None:
+        return None
+    candidates = by_number.get(number_match.group(1), [])
+    return candidates[0] if len(candidates) == 1 else None
 
 # Same rationale/precedent as `_TOC_PARSE_TASK_TIMEOUT_SECONDS`, applied to the humanize/precheck
 # tasks the generation pipeline now awaits (ADR-0013, TASK-E17-4). Matches
@@ -1098,6 +1146,11 @@ async def upload_toc_endpoint(
     plus a subchapter per dotted-numbered subsection line (e.g. `"3.1 ..."` under `"3 ..."`,
     user request) under its nearest preceding chapter.
 
+    Matches each parsed chapter/subchapter title against the project's existing chapters (see
+    `_match_existing_chapter`) and reuses a match instead of creating a duplicate — e.g. running
+    this after `upload_document_endpoint` already created chapters from the same thesis's actual
+    headings.
+
     Scoped to the authenticated caller (TASK-E11-1): raises `HTTPException(404)` if `project_id`
     doesn't exist or belongs to a different owner. Parsing itself now runs on a Celery worker via
     `toc.tasks.parse_toc_with_subchapters_task` (ADR-0013, TASK-E17-4) instead of inline on this
@@ -1110,10 +1163,7 @@ async def upload_toc_endpoint(
     `formatting.router`'s upload-parse-error convention) — Celery re-raises the original
     exception type from `.get()` when it's importable in this process, which it is here since the
     API and worker share this codebase, so the `except TocParseError` below still fires whether
-    the task ran eagerly (tests) or on a real worker. On success, calls
-    `projects.service.create_chapter` once per parsed chapter (`order` assignment stays
-    centralized there), then once more per that chapter's subchapters with
-    `parent_chapter_id` set, and returns the updated `ProjectDetail`.
+    the task ran eagerly (tests) or on a real worker.
 
     Note: this only creates chapters from the parsed TOC; inserting a later-generated
     chapter between existing ones is handled separately by `insert_chapter_endpoint`.
@@ -1135,10 +1185,24 @@ async def upload_toc_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
+    existing_chapters = await list_chapters_for_project(db, project_id)
+    by_title, by_number = _index_existing_chapters(
+        [chapter for chapter in existing_chapters if chapter.parent_chapter_id is None]
+    )
+
     for title, subchapter_titles in chapters:
-        chapter = await create_chapter(db, project_id, title)
+        chapter = _match_existing_chapter(title, by_title, by_number) or await create_chapter(
+            db, project_id, title
+        )
+        existing_subchapters = [
+            existing for existing in existing_chapters if existing.parent_chapter_id == chapter.id
+        ]
+        sub_by_title, sub_by_number = _index_existing_chapters(existing_subchapters)
         for subchapter_title in subchapter_titles:
-            await create_chapter(db, project_id, subchapter_title, parent_chapter_id=chapter.id)
+            if _match_existing_chapter(subchapter_title, sub_by_title, sub_by_number) is None:
+                await create_chapter(
+                    db, project_id, subchapter_title, parent_chapter_id=chapter.id
+                )
     return await _build_project_detail(db, project)
 
 
@@ -1153,21 +1217,23 @@ async def upload_document_endpoint(
     db: AsyncIOMotorDatabase = Depends(get_database),
     owner_id: str = Depends(get_current_user_id),
 ) -> ProjectDetail:
-    """Ingest a whole already-written `.docx` document as multiple chapters in one upload (user
-    request), instead of requiring `upload_toc_endpoint` (titles only) followed by a separate
-    `locks.router.upload_draft_endpoint` call per chapter.
+    """Ingest a whole already-written `.docx` document as multiple chapters (and subchapters,
+    user request) in one upload, instead of requiring `upload_toc_endpoint` (titles only)
+    followed by a separate `locks.router.upload_draft_endpoint` call per chapter.
 
-    Splits `file` into `(title, content)` sections by `Heading 1` paragraph (see
-    `toc.parser.parse_document_sections`'s docstring for the exact rule), via the same
-    base64-encode-then-Celery-task shape as `upload_toc_endpoint` (ADR-0013, TASK-E17-4). For each
-    section, matches `title` (trimmed, case-insensitive) against the project's existing top-level
-    chapters — e.g. ones already created by a prior `upload_toc_endpoint` call — and reuses that
-    chapter instead of creating a duplicate (user request: a TOC upload followed by this endpoint
-    was creating a second, empty-then-filled copy of every chapter rather than filling in the one
-    the TOC already made). Falls back to creating a new chapter when no title matches, same as
-    before. Either way, if the section has any non-blank content, ingests it as that chapter's
-    first pending draft version (`versions.service.create_draft_version`) — same as
-    `locks.router.upload_draft_endpoint`, so the ingested content goes through the same
+    Splits `file` into `(title, content, subchapters)` sections by `Heading 1` paragraph, each
+    further split into subchapters at `Heading 2`/dotted-numbered subsection boundaries (see
+    `toc.parser.parse_document_sections_with_subchapters`'s docstring for the exact rule), via
+    the same base64-encode-then-Celery-task shape as `upload_toc_endpoint` (ADR-0013,
+    TASK-E17-4). Matches each parsed chapter/subchapter title against the project's existing
+    chapters (see `_match_existing_chapter`) — e.g. ones already created by a prior
+    `upload_toc_endpoint` call, or by an earlier call to this same endpoint — and reuses a match
+    instead of creating a duplicate (user request: this was always creating a fresh chapter per
+    section, even when a TOC upload had already made one for the same chapter under a slightly
+    differently-worded title). Falls back to creating a new chapter when no title matches, same
+    as before. Either way, if the section/subchapter has any non-blank content, ingests it as
+    that chapter's first pending draft version (`versions.service.create_draft_version`) — same
+    as `locks.router.upload_draft_endpoint`, so the ingested content goes through the same
     accept/reject `DiffViewer` flow as any other draft rather than silently becoming "accepted"
     content with no review step. A section with only a heading and no body content still gets/
     creates its chapter, just with no pending draft to review.
@@ -1182,7 +1248,7 @@ async def upload_document_endpoint(
     content = await file.read()
     content_b64 = base64.b64encode(content).decode("ascii")
     try:
-        async_result = parse_document_sections_task.delay(content_b64)
+        async_result = parse_document_sections_with_subchapters_task.delay(content_b64)
         sections = await asyncio.to_thread(
             async_result.get, timeout=_TOC_PARSE_TASK_TIMEOUT_SECONDS
         )
@@ -1192,18 +1258,27 @@ async def upload_document_endpoint(
         ) from exc
 
     existing_chapters = await list_chapters_for_project(db, project_id)
-    existing_by_title = {
-        chapter.title.strip().casefold(): chapter
-        for chapter in existing_chapters
-        if chapter.parent_chapter_id is None
-    }
+    by_title, by_number = _index_existing_chapters(
+        [chapter for chapter in existing_chapters if chapter.parent_chapter_id is None]
+    )
 
-    for title, section_content in sections:
-        chapter = existing_by_title.get(
-            title.strip().casefold()
-        ) or await create_chapter(db, project_id, title)
+    for title, section_content, subchapters in sections:
+        chapter = _match_existing_chapter(title, by_title, by_number) or await create_chapter(
+            db, project_id, title
+        )
         if section_content.strip():
             await create_draft_version(db, chapter.id, content=section_content)
+
+        existing_subchapters = [
+            existing for existing in existing_chapters if existing.parent_chapter_id == chapter.id
+        ]
+        sub_by_title, sub_by_number = _index_existing_chapters(existing_subchapters)
+        for subtitle, subcontent in subchapters:
+            subchapter = _match_existing_chapter(
+                subtitle, sub_by_title, sub_by_number
+            ) or await create_chapter(db, project_id, subtitle, parent_chapter_id=chapter.id)
+            if subcontent.strip():
+                await create_draft_version(db, subchapter.id, content=subcontent)
     return await _build_project_detail(db, project)
 
 

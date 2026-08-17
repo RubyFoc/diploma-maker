@@ -57,6 +57,7 @@ _NUMBERED_ENTRY_RE = re.compile(r"^\d+[.):]?\s+(.+)$")
 _TRAILING_PAGE_NUMBER_RE = re.compile(r"[.\s]+\d+\s*$")
 
 _HEADING_1_STYLE = "Heading 1"
+_HEADING_2_STYLE = "Heading 2"
 
 # Matches Word's built-in top-level TOC-field paragraph style, however it's spelled/spaced —
 # `"TOC 1"`, `"TOC1"`, `"toc 1"`, etc. (Word's own naming varies by locale/version). Only level 1
@@ -365,3 +366,103 @@ def parse_document_sections(content: bytes) -> list[tuple[str, str]]:
         )
 
     return [(title, "\n\n".join(paragraphs)) for title, paragraphs in sections]
+
+
+def _normalize_heading_text(text: str) -> str:
+    """Collapses internal whitespace runs (including a soft line break within a single
+    paragraph — Word's Shift+Enter, which `python-docx` maps to a literal `"\\n"` mid-string per
+    `Paragraph.text`'s own docstring) into single spaces, then strips. A long subsection heading
+    wrapped onto two visual lines this way would otherwise defeat `_DOTTED_SUBSECTION_RE`'s
+    unanchored-`.`-doesn't-match-newline regex match, and would look wrong as a title anyway with
+    a raw newline embedded in it.
+    """
+    return " ".join(text.split())
+
+
+def parse_document_sections_with_subchapters(
+    content: bytes,
+) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Split a whole already-written `.docx` document the same way as `parse_document_sections`,
+    but also splits each chapter's own body into separate subchapters with their own content
+    (e.g. `"3.1 ..."` under chapter `"3 ..."`, user request), instead of leaving them as
+    undifferentiated body text under the parent chapter.
+
+    A subsection boundary is recognized two ways, either sufficient on its own: a `Heading 2`-
+    styled paragraph (the more reliable signal, when present), or — the same fallback
+    `parse_toc_with_subchapters` uses for an unstyled TOC — a paragraph matching
+    `_DOTTED_SUBSECTION_RE`'s dotted-number pattern regardless of style. A paragraph matching
+    `_CHAPTER_CONCLUSION_RE` (e.g. `"Выводы по главе 1"`) is never itself treated as a
+    subchapter — real theses commonly style it as `Heading 2` too, but it's a summary of the
+    *chapter*, not a subsection of its own — and everything from it onward reverts to
+    accumulating into the chapter's own content instead of whichever subsection preceded it.
+
+    Paragraphs between a chapter's own `Heading 1` and its first subsection boundary (if any)
+    become that chapter's own content; everything from a subsection boundary onward, up to the
+    next boundary or the next `Heading 1`, becomes that subsection's content.
+
+    Returns `[(chapter_title, chapter_content, [(subchapter_title, subchapter_content), ...]),
+    ...]`, in document order. `chapter_content` and each `subchapter_content` are empty strings
+    when that section/subsection has no body paragraphs. Raises `TocParseError` under the same
+    conditions as `parse_document_sections`.
+    """
+    document = _load_toc_document(content)
+
+    chapters: list[dict] = []
+    for paragraph in document.paragraphs:
+        raw_text = paragraph.text.strip()
+        style_name = paragraph.style.name if paragraph.style is not None else None
+
+        if style_name == _HEADING_1_STYLE:
+            if raw_text:
+                chapters.append(
+                    {
+                        "title": _normalize_heading_text(raw_text),
+                        "content": [],
+                        "subchapters": [],
+                        "in_conclusion": False,
+                    }
+                )
+            continue
+        if not chapters:
+            continue
+        current = chapters[-1]
+
+        normalized = _normalize_heading_text(raw_text) if raw_text else ""
+        dotted_match = _DOTTED_SUBSECTION_RE.match(normalized) if normalized else None
+        is_subsection_boundary = bool(normalized) and (
+            style_name == _HEADING_2_STYLE or dotted_match is not None
+        )
+
+        if is_subsection_boundary and _CHAPTER_CONCLUSION_RE.match(normalized):
+            current["in_conclusion"] = True
+            continue
+
+        if is_subsection_boundary and not current["in_conclusion"]:
+            subtitle = _clean_toc_entry_title(dotted_match.group(1)) if dotted_match else normalized
+            if subtitle:
+                current["subchapters"].append({"title": subtitle, "content": []})
+                continue
+
+        if not raw_text:
+            continue
+        if current["in_conclusion"] or not current["subchapters"]:
+            current["content"].append(raw_text)
+        else:
+            current["subchapters"][-1]["content"].append(raw_text)
+
+    if not chapters:
+        raise TocParseError(
+            "Could not find any Heading 1 paragraphs to split the document into chapters"
+        )
+
+    return [
+        (
+            chapter["title"],
+            "\n\n".join(chapter["content"]),
+            [
+                (subchapter["title"], "\n\n".join(subchapter["content"]))
+                for subchapter in chapter["subchapters"]
+            ],
+        )
+        for chapter in chapters
+    ]

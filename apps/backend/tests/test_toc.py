@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from diploma_backend.toc.parser import (
     TocParseError,
     parse_document_sections,
+    parse_document_sections_with_subchapters,
     parse_toc,
     parse_toc_with_subchapters,
 )
@@ -40,6 +41,24 @@ def _build_heading_docx() -> bytes:
     document.add_paragraph("Some body text under the introduction.")
     document.add_paragraph("Literature Review", style="Heading 1")
     document.add_paragraph("Conclusion", style="Heading 1")
+    return _docx_bytes(document)
+
+
+def _build_heading_docx_with_subsections() -> bytes:
+    """Mimics a real thesis document: `Heading 2` subsections within a `Heading 1` chapter,
+    plus a "Выводы по главе N" (chapter conclusion) also styled `Heading 2` — which should stay
+    part of the chapter's own content, not become its own subchapter."""
+    document = Document()
+    document.add_paragraph("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ", style="Heading 1")
+    document.add_paragraph("Вводный абзац главы.")
+    document.add_paragraph("1.1 Первый подраздел", style="Heading 2")
+    document.add_paragraph("Текст первого подраздела.")
+    document.add_paragraph("1.2 Второй подраздел", style="Heading 2")
+    document.add_paragraph("Текст второго подраздела.")
+    document.add_paragraph("Выводы по главе 1", style="Heading 2")
+    document.add_paragraph("Итоговый абзац главы.")
+    document.add_paragraph("ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ", style="Heading 1")
+    document.add_paragraph("Просто текст без подразделов.")
     return _docx_bytes(document)
 
 
@@ -440,6 +459,107 @@ def test_upload_document_reuses_chapters_from_a_prior_toc_upload(client: TestCli
     assert chapters["introduction"]["pending_draft"]["content"] == (
         "Some body text under the introduction."
     )
+
+
+def test_upload_document_reuses_toc_chapter_matched_only_by_leading_number(
+    client: TestClient,
+) -> None:
+    """A real thesis's TOC entry and its document's actual `Heading 1` text frequently word the
+    rest of the title differently even when they share the same chapter number — an exact-text
+    match alone would miss this and create a duplicate (user report)."""
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+    project_id = create_response.json()["id"]
+
+    toc_document = Document()
+    toc_document.add_paragraph("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ ИЗУЧЕНИЯ ВОПРОСА")
+    toc_response = client.post(
+        f"/projects/{project_id}/toc/upload",
+        files={"file": ("toc.docx", _docx_bytes(toc_document), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+    assert toc_response.status_code == 201
+    toc_chapter_id = toc_response.json()["chapters"][0]["id"]
+
+    document = Document()
+    document.add_paragraph(
+        "ГЛАВА 1 ТЕОРЕТИКО-МЕТОДОЛОГИЧЕСКИЕ ПРЕДПОСЫЛКИ ИССЛЕДОВАНИЯ", style="Heading 1"
+    )
+    document.add_paragraph("Содержание главы.")
+
+    document_response = client.post(
+        f"/projects/{project_id}/document/upload",
+        files={"file": ("thesis.docx", _docx_bytes(document), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+
+    assert document_response.status_code == 201
+    body = document_response.json()
+    assert len(body["chapters"]) == 1
+    assert body["chapters"][0]["id"] == toc_chapter_id
+    assert body["chapters"][0]["pending_draft"]["content"] == "Содержание главы."
+
+
+def test_parse_document_sections_with_subchapters_splits_heading_2_and_excludes_conclusion() -> (
+    None
+):
+    chapters = parse_document_sections_with_subchapters(_build_heading_docx_with_subsections())
+
+    assert [title for title, _content, _subs in chapters] == [
+        "ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ",
+        "ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ",
+    ]
+    chapter_1 = chapters[0]
+    # The intro paragraph (before any subsection) and the "Выводы по главе 1" paragraph after it
+    # (which reverts to the chapter's own content bucket, not the last subsection's) both land
+    # in the chapter's own content.
+    assert chapter_1[1] == "Вводный абзац главы.\n\nИтоговый абзац главы."
+    assert [(title, content) for title, content in chapter_1[2]] == [
+        ("Первый подраздел", "Текст первого подраздела."),
+        ("Второй подраздел", "Текст второго подраздела."),
+    ]
+    # "Выводы по главе 1" is never its own subchapter, and its content doesn't leak into the
+    # last subsection — it reverts to the chapter's own content bucket.
+    subchapter_titles = [title for title, _content in chapter_1[2]]
+    assert "Выводы по главе 1" not in subchapter_titles
+
+    chapter_2 = chapters[1]
+    assert chapter_2[1] == "Просто текст без подразделов."
+    assert chapter_2[2] == []
+
+
+def test_upload_document_creates_subchapters_from_heading_2(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+    project_id = create_response.json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/document/upload",
+        files={
+            "file": (
+                "thesis.docx",
+                _build_heading_docx_with_subsections(),
+                "application/vnd.openxmlformats",
+            )
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    chapters_by_title = {chapter["title"]: chapter for chapter in response.json()["chapters"]}
+    chapter_1 = chapters_by_title["ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ"]
+    assert chapter_1["pending_draft"]["content"] == "Вводный абзац главы.\n\nИтоговый абзац главы."
+
+    subchapters = client.get(
+        f"/projects/{project_id}/chapters/{chapter_1['id']}/subchapters", headers=headers
+    ).json()
+    assert [sub["title"] for sub in subchapters] == ["Первый подраздел", "Второй подраздел"]
+
+    chapter_2 = chapters_by_title["ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ"]
+    subchapters_2 = client.get(
+        f"/projects/{project_id}/chapters/{chapter_2['id']}/subchapters", headers=headers
+    ).json()
+    assert subchapters_2 == []
 
 
 def test_upload_document_nonexistent_project_404s(client: TestClient) -> None:
