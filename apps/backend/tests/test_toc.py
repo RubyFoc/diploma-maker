@@ -243,9 +243,9 @@ def test_parse_toc_with_subchapters_groups_dotted_sections_under_their_chapter()
 
     assert chapters == [
         ("ВВЕДЕНИЕ", []),
-        ("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ", ["Первый подраздел", "Второй подраздел"]),
+        ("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ", ["1.1 Первый подраздел", "1.2 Второй подраздел"]),
         ("ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ", []),
-        ("ГЛАВА 3 ПРАКТИЧЕСКАЯ ЧАСТЬ", ["Третий подраздел"]),
+        ("ГЛАВА 3 ПРАКТИЧЕСКАЯ ЧАСТЬ", ["3.1 Третий подраздел"]),
         ("ЗАКЛЮЧЕНИЕ", []),
     ]
 
@@ -289,7 +289,7 @@ def test_upload_toc_creates_subchapters_for_dotted_sections(client: TestClient) 
     subchapters_1 = client.get(
         f"/projects/{project_id}/chapters/{chapter_1_id}/subchapters", headers=headers
     ).json()
-    assert [sub["title"] for sub in subchapters_1] == ["Первый подраздел", "Второй подраздел"]
+    assert [sub["title"] for sub in subchapters_1] == ["1.1 Первый подраздел", "1.2 Второй подраздел"]
     assert all(sub["parent_chapter_id"] == chapter_1_id for sub in subchapters_1)
 
     chapter_2_id = chapters_by_title["ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ"]["id"]
@@ -302,7 +302,7 @@ def test_upload_toc_creates_subchapters_for_dotted_sections(client: TestClient) 
     subchapters_3 = client.get(
         f"/projects/{project_id}/chapters/{chapter_3_id}/subchapters", headers=headers
     ).json()
-    assert [sub["title"] for sub in subchapters_3] == ["Третий подраздел"]
+    assert [sub["title"] for sub in subchapters_3] == ["3.1 Третий подраздел"]
 
 
 def test_upload_toc_creates_chapters_in_order(client: TestClient) -> None:
@@ -515,8 +515,8 @@ def test_parse_document_sections_with_subchapters_splits_heading_2_and_excludes_
     # in the chapter's own content.
     assert chapter_1[1] == "Вводный абзац главы.\n\nИтоговый абзац главы."
     assert [(title, content) for title, content in chapter_1[2]] == [
-        ("Первый подраздел", "Текст первого подраздела."),
-        ("Второй подраздел", "Текст второго подраздела."),
+        ("1.1 Первый подраздел", "Текст первого подраздела."),
+        ("1.2 Второй подраздел", "Текст второго подраздела."),
     ]
     # "Выводы по главе 1" is never its own subchapter, and its content doesn't leak into the
     # last subsection — it reverts to the chapter's own content bucket.
@@ -553,7 +553,7 @@ def test_upload_document_creates_subchapters_from_heading_2(client: TestClient) 
     subchapters = client.get(
         f"/projects/{project_id}/chapters/{chapter_1['id']}/subchapters", headers=headers
     ).json()
-    assert [sub["title"] for sub in subchapters] == ["Первый подраздел", "Второй подраздел"]
+    assert [sub["title"] for sub in subchapters] == ["1.1 Первый подраздел", "1.2 Второй подраздел"]
 
     chapter_2 = chapters_by_title["ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ"]
     subchapters_2 = client.get(

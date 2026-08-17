@@ -309,10 +309,14 @@ def parse_toc_with_subchapters(content: bytes) -> list[tuple[str, list[str]]]:
     for paragraph_index, paragraph in enumerate(document.paragraphs):
         if paragraph_index in entry_indices:
             continue
-        match = _DOTTED_SUBSECTION_RE.match(paragraph.text.strip())
-        if match is None:
+        stripped_text = paragraph.text.strip()
+        if _DOTTED_SUBSECTION_RE.match(stripped_text) is None:
             continue
-        subtitle = _clean_toc_entry_title(match.group(1))
+        # Keeps the leading number ("1.1 Онимы ...") in the subchapter title, unlike a top-level
+        # chapter's number (stripped elsewhere) — a subsection's number is the reader's only way
+        # to tell which parent chapter it belongs to and in what order, so displaying it is the
+        # point (user request), not noise to clean up.
+        subtitle = _clean_toc_entry_title(stripped_text)
         if not subtitle:
             continue
         # The chapter whose own index is the largest one still `<= paragraph_index` is this
@@ -438,7 +442,9 @@ def parse_document_sections_with_subchapters(
             continue
 
         if is_subsection_boundary and not current["in_conclusion"]:
-            subtitle = _clean_toc_entry_title(dotted_match.group(1)) if dotted_match else normalized
+            # Keeps the leading number for a dotted subsection ("1.1 Онимы ...") in its title —
+            # see `parse_toc_with_subchapters`'s identical choice for why (user request).
+            subtitle = _clean_toc_entry_title(normalized)
             if subtitle:
                 current["subchapters"].append({"title": subtitle, "content": []})
                 continue
