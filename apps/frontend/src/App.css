@@ -81,6 +81,15 @@
   grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr);
   gap: var(--space-5);
   align-items: stretch;
+  /* Bounds the chat/document panels to the viewport instead of growing past it (previously had
+     no height cap at all, so `.chat-messages`'/`.document-panel`'s own `overflow-y: auto` never
+     had a box to actually scroll within — the whole page grew instead, pushing the chat input
+     and the lower part of a chapter's text out of view). 220px is an approximation of the space
+     above `.workspace` (header, tabs, workspace header, `#root` padding) rather than an exact
+     sum of those elements' variable-driven sizes; `min-height` keeps it usable on very short
+     viewports where the subtraction would otherwise get too small. */
+  height: calc(100vh - 220px);
+  min-height: 420px;
 }
 
 @media (max-width: 860px) {
@@ -97,21 +106,22 @@
   padding: var(--space-5);
   display: flex;
   flex-direction: column;
-  min-height: 520px;
+  /* `height: 100%` (filling `.workspace`'s now-bounded height) instead of a fixed `min-height`
+     that let the panel grow taller than the viewport — `min-height: 0` overrides flexbox's
+     default `min-height: auto` on a flex item, which would otherwise refuse to shrink below its
+     content size and defeat the point of the bounded height above. */
+  height: 100%;
+  min-height: 0;
 }
 
 .panel h2 {
   margin: 0 0 var(--space-4);
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-border);
-}
-
-.chat-panel {
-  min-height: 520px;
+  flex: 0 0 auto;
 }
 
 .document-panel {
-  min-height: 520px;
   overflow-y: auto;
 }
 
@@ -119,6 +129,10 @@
 
 .chat-messages {
   flex: 1;
+  /* Overrides flexbox's default `min-height: auto` on a flex item, which would otherwise let
+     this grow to fit all messages instead of scrolling within `.chat-panel`'s bounded height
+     (see `.panel`'s comment). */
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;

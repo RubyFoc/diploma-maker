@@ -11,7 +11,12 @@ from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from fastapi.testclient import TestClient
 
-from diploma_backend.toc.parser import TocParseError, parse_document_sections, parse_toc
+from diploma_backend.toc.parser import (
+    TocParseError,
+    parse_document_sections,
+    parse_toc,
+    parse_toc_with_subchapters,
+)
 
 
 def _auth_headers(client: TestClient, email: str = "student@example.com") -> dict:
@@ -99,6 +104,22 @@ def _build_mixed_numbered_and_unnumbered_docx() -> bytes:
     document.add_paragraph("ЗАКЛЮЧЕНИЕ .......... 25")
     section = document.add_paragraph("СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ")
     section.add_run("\t27")
+    return _docx_bytes(document)
+
+
+def _build_toc_with_dotted_subsections_docx() -> bytes:
+    """No page numbers, no styling — the same unstructured shape as the real thesis TOC that
+    motivated tier 6, but with dotted-numbered subsections ("1.1", "3.1"/"3.2") under two of the
+    three chapters, and none under the middle one."""
+    document = Document()
+    document.add_paragraph("ВВЕДЕНИЕ")
+    document.add_paragraph("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ")
+    document.add_paragraph("1.1 Первый подраздел")
+    document.add_paragraph("1.2 Второй подраздел")
+    document.add_paragraph("ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ")
+    document.add_paragraph("ГЛАВА 3 ПРАКТИЧЕСКАЯ ЧАСТЬ")
+    document.add_paragraph("3.1 Третий подраздел")
+    document.add_paragraph("ЗАКЛЮЧЕНИЕ")
     return _docx_bytes(document)
 
 
@@ -196,6 +217,73 @@ def test_parse_toc_uses_top_level_list_numbered_paragraphs() -> None:
     titles = parse_toc(_build_list_numbered_docx())
 
     assert titles == ["Введение", "Обзор литературы", "Заключение"]
+
+
+def test_parse_toc_with_subchapters_groups_dotted_sections_under_their_chapter() -> None:
+    chapters = parse_toc_with_subchapters(_build_toc_with_dotted_subsections_docx())
+
+    assert chapters == [
+        ("ВВЕДЕНИЕ", []),
+        ("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ", ["Первый подраздел", "Второй подраздел"]),
+        ("ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ", []),
+        ("ГЛАВА 3 ПРАКТИЧЕСКАЯ ЧАСТЬ", ["Третий подраздел"]),
+        ("ЗАКЛЮЧЕНИЕ", []),
+    ]
+
+
+def test_parse_toc_with_subchapters_matches_parse_toc_when_nothing_is_nested() -> None:
+    chapters = parse_toc_with_subchapters(_build_numbered_docx())
+
+    assert [title for title, _subchapters in chapters] == parse_toc(_build_numbered_docx())
+    assert all(subchapters == [] for _title, subchapters in chapters)
+
+
+def test_upload_toc_creates_subchapters_for_dotted_sections(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+    project_id = create_response.json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/toc/upload",
+        files={
+            "file": (
+                "toc.docx",
+                _build_toc_with_dotted_subsections_docx(),
+                "application/vnd.openxmlformats",
+            )
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    chapters_by_title = {chapter["title"]: chapter for chapter in body["chapters"]}
+    assert set(chapters_by_title) == {
+        "ВВЕДЕНИЕ",
+        "ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ",
+        "ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ",
+        "ГЛАВА 3 ПРАКТИЧЕСКАЯ ЧАСТЬ",
+        "ЗАКЛЮЧЕНИЕ",
+    }
+
+    chapter_1_id = chapters_by_title["ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ"]["id"]
+    subchapters_1 = client.get(
+        f"/projects/{project_id}/chapters/{chapter_1_id}/subchapters", headers=headers
+    ).json()
+    assert [sub["title"] for sub in subchapters_1] == ["Первый подраздел", "Второй подраздел"]
+    assert all(sub["parent_chapter_id"] == chapter_1_id for sub in subchapters_1)
+
+    chapter_2_id = chapters_by_title["ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ"]["id"]
+    subchapters_2 = client.get(
+        f"/projects/{project_id}/chapters/{chapter_2_id}/subchapters", headers=headers
+    ).json()
+    assert subchapters_2 == []
+
+    chapter_3_id = chapters_by_title["ГЛАВА 3 ПРАКТИЧЕСКАЯ ЧАСТЬ"]["id"]
+    subchapters_3 = client.get(
+        f"/projects/{project_id}/chapters/{chapter_3_id}/subchapters", headers=headers
+    ).json()
+    assert [sub["title"] for sub in subchapters_3] == ["Третий подраздел"]
 
 
 def test_upload_toc_creates_chapters_in_order(client: TestClient) -> None:
@@ -313,6 +401,45 @@ def test_upload_document_creates_chapters_with_content(client: TestClient) -> No
         "Some body text under the introduction."
     )
     assert chapters["Literature Review"]["pending_draft"] is None
+
+
+def test_upload_document_reuses_chapters_from_a_prior_toc_upload(client: TestClient) -> None:
+    """A TOC upload followed by a whole-document upload for the same thesis should fill in the
+    TOC's chapters, not create duplicates alongside them (user request)."""
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+    project_id = create_response.json()["id"]
+
+    toc_document = Document()
+    toc_document.add_paragraph("introduction")  # deliberately different case than the heading
+    toc_document.add_paragraph("Literature Review")
+    toc_document.add_paragraph("Conclusion")
+    toc_response = client.post(
+        f"/projects/{project_id}/toc/upload",
+        files={"file": ("toc.docx", _docx_bytes(toc_document), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+    assert toc_response.status_code == 201
+    toc_chapter_ids = {chapter["title"]: chapter["id"] for chapter in toc_response.json()["chapters"]}
+
+    document_response = client.post(
+        f"/projects/{project_id}/document/upload",
+        files={"file": ("thesis.docx", _build_heading_docx(), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+
+    assert document_response.status_code == 201
+    body = document_response.json()
+    chapters = {chapter["title"]: chapter for chapter in body["chapters"]}
+    # Exactly 3 chapters, not 6 — the document upload reused each of the TOC's chapters rather
+    # than creating a second copy of every one.
+    assert len(body["chapters"]) == 3
+    assert chapters["introduction"]["id"] == toc_chapter_ids["introduction"]
+    assert chapters["Literature Review"]["id"] == toc_chapter_ids["Literature Review"]
+    assert chapters["Conclusion"]["id"] == toc_chapter_ids["Conclusion"]
+    assert chapters["introduction"]["pending_draft"]["content"] == (
+        "Some body text under the introduction."
+    )
 
 
 def test_upload_document_nonexistent_project_404s(client: TestClient) -> None:

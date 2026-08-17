@@ -80,8 +80,10 @@ def _has_page_number_suffix(text: str) -> bool:
 
 # Matches a multi-level dotted subsection number ("1.1 ...", "2.3.1 ...") — always a subsection
 # in this platform's chapter model (`Chapter`/subchapter, ADR-0014), never a top-level chapter,
-# regardless of how the rest of the TOC is (un)structured.
-_DOTTED_SUBSECTION_RE = re.compile(r"^\d+(\.\d+)+[.):]?\s")
+# regardless of how the rest of the TOC is (un)structured. Captures the title text after the
+# number so `parse_toc_with_subchapters` can use it directly, the same shape as
+# `_NUMBERED_ENTRY_RE`'s capture group.
+_DOTTED_SUBSECTION_RE = re.compile(r"^\d+(?:\.\d+)+[.):]?\s+(.+)$")
 
 # Matches a lettered appendix sub-item ("Приложение А. ...", "Appendix A ...") — a sub-item of
 # the single top-level "ПРИЛОЖЕНИЯ"/"Appendices" entry, not a chapter of its own.
@@ -165,48 +167,37 @@ class TocParseError(ValueError):
     """
 
 
-def parse_toc(content: bytes) -> list[str]:
-    """Parse `content` (raw `.docx` bytes) into an ordered list of chapter titles.
-
-    Tried in order (see module docstring): `Heading 1` paragraphs, then Word TOC-field level-1
-    paragraphs, then top-level Word-list-numbered paragraphs, then plain-numbered/page-numbered
-    lines together, then (last resort) every remaining non-blank line. The first tier that
-    yields any entries wins; a trailing dot-leader/tab/page-number artifact (e.g.
-    `"Introduction .......... 5"` or `"Introduction\t5"`) is stripped from each entry as a
-    best-effort cleanup (see `_TRAILING_PAGE_NUMBER_RE`).
-
-    Raises `TocParseError` if `content` is not a valid `.docx` file, or if it has no non-blank
-    paragraphs at all.
+def _top_level_entries(document) -> list[tuple[int, str]]:
+    """Shared tiered-detection logic for `parse_toc`/`parse_toc_with_subchapters`: returns
+    `(paragraph_index, title)` pairs for whichever tier (see module docstring) first yields any
+    entries, preserving each entry's original paragraph position so
+    `parse_toc_with_subchapters` can group subsection paragraphs under the nearest preceding
+    entry regardless of which tier matched.
     """
-    try:
-        document = Document(BytesIO(content))
-    except (PackageNotFoundError, KeyError, ValueError, zipfile.BadZipFile) as exc:
-        raise TocParseError("Uploaded file is not a valid .docx document") from exc
-
     headings = [
-        paragraph.text.strip()
-        for paragraph in document.paragraphs
+        (index, paragraph.text.strip())
+        for index, paragraph in enumerate(document.paragraphs)
         if paragraph.style is not None and paragraph.style.name == _HEADING_1_STYLE
     ]
     if headings:
         return headings
 
     toc_field_entries = [
-        _clean_toc_entry_title(paragraph.text)
-        for paragraph in document.paragraphs
+        (index, _clean_toc_entry_title(paragraph.text))
+        for index, paragraph in enumerate(document.paragraphs)
         if paragraph.style is not None
         and _TOC_FIELD_LEVEL_1_STYLE_RE.match(paragraph.style.name or "")
     ]
-    toc_field_entries = [title for title in toc_field_entries if title]
+    toc_field_entries = [(index, title) for index, title in toc_field_entries if title]
     if toc_field_entries:
         return toc_field_entries
 
     list_numbered_entries = [
-        _clean_toc_entry_title(paragraph.text)
-        for paragraph in document.paragraphs
+        (index, _clean_toc_entry_title(paragraph.text))
+        for index, paragraph in enumerate(document.paragraphs)
         if _list_numbering_level(paragraph) == 0
     ]
-    list_numbered_entries = [title for title in list_numbered_entries if title]
+    list_numbered_entries = [(index, title) for index, title in list_numbered_entries if title]
     if list_numbered_entries:
         return list_numbered_entries
 
@@ -219,7 +210,7 @@ def parse_toc(content: bytes) -> list[str]:
     # partial list, silently dropping every unnumbered entry instead of ever trying the
     # page-number-suffix check at all.
     entries = []
-    for paragraph in document.paragraphs:
+    for index, paragraph in enumerate(document.paragraphs):
         text = paragraph.text.strip()
         match = _NUMBERED_ENTRY_RE.match(text)
         if match is not None:
@@ -228,12 +219,12 @@ def parse_toc(content: bytes) -> list[str]:
             # Requires the page-number-suffix signal specifically (see
             # `_PAGE_NUMBER_SUFFIX_RE`'s docstring) rather than treating every non-blank
             # paragraph as a title, so unrelated prose with no such structure still correctly
-            # falls through to `TocParseError` below instead of being guessed at.
+            # falls through to the last-resort tier below instead of being guessed at.
             title = _clean_toc_entry_title(paragraph.text)
         else:
             continue
         if title:
-            entries.append(title)
+            entries.append((index, title))
     if entries:
         return entries
 
@@ -249,17 +240,92 @@ def parse_toc(content: bytes) -> list[str]:
     # into this upload gets misread as a one-line-per-chapter TOC rather than rejected — an
     # acceptable trade-off here specifically, since a wrong result just creates chapters the user
     # can immediately see and delete (`TASK-E11-3`), rather than silently corrupting anything.
-    plain_entries = [
-        paragraph.text.strip()
-        for paragraph in document.paragraphs
+    return [
+        (index, paragraph.text.strip())
+        for index, paragraph in enumerate(document.paragraphs)
         if paragraph.text.strip() and not _is_toc_subsection_or_page_title(paragraph.text)
     ]
-    if plain_entries:
-        return plain_entries
 
-    raise TocParseError(
-        "Could not find any chapter titles in the .docx document — it appears to be empty."
-    )
+
+def _load_toc_document(content: bytes):
+    try:
+        return Document(BytesIO(content))
+    except (PackageNotFoundError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+        raise TocParseError("Uploaded file is not a valid .docx document") from exc
+
+
+def parse_toc(content: bytes) -> list[str]:
+    """Parse `content` (raw `.docx` bytes) into an ordered list of chapter titles.
+
+    Tried in order (see module docstring): `Heading 1` paragraphs, then Word TOC-field level-1
+    paragraphs, then top-level Word-list-numbered paragraphs, then plain-numbered/page-numbered
+    lines together, then (last resort) every remaining non-blank line. The first tier that
+    yields any entries wins; a trailing dot-leader/tab/page-number artifact (e.g.
+    `"Introduction .......... 5"` or `"Introduction\t5"`) is stripped from each entry as a
+    best-effort cleanup (see `_TRAILING_PAGE_NUMBER_RE`).
+
+    Raises `TocParseError` if `content` is not a valid `.docx` file, or if it has no non-blank
+    paragraphs at all.
+    """
+    document = _load_toc_document(content)
+    entries = _top_level_entries(document)
+    if not entries:
+        raise TocParseError(
+            "Could not find any chapter titles in the .docx document — it appears to be empty."
+        )
+    return [title for _index, title in entries]
+
+
+def parse_toc_with_subchapters(content: bytes) -> list[tuple[str, list[str]]]:
+    """Parse `content` the same way as `parse_toc`, but also groups dotted-numbered subsection
+    lines (e.g. `"3.1 ..."`, `"3.2 ..."` under a `"3 ..."`/`"ГЛАВА 3 ..."` top-level entry) as
+    that entry's subchapters, instead of silently dropping them.
+
+    Subsection detection (`_DOTTED_SUBSECTION_RE`) is independent of which top-level tier won —
+    it never matches any of `parse_toc`'s own top-level patterns (a dotted `"3.1"` never starts a
+    `Heading 1` paragraph, never gets a `"TOC 1"`-level style, is never list-numbered at level 0,
+    and never matches `_NUMBERED_ENTRY_RE`'s single-number pattern) — so this runs as a second,
+    orthogonal pass: every subsection paragraph is attached to the *nearest preceding* top-level
+    entry in document order, which is always its actual parent chapter in a real TOC's document
+    structure, regardless of numbering (a subsection's own leading number is not cross-checked
+    against its parent's, since a TOC that skips/misnumbers a chapter would otherwise strand its
+    subsections with no parent at all).
+
+    Returns `[(title, [subchapter_title, ...]), ...]`, in document order; a chapter with no
+    subsections gets an empty list. Raises `TocParseError` under the same conditions as
+    `parse_toc`.
+    """
+    document = _load_toc_document(content)
+    entries = _top_level_entries(document)
+    if not entries:
+        raise TocParseError(
+            "Could not find any chapter titles in the .docx document — it appears to be empty."
+        )
+
+    chapters: list[tuple[str, list[str]]] = [(title, []) for _index, title in entries]
+    entry_indices = [index for index, _title in entries]
+
+    for paragraph_index, paragraph in enumerate(document.paragraphs):
+        if paragraph_index in entry_indices:
+            continue
+        match = _DOTTED_SUBSECTION_RE.match(paragraph.text.strip())
+        if match is None:
+            continue
+        subtitle = _clean_toc_entry_title(match.group(1))
+        if not subtitle:
+            continue
+        # The chapter whose own index is the largest one still `<= paragraph_index` is this
+        # subsection's nearest preceding top-level entry, i.e. its parent.
+        parent_position = None
+        for position, entry_index in enumerate(entry_indices):
+            if entry_index <= paragraph_index:
+                parent_position = position
+            else:
+                break
+        if parent_position is not None:
+            chapters[parent_position][1].append(subtitle)
+
+    return chapters
 
 
 def parse_document_sections(content: bytes) -> list[tuple[str, str]]:
@@ -279,10 +345,7 @@ def parse_document_sections(content: bytes) -> list[tuple[str, str]]:
     paragraphs exist at all — unlike `parse_toc`, there is no numbered-list fallback here, since a
     numbered line has no notion of "everything until the next entry" to bound a section's content.
     """
-    try:
-        document = Document(BytesIO(content))
-    except (PackageNotFoundError, KeyError, ValueError, zipfile.BadZipFile) as exc:
-        raise TocParseError("Uploaded file is not a valid .docx document") from exc
+    document = _load_toc_document(content)
 
     sections: list[tuple[str, list[str]]] = []
     for paragraph in document.paragraphs:

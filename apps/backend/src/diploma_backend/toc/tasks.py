@@ -12,7 +12,11 @@ codebase's module-separation rule, the task is defined here, alongside the funct
 
 import base64
 
-from diploma_backend.toc.parser import parse_document_sections, parse_toc
+from diploma_backend.toc.parser import (
+    parse_document_sections,
+    parse_toc,
+    parse_toc_with_subchapters,
+)
 from diploma_backend.worker.celery_app import celery_app
 
 
@@ -30,6 +34,23 @@ def parse_toc_task(content_b64: str) -> list[str]:
     """
     content = base64.b64decode(content_b64)
     return parse_toc(content)
+
+
+@celery_app.task(name="toc.parse_toc_with_subchapters")
+def parse_toc_with_subchapters_task(content_b64: str) -> list[list]:
+    """Run `parse_toc_with_subchapters` in a worker process (user request: dotted-numbered
+    subsections like "3.1"/"3.2" under chapter "3" were silently dropped by `parse_toc_task`).
+
+    Same base64-in/decode-first convention as `parse_toc_task`. Returns a list of
+    `[title, [subchapter_title, ...]]` pairs rather than `list[tuple[str, list[str]]]` — tuples
+    aren't a JSON-native type, matching `parse_document_sections_task`'s identical reasoning.
+    Raises `TocParseError` unchanged if the decoded content isn't a valid `.docx` file or yields
+    no chapter titles at all.
+    """
+    content = base64.b64decode(content_b64)
+    return [
+        [title, subchapters] for title, subchapters in parse_toc_with_subchapters(content)
+    ]
 
 
 @celery_app.task(name="toc.parse_document_sections")

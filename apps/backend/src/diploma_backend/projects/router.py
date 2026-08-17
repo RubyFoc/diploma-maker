@@ -112,7 +112,10 @@ from diploma_backend.sources.client import delete_project_vectors
 from diploma_backend.sources.required import list_required_sources_for_project
 from diploma_backend.sources.search import SourceSearchError, search_sources
 from diploma_backend.toc.parser import TocParseError
-from diploma_backend.toc.tasks import parse_document_sections_task, parse_toc_task
+from diploma_backend.toc.tasks import (
+    parse_document_sections_task,
+    parse_toc_with_subchapters_task,
+)
 from diploma_backend.versions.models import ChapterVersion
 from diploma_backend.versions.service import (
     accept_draft_version,
@@ -415,7 +418,7 @@ async def _humanize_and_precheck(
 
     Both the `.delay()` call AND the blocking `.get()` are run together inside a single
     `asyncio.to_thread(...)` call, not just `.get()` (unlike `upload_toc_endpoint`'s
-    `parse_toc_task`/`plagiarism.router`'s `run_precheck_task` sites): under
+    `parse_toc_with_subchapters_task`/`plagiarism.router`'s `run_precheck_task` sites): under
     `task_always_eager=True` (tests), `.delay()` itself runs the task body synchronously, and
     `humanize_text_task`'s body drives its async work via `asyncio.run(...)` (ADR-0013 addendum
     point 3) — calling `.delay()` directly from this already-running coroutine would collide with
@@ -1091,23 +1094,26 @@ async def upload_toc_endpoint(
     db: AsyncIOMotorDatabase = Depends(get_database),
     owner_id: str = Depends(get_current_user_id),
 ) -> ProjectDetail:
-    """Parse an uploaded `.docx` table of contents and create one chapter per entry, in order.
+    """Parse an uploaded `.docx` table of contents and create one chapter per entry, in order,
+    plus a subchapter per dotted-numbered subsection line (e.g. `"3.1 ..."` under `"3 ..."`,
+    user request) under its nearest preceding chapter.
 
     Scoped to the authenticated caller (TASK-E11-1): raises `HTTPException(404)` if `project_id`
     doesn't exist or belongs to a different owner. Parsing itself now runs on a Celery worker via
-    `toc.tasks.parse_toc_task` (ADR-0013, TASK-E17-4) instead of inline on this process; the
-    uploaded bytes are base64-encoded before `.delay()` since Celery's default JSON serializer
-    cannot carry raw `bytes`, and the task decodes them back before calling `parse_toc`. Per
-    ADR-0013's addendum point 1, the HTTP contract is unchanged: this handler still `await`s the
-    task's result (via `asyncio.to_thread`, since `AsyncResult.get()` blocks) before responding,
-    with the same response shape/status as before. Raises `HTTPException(422)` if the task
-    surfaces a `TocParseError` (fail-closed, matching `formatting.router`'s upload-parse-error
-    convention) — Celery re-raises the original exception type from `.get()` when it's importable
-    in this process, which it is here since the API and worker share this codebase, so the
-    `except TocParseError` below still fires whether the task ran eagerly (tests) or on a real
-    worker. On success, calls `projects.service.create_chapter` once per parsed title, in order
-    (so `order` assignment stays centralized in that function), and returns the updated
-    `ProjectDetail`.
+    `toc.tasks.parse_toc_with_subchapters_task` (ADR-0013, TASK-E17-4) instead of inline on this
+    process; the uploaded bytes are base64-encoded before `.delay()` since Celery's default JSON
+    serializer cannot carry raw `bytes`, and the task decodes them back before calling
+    `parse_toc_with_subchapters`. Per ADR-0013's addendum point 1, the HTTP contract is
+    unchanged: this handler still `await`s the task's result (via `asyncio.to_thread`, since
+    `AsyncResult.get()` blocks) before responding, with the same response shape/status as before.
+    Raises `HTTPException(422)` if the task surfaces a `TocParseError` (fail-closed, matching
+    `formatting.router`'s upload-parse-error convention) — Celery re-raises the original
+    exception type from `.get()` when it's importable in this process, which it is here since the
+    API and worker share this codebase, so the `except TocParseError` below still fires whether
+    the task ran eagerly (tests) or on a real worker. On success, calls
+    `projects.service.create_chapter` once per parsed chapter (`order` assignment stays
+    centralized there), then once more per that chapter's subchapters with
+    `parent_chapter_id` set, and returns the updated `ProjectDetail`.
 
     Note: this only creates chapters from the parsed TOC; inserting a later-generated
     chapter between existing ones is handled separately by `insert_chapter_endpoint`.
@@ -1120,15 +1126,19 @@ async def upload_toc_endpoint(
         # `task_eager_propagates` (tests) raises directly from `.delay()` rather than deferring
         # the exception to `.get()`, so both calls must sit inside this `try` block to catch a
         # `TocParseError` regardless of whether the task ran eagerly or on a real worker.
-        async_result = parse_toc_task.delay(content_b64)
-        titles = await asyncio.to_thread(async_result.get, timeout=_TOC_PARSE_TASK_TIMEOUT_SECONDS)
+        async_result = parse_toc_with_subchapters_task.delay(content_b64)
+        chapters = await asyncio.to_thread(
+            async_result.get, timeout=_TOC_PARSE_TASK_TIMEOUT_SECONDS
+        )
     except TocParseError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
-    for title in titles:
-        await create_chapter(db, project_id, title)
+    for title, subchapter_titles in chapters:
+        chapter = await create_chapter(db, project_id, title)
+        for subchapter_title in subchapter_titles:
+            await create_chapter(db, project_id, subchapter_title, parent_chapter_id=chapter.id)
     return await _build_project_detail(db, project)
 
 
@@ -1150,12 +1160,17 @@ async def upload_document_endpoint(
     Splits `file` into `(title, content)` sections by `Heading 1` paragraph (see
     `toc.parser.parse_document_sections`'s docstring for the exact rule), via the same
     base64-encode-then-Celery-task shape as `upload_toc_endpoint` (ADR-0013, TASK-E17-4). For each
-    section, creates a chapter (`projects.service.create_chapter`) and, if the section has any
-    non-blank content, ingests it as that chapter's first pending draft version
-    (`versions.service.create_draft_version`) — same as `locks.router.upload_draft_endpoint`, so
-    the ingested content goes through the same accept/reject `DiffViewer` flow as any other draft
-    rather than silently becoming "accepted" content with no review step. A section with only a
-    heading and no body content still creates the chapter, just with no pending draft to review.
+    section, matches `title` (trimmed, case-insensitive) against the project's existing top-level
+    chapters — e.g. ones already created by a prior `upload_toc_endpoint` call — and reuses that
+    chapter instead of creating a duplicate (user request: a TOC upload followed by this endpoint
+    was creating a second, empty-then-filled copy of every chapter rather than filling in the one
+    the TOC already made). Falls back to creating a new chapter when no title matches, same as
+    before. Either way, if the section has any non-blank content, ingests it as that chapter's
+    first pending draft version (`versions.service.create_draft_version`) — same as
+    `locks.router.upload_draft_endpoint`, so the ingested content goes through the same
+    accept/reject `DiffViewer` flow as any other draft rather than silently becoming "accepted"
+    content with no review step. A section with only a heading and no body content still gets/
+    creates its chapter, just with no pending draft to review.
 
     Scoped to the authenticated caller (TASK-E11-1): raises `HTTPException(404)` if `project_id`
     doesn't exist or belongs to a different owner. Raises `HTTPException(422)` if the task
@@ -1176,8 +1191,17 @@ async def upload_document_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
+    existing_chapters = await list_chapters_for_project(db, project_id)
+    existing_by_title = {
+        chapter.title.strip().casefold(): chapter
+        for chapter in existing_chapters
+        if chapter.parent_chapter_id is None
+    }
+
     for title, section_content in sections:
-        chapter = await create_chapter(db, project_id, title)
+        chapter = existing_by_title.get(
+            title.strip().casefold()
+        ) or await create_chapter(db, project_id, title)
         if section_content.strip():
             await create_draft_version(db, chapter.id, content=section_content)
     return await _build_project_detail(db, project)
