@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PaginatedDocument } from './PaginatedDocument'
 import { strings } from '../strings'
 import type { Block } from '../utils/renderMarkdownPreview'
@@ -180,5 +181,58 @@ describe('PaginatedDocument', () => {
     render(<PaginatedDocument blocks={blocks} pageStyle={pageStyle} onPageBlockIdsChange={onPageBlockIdsChange} />)
 
     expect(onPageBlockIdsChange).toHaveBeenCalledWith([])
+  })
+
+  describe('page navigation survives a parent re-render with fresh (but content-identical) props', () => {
+    // jsdom always reports 0 for offsetHeight/clientHeight, so every other test's content lands
+    // on a single page — force real per-block heights here to get more than one page, matching
+    // any real generated/uploaded chapter (which always has a manifest, i.e. always hits this
+    // path in production).
+    beforeEach(() => {
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => 50 })
+      Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 100 })
+    })
+
+    afterEach(() => {
+      Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight')
+      Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight')
+    })
+
+    /**
+     * Mirrors `DiffViewer`'s real shape: `blocks` and `pageStyle` are rebuilt as new array/object
+     * literals on every render (not memoized) rather than passed in as stable props, and
+     * `onPageBlockIdsChange` updates this wrapper's own state — the exact feedback loop that
+     * used to snap `PaginatedDocument` back to page 1 on every "Next" click (see
+     * `PaginatedDocument.tsx`'s `blocksSignature`/`pageStyleSignature` comment).
+     */
+    function UnmemoizedParent() {
+      const [, setVisibleBlockIds] = useState<string[]>([])
+      const blocks: Block[] = [
+        { kind: 'p', text: 'First paragraph.' },
+        { kind: 'p', text: 'Second paragraph.' },
+        { kind: 'p', text: 'Third paragraph.' },
+      ]
+      return (
+        <PaginatedDocument
+          blocks={blocks}
+          pageStyle={{ ...pageStyle }}
+          pageBlockIds={['b1', 'b2', 'b3']}
+          onPageBlockIdsChange={setVisibleBlockIds}
+        />
+      )
+    }
+
+    it('stays on page 2 after clicking Next, instead of snapping back to page 1', () => {
+      const { container } = render(<UnmemoizedParent />)
+      const page = () => visiblePage(container)
+
+      expect(page().getByText('First paragraph.')).toBeInTheDocument()
+      expect(page().queryByText('Third paragraph.')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: strings.documentPageNextButton }))
+
+      expect(page().getByText('Third paragraph.')).toBeInTheDocument()
+      expect(page().queryByText('First paragraph.')).not.toBeInTheDocument()
+    })
   })
 })
