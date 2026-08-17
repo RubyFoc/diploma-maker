@@ -105,6 +105,13 @@ export function DiffViewer({
   onRedo,
 }: DiffViewerProps) {
   const taggedBlocks = buildTaggedBlocks(before, after)
+  // A brand-new chapter (nothing accepted yet — e.g. straight after a whole-document/TOC/draft
+  // upload, or a chapter's very first AI generation) has no real "before" to diff against, so
+  // every line of `after` falls into `diffLines`'s trailing added-lines loop (see `utils/diff.ts`)
+  // and the entire draft would render green-and-underlined end to end. That defeats the point of
+  // diff styling (highlighting *changes*) and makes a full document hard to read as plain prose
+  // before deciding accept/reject — render it as plain text instead in this case.
+  const isBrandNewDraft = before.trim() === ''
   const pageStyle = getPageStyle(institutionConfig)
   const [visiblePageBlockIds, setVisiblePageBlockIds] = useState<string[]>([])
   // Arms the "this page" undo/redo button once `spansOtherEdits` is true, so `widerCount` (which
@@ -115,8 +122,9 @@ export function DiffViewer({
 
   const renderDiffBlock = (block: Block, key: number): ReactNode => {
     const segmentType = taggedBlocks[key]?.segmentType ?? 'unchanged'
+    const className = isBrandNewDraft ? 'diff-inline' : `diff-inline diff-${segmentType}`
     return (
-      <span key={key} className={`diff-inline diff-${segmentType}`} data-testid={`diff-segment-${segmentType}`}>
+      <span key={key} className={className} data-testid={`diff-segment-${segmentType}`}>
         {renderBlock(block, key)}
       </span>
     )
@@ -158,6 +166,9 @@ export function DiffViewer({
         <p className="diff-reroute-notice" role="status">
           {strings.diffRerouteNoticeMessage}
         </p>
+      )}
+      {isBrandNewDraft && taggedBlocks.length > 0 && (
+        <p className="diff-new-draft-hint">{strings.diffNewDraftHintMessage}</p>
       )}
       {taggedBlocks.length === 0 ? (
         <p>{strings.diffEmpty}</p>

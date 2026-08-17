@@ -58,6 +58,19 @@ describe('DiffViewer', () => {
     expect(screen.getByText(strings.diffEmpty)).toBeInTheDocument()
   })
 
+  it('renders a brand-new draft (no accepted content yet) as plain text, not all-green diff markup', () => {
+    const { container } = render(
+      <DiffViewer before="" after={'First paragraph.\n\nSecond paragraph.'} onAccept={vi.fn()} onReject={vi.fn()} />,
+    )
+    const page = visiblePage(container)
+
+    const segments = page.getAllByTestId('diff-segment-added')
+    for (const segment of segments) {
+      expect(segment).not.toHaveClass('diff-added')
+    }
+    expect(screen.getByText(strings.diffNewDraftHintMessage)).toBeInTheDocument()
+  })
+
   it('renders the reroute banner when rerouteNotice is set', () => {
     render(
       <DiffViewer

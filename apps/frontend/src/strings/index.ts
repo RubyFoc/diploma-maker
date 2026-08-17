@@ -30,6 +30,7 @@ export const strings = {
   diffAcceptButton: 'Accept',
   diffRejectButton: 'Reject',
   diffEmpty: 'No changes.',
+  diffNewDraftHintMessage: 'Review the content below, then Accept or Reject it.',
   chatInputPlaceholder: 'Describe what you want this chapter to say...',
   chatSendButton: 'Send',
   chatDraftReadyMessage: 'Draft ready — review it in the document panel.',
