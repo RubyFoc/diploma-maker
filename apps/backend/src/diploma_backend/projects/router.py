@@ -112,7 +112,7 @@ from diploma_backend.sources.client import delete_project_vectors
 from diploma_backend.sources.required import list_required_sources_for_project
 from diploma_backend.sources.search import SourceSearchError, search_sources
 from diploma_backend.toc.parser import TocParseError
-from diploma_backend.toc.tasks import parse_toc_task
+from diploma_backend.toc.tasks import parse_document_sections_task, parse_toc_task
 from diploma_backend.versions.models import ChapterVersion
 from diploma_backend.versions.service import (
     accept_draft_version,
@@ -1129,6 +1129,57 @@ async def upload_toc_endpoint(
 
     for title in titles:
         await create_chapter(db, project_id, title)
+    return await _build_project_detail(db, project)
+
+
+@router.post(
+    "/{project_id}/document/upload",
+    response_model=ProjectDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_document_endpoint(
+    project_id: str,
+    file: UploadFile = File(...),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    owner_id: str = Depends(get_current_user_id),
+) -> ProjectDetail:
+    """Ingest a whole already-written `.docx` document as multiple chapters in one upload (user
+    request), instead of requiring `upload_toc_endpoint` (titles only) followed by a separate
+    `locks.router.upload_draft_endpoint` call per chapter.
+
+    Splits `file` into `(title, content)` sections by `Heading 1` paragraph (see
+    `toc.parser.parse_document_sections`'s docstring for the exact rule), via the same
+    base64-encode-then-Celery-task shape as `upload_toc_endpoint` (ADR-0013, TASK-E17-4). For each
+    section, creates a chapter (`projects.service.create_chapter`) and, if the section has any
+    non-blank content, ingests it as that chapter's first pending draft version
+    (`versions.service.create_draft_version`) — same as `locks.router.upload_draft_endpoint`, so
+    the ingested content goes through the same accept/reject `DiffViewer` flow as any other draft
+    rather than silently becoming "accepted" content with no review step. A section with only a
+    heading and no body content still creates the chapter, just with no pending draft to review.
+
+    Scoped to the authenticated caller (TASK-E11-1): raises `HTTPException(404)` if `project_id`
+    doesn't exist or belongs to a different owner. Raises `HTTPException(422)` if the task
+    surfaces a `TocParseError` (no valid `.docx`, or no `Heading 1` paragraphs found) — fail
+    closed, matching `upload_toc_endpoint`'s convention, rather than guessing chapter boundaries.
+    """
+    project = await _get_owned_project(db, project_id, owner_id)
+
+    content = await file.read()
+    content_b64 = base64.b64encode(content).decode("ascii")
+    try:
+        async_result = parse_document_sections_task.delay(content_b64)
+        sections = await asyncio.to_thread(
+            async_result.get, timeout=_TOC_PARSE_TASK_TIMEOUT_SECONDS
+        )
+    except TocParseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    for title, section_content in sections:
+        chapter = await create_chapter(db, project_id, title)
+        if section_content.strip():
+            await create_draft_version(db, chapter.id, content=section_content)
     return await _build_project_detail(db, project)
 
 

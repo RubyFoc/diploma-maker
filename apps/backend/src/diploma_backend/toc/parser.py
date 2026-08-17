@@ -84,3 +84,45 @@ def parse_toc(content: bytes) -> list[str]:
     raise TocParseError(
         "Could not find any Heading 1 paragraphs or numbered TOC entries in the .docx document"
     )
+
+
+def parse_document_sections(content: bytes) -> list[tuple[str, str]]:
+    """Split a whole already-written `.docx` document into `(title, content)` sections, one per
+    `Heading 1`-styled paragraph, so an entire pre-written thesis can be ingested as multiple
+    chapters — each with its actual content, not just its title — in a single upload, instead of
+    requiring the TOC (titles only, `parse_toc`) and then a separate per-chapter draft upload for
+    each one.
+
+    Every non-heading paragraph's text is appended to the section started by the most recent
+    `Heading 1` paragraph above it; paragraphs before the first heading are dropped (there is no
+    section yet to attach them to). Section content joins paragraphs with a blank line, mirroring
+    a `.docx` document's paragraph-per-line structure. Blank paragraphs are skipped rather than
+    preserved as empty lines.
+
+    Raises `TocParseError` if `content` isn't a valid `.docx` file, or if no `Heading 1`
+    paragraphs exist at all — unlike `parse_toc`, there is no numbered-list fallback here, since a
+    numbered line has no notion of "everything until the next entry" to bound a section's content.
+    """
+    try:
+        document = Document(BytesIO(content))
+    except (PackageNotFoundError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+        raise TocParseError("Uploaded file is not a valid .docx document") from exc
+
+    sections: list[tuple[str, list[str]]] = []
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        is_heading = paragraph.style is not None and paragraph.style.name == _HEADING_1_STYLE
+        if is_heading:
+            if text:
+                sections.append((text, []))
+            continue
+        if not sections or not text:
+            continue
+        sections[-1][1].append(text)
+
+    if not sections:
+        raise TocParseError(
+            "Could not find any Heading 1 paragraphs to split the document into chapters"
+        )
+
+    return [(title, "\n\n".join(paragraphs)) for title, paragraphs in sections]

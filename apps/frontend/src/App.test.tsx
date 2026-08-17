@@ -287,6 +287,68 @@ describe('App', () => {
     )
   })
 
+  it('uploading a whole document replaces the empty-chapters message with the created chapters', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const projectWithChapters = {
+      ...project,
+      chapters: [
+        {
+          id: 'c1',
+          project_id: 'p1',
+          parent_chapter_id: null,
+          title: 'Introduction',
+          order: 0,
+          created_at: 'now',
+          accepted_content: null,
+          accepted_manifest: null,
+          pending_draft: {
+            id: 'v1',
+            chapter_id: 'c1',
+            version_number: 1,
+            content: 'Some body text.',
+            manifest: null,
+            created_at: 'now',
+            status: 'draft',
+            parent_version_id: null,
+          },
+        },
+      ],
+    }
+    const fetchMock = createFetchMock([jsonResponse(project, true, 201), jsonResponse(projectWithChapters, true, 201)])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
+    expect(await screen.findByText(strings.documentEmpty)).toBeInTheDocument()
+
+    const file = new File(['thesis'], 'thesis.docx')
+    fireEvent.change(screen.getByLabelText(strings.documentUploadLabel), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: strings.documentUploadButton }))
+
+    await findVisibleByText('Introduction')
+    expect(screen.queryByText(strings.documentEmpty)).not.toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8010/projects/p1/document/upload',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('shows an error message when the whole-document upload fails', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const fetchMock = createFetchMock([
+      jsonResponse(project, true, 201),
+      jsonResponse({ detail: 'Could not find any Heading 1 paragraphs' }, false, 422),
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
+
+    const file = new File(['thesis'], 'thesis.docx')
+    fireEvent.change(screen.getByLabelText(strings.documentUploadLabel), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: strings.documentUploadButton }))
+
+    expect(await screen.findByText(strings.documentUploadErrorMessage)).toBeInTheDocument()
+  })
+
   it('sends a chat message, creates a default chapter, and shows the generated draft in the diff viewer', async () => {
     const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
     const chapter = {

@@ -52,6 +52,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
+/** Like `request`, but for `multipart/form-data` uploads: omits the JSON `Content-Type` so the
+ * browser can set the multipart boundary itself (same reasoning as `institutionService.ts`'s
+ * `uploadInstitutionSample`). */
+async function requestMultipart<T>(path: string, formData: FormData): Promise<T> {
+  const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: formData,
+  })
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      notifyAuthExpired()
+    }
+    const body = await response.text()
+    throw new RequestError(`Request to ${path} failed with status ${response.status}: ${body}`, response.status)
+  }
+
+  return (await response.json()) as T
+}
+
 export function createProject(title?: string, institutionId?: string | null): Promise<ProjectDetail> {
   const body: { title?: string; institution_id?: string } = {}
   if (title !== undefined) {
@@ -123,4 +144,38 @@ export function generateChapterDraft(
 
 export function acceptDraft(versionId: string): Promise<ChapterVersion> {
   return request<ChapterVersion>(`/versions/${versionId}/accept`, { method: 'POST' })
+}
+
+/**
+ * Parses an uploaded `.docx` table of contents and creates one chapter per entry, in order
+ * (TASK-E10-2/E10-3). Returns the updated `ProjectDetail` with the new chapters.
+ */
+export function uploadToc(projectId: string, file: File): Promise<ProjectDetail> {
+  const formData = new FormData()
+  formData.append('file', file)
+  return requestMultipart<ProjectDetail>(`/projects/${projectId}/toc/upload`, formData)
+}
+
+/**
+ * Ingests a whole already-written `.docx` document as multiple chapters in one upload (user
+ * request): splits it by `Heading 1` paragraph into `(title, content)` sections, creates one
+ * chapter per section, and — for sections with body text — a pending draft version to review,
+ * instead of requiring `uploadToc` (titles only) plus a separate `uploadChapterDraft` per
+ * chapter.
+ */
+export function uploadDocument(projectId: string, file: File): Promise<ProjectDetail> {
+  const formData = new FormData()
+  formData.append('file', file)
+  return requestMultipart<ProjectDetail>(`/projects/${projectId}/document/upload`, formData)
+}
+
+/**
+ * Ingests an already-written `.docx`/`.pdf` draft as a new pending draft version for
+ * `chapterId` (TASK-E13-3), so the user's own writing goes through the same accept/reject
+ * diff flow as an AI-generated draft.
+ */
+export function uploadChapterDraft(chapterId: string, file: File): Promise<ChapterVersion> {
+  const formData = new FormData()
+  formData.append('file', file)
+  return requestMultipart<ChapterVersion>(`/chapters/${chapterId}/draft/upload`, formData)
 }

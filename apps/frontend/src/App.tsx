@@ -13,7 +13,16 @@ import { ProjectLanding } from './components/ProjectLanding'
 import { useChapterHistory } from './hooks/useChapterHistory'
 import { exportProject } from './services/exportService'
 import { recordSignal } from './services/feedbackService'
-import { RequestError, acceptDraft, createChapter, generateChapterDraft, getProject } from './services/projectService'
+import {
+  RequestError,
+  acceptDraft,
+  createChapter,
+  generateChapterDraft,
+  getProject,
+  uploadChapterDraft,
+  uploadDocument,
+  uploadToc,
+} from './services/projectService'
 import { streamChapterDraft } from './services/generateStream'
 import { toDocumentState } from './utils/mapProject'
 import type { Chapter } from './context/DocumentContext'
@@ -271,6 +280,168 @@ function ChapterDraftDiff({
   )
 }
 
+/**
+ * Lets the user upload their whole already-written document in one go (user request: uploading
+ * one chapter at a time doesn't scale to a mostly- or fully-written thesis). Splits the document
+ * by `Heading 1` paragraph into chapters, each with its content pre-filled as a pending draft to
+ * review — combining what `TocUploadForm` (titles only) and per-chapter draft upload used to
+ * require as two separate steps.
+ */
+function DocumentUploadForm() {
+  const { document: doc, setDocument } = useDocument()
+  const [file, setFile] = useState<File | null>(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [error, setError] = useState(false)
+
+  const handleUpload = async () => {
+    const projectId = doc.projectId
+    if (projectId === null || file === null || isUploading) {
+      return
+    }
+    setIsUploading(true)
+    setError(false)
+    try {
+      const project = await uploadDocument(projectId, file)
+      setDocument(() => toDocumentState(project))
+      setFile(null)
+    } catch {
+      setError(true)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  return (
+    <div className="document-upload-section">
+      <h3>{strings.documentUploadTitle}</h3>
+      <p className="document-panel-hint">{strings.documentUploadSubtitle}</p>
+      <form
+        className="document-upload-form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void handleUpload()
+        }}
+      >
+        <label>
+          {strings.documentUploadLabel}
+          <input type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+        </label>
+        <button type="submit" disabled={file === null || isUploading}>
+          {isUploading ? strings.documentUploadButtonPending : strings.documentUploadButton}
+        </button>
+        {error && <p className="document-panel-error">{strings.documentUploadErrorMessage}</p>}
+      </form>
+    </div>
+  )
+}
+
+/**
+ * Lets the user upload a `.docx` table of contents (TASK-E10-2/E10-3) so one chapter gets
+ * created per entry, in order, instead of relying solely on the chat flow to create chapters
+ * one at a time. Shown alongside `DocumentUploadForm` for the titles-only case (no content yet
+ * to bring in).
+ */
+function TocUploadForm() {
+  const { document: doc, setDocument } = useDocument()
+  const [file, setFile] = useState<File | null>(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [error, setError] = useState(false)
+
+  const handleUpload = async () => {
+    const projectId = doc.projectId
+    if (projectId === null || file === null || isUploading) {
+      return
+    }
+    setIsUploading(true)
+    setError(false)
+    try {
+      const project = await uploadToc(projectId, file)
+      setDocument(() => toDocumentState(project))
+      setFile(null)
+    } catch {
+      setError(true)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  return (
+    <div className="toc-upload-section">
+      <h3>{strings.tocUploadTitle}</h3>
+      <p className="document-panel-hint">{strings.tocUploadSubtitle}</p>
+      <form
+        className="toc-upload-form"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void handleUpload()
+        }}
+      >
+        <label>
+          {strings.tocUploadLabel}
+          <input type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+        </label>
+        <button type="submit" disabled={file === null || isUploading}>
+          {isUploading ? strings.tocUploadButtonPending : strings.tocUploadButton}
+        </button>
+        {error && <p className="document-panel-error">{strings.tocUploadErrorMessage}</p>}
+      </form>
+    </div>
+  )
+}
+
+/**
+ * Lets the user upload their own already-written `.docx`/`.pdf` draft for a chapter (TASK-E13-3)
+ * instead of only ever generating one via chat. The upload becomes a pending draft version, so
+ * it goes through the same `DiffViewer` accept/reject flow as an AI-generated draft.
+ */
+function ChapterDraftUploadForm({
+  chapterId,
+  onUploaded,
+}: {
+  chapterId: string
+  onUploaded: (version: ChapterVersion) => void
+}) {
+  const [file, setFile] = useState<File | null>(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [error, setError] = useState(false)
+
+  const handleUpload = async () => {
+    if (file === null || isUploading) {
+      return
+    }
+    setIsUploading(true)
+    setError(false)
+    try {
+      const version = await uploadChapterDraft(chapterId, file)
+      onUploaded(version)
+      setFile(null)
+    } catch {
+      setError(true)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  return (
+    <form
+      className="chapter-draft-upload-form"
+      onSubmit={(event) => {
+        event.preventDefault()
+        void handleUpload()
+      }}
+    >
+      <label>
+        {strings.chapterDraftUploadLabel}
+        <input type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+      </label>
+      <button type="submit" disabled={file === null || isUploading}>
+        {isUploading ? strings.chapterDraftUploadButtonPending : strings.chapterDraftUploadButton}
+      </button>
+      {error && <p className="document-panel-error">{strings.chapterDraftUploadErrorMessage}</p>}
+    </form>
+  )
+}
+
 function DocumentPanel() {
   const { document: doc, setDocument } = useDocument()
   const { config: institutionConfig } = useInstitutionConfig(doc.institutionId)
@@ -329,6 +500,8 @@ function DocumentPanel() {
   return (
     <section className="panel document-panel" aria-label={strings.documentPanelTitle}>
       <h2>{strings.documentPanelTitle}</h2>
+      <DocumentUploadForm />
+      <TocUploadForm />
       {doc.chapters.length === 0 ? (
         <p className="document-empty">{strings.documentEmpty}</p>
       ) : (
@@ -366,6 +539,12 @@ function DocumentPanel() {
                     onAccept={() => void handleAccept(chapter.id, pendingDraft.id)}
                     onReject={() => handleReject(chapter.id, pendingDraft.id)}
                     onDraftUpdated={(version) => handleDraftUpdated(chapter.id, version)}
+                  />
+                )}
+                {!pendingDraft && !streamingContent && (
+                  <ChapterDraftUploadForm
+                    chapterId={chapter.id}
+                    onUploaded={(version) => handleDraftUpdated(chapter.id, version)}
                   />
                 )}
               </li>

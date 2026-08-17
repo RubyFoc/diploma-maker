@@ -199,6 +199,57 @@
   font-style: italic;
 }
 
+.document-upload-section,
+.toc-upload-section {
+  margin-bottom: var(--space-5);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.document-upload-section h3,
+.toc-upload-section h3 {
+  margin: 0 0 var(--space-1);
+  font-size: 0.95rem;
+}
+
+.document-panel-hint {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  margin: 0 0 var(--space-3);
+}
+
+.document-upload-form,
+.toc-upload-form,
+.chapter-draft-upload-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.document-upload-form label,
+.toc-upload-form label,
+.chapter-draft-upload-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+  flex: 1;
+  min-width: 220px;
+}
+
+.chapter-draft-upload-form {
+  margin-top: var(--space-4);
+}
+
+.document-panel-error {
+  width: 100%;
+  color: var(--color-danger-text);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
 .chapter-list {
   list-style: none;
   padding: 0;

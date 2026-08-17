@@ -12,7 +12,7 @@ codebase's module-separation rule, the task is defined here, alongside the funct
 
 import base64
 
-from diploma_backend.toc.parser import parse_toc
+from diploma_backend.toc.parser import parse_document_sections, parse_toc
 from diploma_backend.worker.celery_app import celery_app
 
 
@@ -30,3 +30,18 @@ def parse_toc_task(content_b64: str) -> list[str]:
     """
     content = base64.b64decode(content_b64)
     return parse_toc(content)
+
+
+@celery_app.task(name="toc.parse_document_sections")
+def parse_document_sections_task(content_b64: str) -> list[list[str]]:
+    """Run `parse_document_sections` in a worker process (user request: ingest a whole
+    already-written document as multiple chapters in one upload, not just one chapter at a time).
+
+    Same base64-in/decode-first convention as `parse_toc_task`. Returns a list of `[title,
+    content]` pairs rather than `list[tuple[str, str]]` — tuples aren't a JSON-native type, and
+    Celery's default serializer would silently coerce them to lists on the wire anyway, so the
+    task's declared return type matches what callers actually receive. Raises `TocParseError`
+    unchanged if the decoded content isn't a valid `.docx` file or has no `Heading 1` paragraphs.
+    """
+    content = base64.b64decode(content_b64)
+    return [[title, section_content] for title, section_content in parse_document_sections(content)]

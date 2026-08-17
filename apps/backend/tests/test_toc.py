@@ -10,7 +10,7 @@ from io import BytesIO
 from docx import Document
 from fastapi.testclient import TestClient
 
-from diploma_backend.toc.parser import TocParseError, parse_toc
+from diploma_backend.toc.parser import TocParseError, parse_document_sections, parse_toc
 
 
 def _auth_headers(client: TestClient, email: str = "student@example.com") -> dict:
@@ -133,6 +133,103 @@ def test_upload_toc_invalid_file_422s(client: TestClient) -> None:
     response = client.post(
         f"/projects/{project_id}/toc/upload",
         files={"file": ("toc.docx", b"not a real docx file", "application/octet-stream")},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+
+# --- parse_document_sections / POST /{project_id}/document/upload (whole-document ingestion) ----
+
+
+def test_parse_document_sections_splits_by_heading_1() -> None:
+    sections = parse_document_sections(_build_heading_docx())
+
+    assert sections == [
+        ("Introduction", "Some body text under the introduction."),
+        ("Literature Review", ""),
+        ("Conclusion", ""),
+    ]
+
+
+def test_parse_document_sections_joins_multiple_paragraphs_per_section() -> None:
+    document = Document()
+    document.add_paragraph("Introduction", style="Heading 1")
+    document.add_paragraph("First paragraph.")
+    document.add_paragraph("Second paragraph.")
+
+    sections = parse_document_sections(_docx_bytes(document))
+
+    assert sections == [("Introduction", "First paragraph.\n\nSecond paragraph.")]
+
+
+def test_parse_document_sections_drops_preamble_before_first_heading() -> None:
+    document = Document()
+    document.add_paragraph("Some cover-page text before any heading.")
+    document.add_paragraph("Introduction", style="Heading 1")
+    document.add_paragraph("Body text.")
+
+    sections = parse_document_sections(_docx_bytes(document))
+
+    assert sections == [("Introduction", "Body text.")]
+
+
+def test_parse_document_sections_invalid_file_raises() -> None:
+    try:
+        parse_document_sections(b"not a real docx file")
+        raise AssertionError("expected TocParseError")
+    except TocParseError:
+        pass
+
+
+def test_parse_document_sections_no_headings_raises() -> None:
+    try:
+        parse_document_sections(_build_empty_docx())
+        raise AssertionError("expected TocParseError")
+    except TocParseError:
+        pass
+
+
+def test_upload_document_creates_chapters_with_content(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+    project_id = create_response.json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/document/upload",
+        files={"file": ("thesis.docx", _build_heading_docx(), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    chapters = {chapter["title"]: chapter for chapter in body["chapters"]}
+    assert set(chapters) == {"Introduction", "Literature Review", "Conclusion"}
+    assert chapters["Introduction"]["pending_draft"]["content"] == (
+        "Some body text under the introduction."
+    )
+    assert chapters["Literature Review"]["pending_draft"] is None
+
+
+def test_upload_document_nonexistent_project_404s(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    response = client.post(
+        "/projects/does-not-exist/document/upload",
+        files={"file": ("thesis.docx", _build_heading_docx(), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+
+    assert response.status_code == 404
+
+
+def test_upload_document_no_headings_422s(client: TestClient) -> None:
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+    project_id = create_response.json()["id"]
+
+    response = client.post(
+        f"/projects/{project_id}/document/upload",
+        files={"file": ("thesis.docx", _build_empty_docx(), "application/vnd.openxmlformats")},
         headers=headers,
     )
 
