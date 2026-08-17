@@ -16,6 +16,15 @@
   box-shadow: var(--shadow-lg);
   border-radius: 2px;
   overflow: hidden;
+  /* `pageStyle` sets a fixed real-paper `width` (e.g. 210mm for A4) inline, which is wider than
+     the document panel on anything but a very wide screen (that column is well under 794px once
+     split against the chat panel) — without this, the page overflowed its container instead of
+     shrinking to fit. `max-width` doesn't conflict with the inline `width`: it caps the used
+     value regardless of where `width` came from. See `PaginatedDocument.css`'s
+     `.paginated-document { position: relative }` comment for why the off-screen pagination
+     measurement pass shrinks by the same amount, keeping line-wrapping (and so page-break
+     positions) consistent with what's actually rendered on screen. */
+  max-width: 100%;
 }
 
 /* `index.css` sets `color` directly on heading/paragraph elements (via `--color-text`, which

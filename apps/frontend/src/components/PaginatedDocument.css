@@ -3,6 +3,15 @@
   flex-direction: column;
   align-items: center;
   gap: var(--space-3);
+  /* Containing block for `.document-page--measure`'s `position: absolute` below, so its
+     percentage-based `max-width: 100%` (`DocumentPage.css`) resolves against this element's
+     actual width — the same width the visible page shrinks to — instead of the viewport (the
+     default containing block for an absolutely-positioned element with no positioned ancestor).
+     Without this, the measurement pass would keep measuring against the full, unshrunk page
+     width while the visible page renders narrower, so wrapped line heights measured for
+     pagination wouldn't match what's actually on screen, cutting content off at the bottom of a
+     page instead of just fixing the width overflow this exists to fix. */
+  position: relative;
 }
 
 .document-page-content > *:first-child {
