@@ -183,6 +183,56 @@ describe('PaginatedDocument', () => {
     expect(onPageBlockIdsChange).toHaveBeenCalledWith([])
   })
 
+  describe('pagination accounts for the lock/anchor toggle narrowing a block\'s rendered width', () => {
+    // Simulates the real-world effect this test guards against: a block wrapped in the
+    // lock/anchor toggle's flex row (`.document-block-with-lock`) renders narrower — its text
+    // wraps onto more lines — so it's genuinely taller than the same block with no toggle beside
+    // it. jsdom does no real layout, so this mock stands in for that: any measured element
+    // containing `.document-block-with-lock` reports the "wrapped-narrower" height; any element
+    // without it (the pre-fix off-screen measuring pass, which rendered blocks with no toggle at
+    // all) reports the "full-width" height instead — under-measuring relative to what the real,
+    // toggle-narrowed page actually needs.
+    beforeEach(() => {
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+        configurable: true,
+        get(this: HTMLElement) {
+          return this.querySelector('.document-block-with-lock') ? 60 : 30
+        },
+      })
+      Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 100 })
+    })
+
+    afterEach(() => {
+      Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight')
+      Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight')
+    })
+
+    it('measures each block at its real (toggle-narrowed) height, splitting one block per page instead of overflowing one page', () => {
+      const blocks: Block[] = [
+        { kind: 'p', text: 'First paragraph.' },
+        { kind: 'p', text: 'Second paragraph.' },
+        { kind: 'p', text: 'Third paragraph.' },
+      ]
+      const lockableBlocks = [
+        { id: 'b1', content: 'First paragraph.', content_hash: 'h1', order: 0 },
+        { id: 'b2', content: 'Second paragraph.', content_hash: 'h2', order: 1 },
+        { id: 'b3', content: 'Third paragraph.', content_hash: 'h3', order: 2 },
+      ]
+      render(
+        <PaginatedDocument
+          blocks={blocks}
+          pageStyle={pageStyle}
+          lockSelection={{ lockableBlocks, lockedBlockIds: new Set(), onToggleLock: vi.fn() }}
+        />,
+      )
+
+      // Each block is 60 tall (with its toggle) against a 100-tall page: only one fits per page.
+      // If the measuring pass had under-measured them at 30 (no toggle, the pre-fix bug), all
+      // three would wrongly fit on a single page and this would show no page nav at all.
+      expect(screen.getByText(strings.documentPageLabel(1, 3))).toBeInTheDocument()
+    })
+  })
+
   describe('page navigation survives a parent re-render with fresh (but content-identical) props', () => {
     // jsdom always reports 0 for offsetHeight/clientHeight, so every other test's content lands
     // on a single page — force real per-block heights here to get more than one page, matching

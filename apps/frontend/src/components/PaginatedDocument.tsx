@@ -120,6 +120,59 @@ export function PaginatedDocument({
     )
   }
 
+  // Renders `blockIndex` exactly the way the visible page does — including the lock/anchor
+  // toggle button beside it, when applicable — so the off-screen measuring pass below sees the
+  // same narrower content column the button's flex row produces on the real page. Without this,
+  // the measuring pass rendered each block at the *full* page width (no button eating into it),
+  // under-measuring its height whenever the button's presence pushed wrapped text onto an extra
+  // line; a page's real (button-narrowed) content then overflowed the height computed from that
+  // undercount, silently clipping the last block at the bottom of the page (user report: text
+  // cut off mid-sentence at the page's bottom edge).
+  const renderBlockWithControls = (blockIndex: number): ReactNode => {
+    const block = blocks[blockIndex]
+    const rendered = wrapBlock(block, blockIndex)
+    const lockableBlock = lockSelection?.lockableBlocks[blockIndex]
+    const anchorableBlock = anchorSelection?.anchorableBlocks[blockIndex]
+    if (!lockableBlock && !anchorableBlock) {
+      return rendered
+    }
+    const isLocked = lockableBlock ? lockSelection!.lockedBlockIds.has(lockableBlock.id) : false
+    const isSelectedAnchor = anchorableBlock ? anchorSelection!.selectedBlockId === anchorableBlock.id : false
+    return (
+      <div key={blockIndex} className="document-block-with-lock">
+        {lockableBlock && (
+          <button
+            type="button"
+            className={isLocked ? 'document-block-lock-toggle document-block-lock-toggle--locked' : 'document-block-lock-toggle'}
+            onClick={() => lockSelection!.onToggleLock(lockableBlock)}
+            aria-pressed={isLocked}
+            aria-label={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
+            title={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
+          >
+            {isLocked ? '🔒' : '🔓'}
+          </button>
+        )}
+        {anchorableBlock && (
+          <button
+            type="button"
+            className={
+              isSelectedAnchor
+                ? 'document-block-anchor-toggle document-block-anchor-toggle--selected'
+                : 'document-block-anchor-toggle'
+            }
+            onClick={() => anchorSelection!.onSelect(anchorableBlock)}
+            aria-pressed={isSelectedAnchor}
+            aria-label={isSelectedAnchor ? strings.documentBlockInsertHereSelectedLabel : strings.documentBlockInsertHereLabel}
+            title={isSelectedAnchor ? strings.documentBlockInsertHereSelectedLabel : strings.documentBlockInsertHereLabel}
+          >
+            {isSelectedAnchor ? '📍' : '➕'}
+          </button>
+        )}
+        <div className="document-block-with-lock-content">{rendered}</div>
+      </div>
+    )
+  }
+
   // `blocks`/`pageStyle` are rebuilt as new array/object literals on every render by every
   // caller (`DocumentPreview`/`DiffViewer` both call `parseBlocks`/`buildTaggedBlocks` and
   // `getPageStyle` fresh inline, not memoized) — including a render triggered by THIS component's
@@ -202,14 +255,14 @@ export function PaginatedDocument({
     <div className="paginated-document">
       <div className="document-page document-page--measure" style={pageStyle} aria-hidden="true">
         <div className="document-page-content" ref={measureContentRef}>
-          {blocks.map((block, index) => (
+          {blocks.map((_block, index) => (
             <div
               key={index}
               ref={(el) => {
                 measureRefs.current[index] = el
               }}
             >
-              {wrapBlock(block, index)}
+              {renderBlockWithControls(index)}
             </div>
           ))}
         </div>
@@ -217,49 +270,7 @@ export function PaginatedDocument({
 
       <div className="document-page" style={pageStyle}>
         <div className="document-page-content">
-          {currentBlockIndices.map((blockIndex) => {
-            const rendered = wrapBlock(blocks[blockIndex], blockIndex)
-            const lockableBlock = lockSelection?.lockableBlocks[blockIndex]
-            const anchorableBlock = anchorSelection?.anchorableBlocks[blockIndex]
-            if (!lockableBlock && !anchorableBlock) {
-              return rendered
-            }
-            const isLocked = lockableBlock ? lockSelection!.lockedBlockIds.has(lockableBlock.id) : false
-            const isSelectedAnchor = anchorableBlock ? anchorSelection!.selectedBlockId === anchorableBlock.id : false
-            return (
-              <div key={blockIndex} className="document-block-with-lock">
-                {lockableBlock && (
-                  <button
-                    type="button"
-                    className={isLocked ? 'document-block-lock-toggle document-block-lock-toggle--locked' : 'document-block-lock-toggle'}
-                    onClick={() => lockSelection!.onToggleLock(lockableBlock)}
-                    aria-pressed={isLocked}
-                    aria-label={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
-                    title={isLocked ? strings.documentBlockUnlockLabel : strings.documentBlockLockLabel}
-                  >
-                    {isLocked ? '🔒' : '🔓'}
-                  </button>
-                )}
-                {anchorableBlock && (
-                  <button
-                    type="button"
-                    className={
-                      isSelectedAnchor
-                        ? 'document-block-anchor-toggle document-block-anchor-toggle--selected'
-                        : 'document-block-anchor-toggle'
-                    }
-                    onClick={() => anchorSelection!.onSelect(anchorableBlock)}
-                    aria-pressed={isSelectedAnchor}
-                    aria-label={isSelectedAnchor ? strings.documentBlockInsertHereSelectedLabel : strings.documentBlockInsertHereLabel}
-                    title={isSelectedAnchor ? strings.documentBlockInsertHereSelectedLabel : strings.documentBlockInsertHereLabel}
-                  >
-                    {isSelectedAnchor ? '📍' : '➕'}
-                  </button>
-                )}
-                <div className="document-block-with-lock-content">{rendered}</div>
-              </div>
-            )
-          })}
+          {currentBlockIndices.map((blockIndex) => renderBlockWithControls(blockIndex))}
         </div>
       </div>
 
