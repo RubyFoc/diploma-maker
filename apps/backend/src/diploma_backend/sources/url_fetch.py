@@ -7,20 +7,27 @@ Security note: `url` here is arbitrary, user-supplied input that this module's c
 server-side — a classic SSRF surface (a malicious `url` could otherwise target this server's own
 internal network, a cloud metadata endpoint, etc.). `_ensure_safe_url` resolves the hostname and
 rejects anything that isn't a public, routable address before any request is made.
+
+PDF page markers (user request — "(Автор, год + статья + страницы (если возможно))" in-text
+citations): a PDF is the one format this module handles where the source document's own page
+boundaries are directly readable (`pypdf` extracts text per page; `.docx`'s page breaks are a
+Word rendering-time concept with no reliable equivalent, and an HTML page has no pages at all).
+`_extract_pdf_text_with_page_markers` prefixes each page's text with a `"[стр. N]"` marker so
+`_GENERATION_SYSTEM_PROMPT`/`_ANCHOR_GENERATION_SYSTEM_PROMPT` can tell the model to cite a real
+page number when one is available, instead of ever fabricating one.
 """
 
 import ipaddress
 import socket
+from io import BytesIO
 from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
-from diploma_backend.plagiarism.extract import (
-    PlagiarismFileParseError,
-    extract_text_from_docx,
-    extract_text_from_pdf,
-)
+from diploma_backend.plagiarism.extract import PlagiarismFileParseError, extract_text_from_docx
 
 _ALLOWED_SCHEMES = {"http", "https"}
 _TIMEOUT_SECONDS = 20.0
@@ -75,6 +82,29 @@ def _ensure_safe_url(url: str) -> None:
             raise UrlFetchError(f"URL resolves to a non-public address, refusing to fetch: {url}")
 
 
+def _extract_pdf_text_with_page_markers(content: bytes) -> str:
+    """Extracts text from PDF bytes, one `"[стр. N]"`-prefixed block per page with any real
+    extracted text (blank pages are dropped, not just emptied, so an all-blank PDF still comes
+    out as `""` for `fetch_url_text`'s "no extractable text" check below).
+
+    Deliberately not `plagiarism.extract.extract_text_from_pdf` — that function joins every
+    page's text with no boundary markers at all, which is correct for its own purpose (a single
+    plagiarism-similarity blob has no use for page numbers) but would give the generation prompt
+    nothing to cite a real page number from.
+    """
+    try:
+        reader = PdfReader(BytesIO(content))
+    except PdfReadError as exc:
+        raise UrlFetchError("Uploaded content is not a valid .pdf document") from exc
+
+    pages = []
+    for index, page in enumerate(reader.pages):
+        page_text = (page.extract_text() or "").strip()
+        if page_text:
+            pages.append(f"[стр. {index + 1}]\n{page_text}")
+    return "\n\n".join(pages)
+
+
 def _extract_html_text(content: bytes) -> str:
     soup = BeautifulSoup(content, "html.parser")
     for tag in soup.find_all(_HTML_NOISE_TAGS):
@@ -85,12 +115,13 @@ def _extract_html_text(content: bytes) -> str:
 
 
 async def fetch_url_text(url: str) -> str:
-    """Fetches `url` and extracts its plain text: `.pdf`/`.docx` (by `Content-Type` or file
-    extension) via the same extractors `plagiarism.extract` uses for uploaded files, anything
-    else treated as HTML.
+    """Fetches `url` and extracts its plain text, routed by `Content-Type`/file extension:
+    `.pdf` via `_extract_pdf_text_with_page_markers` (see module docstring — carries real
+    `"[стр. N]"` page markers the generation prompt can cite from), `.docx` via
+    `plagiarism.extract.extract_text_from_docx`, anything else treated as HTML.
 
-    Raises `UrlFetchError` for an unsafe URL, any network/HTTP failure, or a document with no
-    extractable text — never returns an empty string.
+    Raises `UrlFetchError` for an unsafe URL, any network/HTTP failure, an invalid PDF/DOCX, or a
+    document with no extractable text — never returns an empty string.
     """
     _ensure_safe_url(url)
 
@@ -105,15 +136,16 @@ async def fetch_url_text(url: str) -> str:
     content_type = response.headers.get("content-type", "").lower()
     lower_url = url.lower()
 
-    try:
-        if any(t in content_type for t in _PDF_CONTENT_TYPES) or lower_url.endswith(".pdf"):
-            text = extract_text_from_pdf(content)
-        elif any(t in content_type for t in _DOCX_CONTENT_TYPES) or lower_url.endswith(".docx"):
-            text = extract_text_from_docx(content)
-        else:
-            text = _extract_html_text(content)
-    except PlagiarismFileParseError as exc:
-        raise UrlFetchError(f"Could not extract text from URL: {url}") from exc
+    if any(t in content_type for t in _PDF_CONTENT_TYPES) or lower_url.endswith(".pdf"):
+        text = _extract_pdf_text_with_page_markers(content)
+    else:
+        try:
+            if any(t in content_type for t in _DOCX_CONTENT_TYPES) or lower_url.endswith(".docx"):
+                text = extract_text_from_docx(content)
+            else:
+                text = _extract_html_text(content)
+        except PlagiarismFileParseError as exc:
+            raise UrlFetchError(f"Could not extract text from URL: {url}") from exc
 
     if not text.strip():
         raise UrlFetchError(f"No extractable text found at URL: {url}")

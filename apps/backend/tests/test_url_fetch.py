@@ -4,15 +4,20 @@ citation URL instead of only re-searching academic APIs by author/title).
 
 import socket
 from io import BytesIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 import respx
 from docx import Document
 from pypdf import PdfWriter
+from pypdf.errors import PdfReadError
 
-from diploma_backend.sources.url_fetch import UrlFetchError, fetch_url_text
+from diploma_backend.sources.url_fetch import (
+    UrlFetchError,
+    _extract_pdf_text_with_page_markers,
+    fetch_url_text,
+)
 
 _PUBLIC_IP = "93.184.216.34"
 
@@ -76,7 +81,73 @@ class TestSsrfGuard:
             await fetch_url_text("http://does-not-exist.invalid/paper.pdf")
 
 
+def _fake_pdf_reader(page_texts: list[str]) -> MagicMock:
+    """A `pypdf.PdfReader` stand-in whose `.pages[i].extract_text()` returns `page_texts[i]` —
+    used because `pypdf.PdfWriter` has no simple "draw real text" API without reportlab (same
+    constraint `test_plagiarism_extract.py` documents), so a real multi-page PDF with actual
+    extractable text per page can't easily be constructed for these tests."""
+    reader = MagicMock()
+    pages = []
+    for text in page_texts:
+        page = MagicMock()
+        page.extract_text.return_value = text
+        pages.append(page)
+    reader.pages = pages
+    return reader
+
+
+class TestExtractPdfTextWithPageMarkers:
+    def test_prefixes_each_page_with_a_marker(self) -> None:
+        reader = _fake_pdf_reader(["First page text.", "Second page text."])
+
+        with patch("diploma_backend.sources.url_fetch.PdfReader", return_value=reader):
+            text = _extract_pdf_text_with_page_markers(b"fake-pdf-bytes")
+
+        assert text == "[стр. 1]\nFirst page text.\n\n[стр. 2]\nSecond page text."
+
+    def test_drops_blank_pages_entirely(self) -> None:
+        reader = _fake_pdf_reader(["   ", "Real content on page two."])
+
+        with patch("diploma_backend.sources.url_fetch.PdfReader", return_value=reader):
+            text = _extract_pdf_text_with_page_markers(b"fake-pdf-bytes")
+
+        assert text == "[стр. 2]\nReal content on page two."
+        assert "[стр. 1]" not in text
+
+    def test_all_blank_pages_returns_empty_string(self) -> None:
+        reader = _fake_pdf_reader(["", "   "])
+
+        with patch("diploma_backend.sources.url_fetch.PdfReader", return_value=reader):
+            text = _extract_pdf_text_with_page_markers(b"fake-pdf-bytes")
+
+        assert text == ""
+
+    def test_raises_on_invalid_pdf(self) -> None:
+        with patch(
+            "diploma_backend.sources.url_fetch.PdfReader", side_effect=PdfReadError("bad file")
+        ), pytest.raises(UrlFetchError):
+            _extract_pdf_text_with_page_markers(b"not a pdf")
+
+
 class TestFetchAndExtract:
+    @respx.mock
+    async def test_pdf_link_carries_page_markers_the_generation_prompt_can_cite(self) -> None:
+        """User request: an in-text citation should include a real page number when one is
+        available — only possible for a PDF, since that's the one format with directly readable
+        page boundaries (see module docstring)."""
+        reader = _fake_pdf_reader(["Text from the first page.", "Text from the second page."])
+        with _mock_public_dns(), patch(
+            "diploma_backend.sources.url_fetch.PdfReader", return_value=reader
+        ):
+            respx.get("http://example.com/paper.pdf").mock(
+                return_value=httpx.Response(
+                    200, content=b"irrelevant-mocked-body", headers={"content-type": "application/pdf"}
+                )
+            )
+            text = await fetch_url_text("http://example.com/paper.pdf")
+
+        assert text == "[стр. 1]\nText from the first page.\n\n[стр. 2]\nText from the second page."
+
     @respx.mock
     async def test_pdf_link_with_no_text_layer_raises(self) -> None:
         # pypdf's writer has no simple "draw text" API without reportlab (same constraint

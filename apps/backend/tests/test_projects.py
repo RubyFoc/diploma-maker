@@ -397,6 +397,36 @@ def test_generate_draft_system_prompt_forbids_appending_a_bibliography_section(
 
 
 @respx.mock
+def test_generate_draft_system_prompt_requests_title_and_page_in_citations(
+    client: TestClient,
+) -> None:
+    """User request: in-text citations should include the work's title and, when the excerpt
+    indicates one, a page number — not just "(Author, Year)"."""
+    _mock_generate_and_humanize()
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+
+    client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write an introduction about renewable energy."},
+        headers=headers,
+    )
+
+    generation_call = next(
+        call
+        for call in respx.calls
+        if call.request.url == _CHAT_URL and b'"deepseek-v4-pro"' in call.request.content
+    )
+    system_content = json.loads(generation_call.request.content)["messages"][0]["content"]
+    assert '(Author, Year, "Title")' in system_content
+    assert "[стр. N]" in system_content
+    assert "Never invent a citation or a page number" in system_content
+
+
+@respx.mock
 def test_generate_draft_flagged_content_does_not_crash_precheck_reconstruction(
     client: TestClient,
 ) -> None:

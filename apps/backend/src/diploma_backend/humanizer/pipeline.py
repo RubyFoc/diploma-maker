@@ -11,9 +11,11 @@ Citation-preservation constraint (the load-bearing safety property of this modul
 whole citation-verification pipeline exists to guarantee a citation is verbatim-supported by a
 source. If this humanizer let the LLM freely rewrite citation markers, it could silently mangle
 an already-verified citation's exact wording/formatting, undoing that guarantee. To prevent
-this, `guard_citations` replaces every recognized citation marker (as produced by
-`citations.verification.format_citation`: `(Author, Year)`-shaped APA markers or `[N]`-shaped
-GOST markers) with a stable placeholder token before the text ever reaches the LLM, and
+this, `guard_citations` replaces every recognized citation marker — an APA-style parenthetical
+containing a 4-digit year (e.g. `(Author, Year)`, or the richer `(Author, Year, "Title")`/
+`(Author, Year, "Title", с. N)` shape `projects.router`'s generation prompts now request, user
+request), or a `[N]`-shaped GOST marker — with a stable placeholder token before the text ever
+reaches the LLM, and
 `restore_citations` substitutes the placeholders back afterward — the LLM never sees or touches
 the actual citation text. `restore_citations` also validates that every placeholder token it
 expects is present, unchanged, in the LLM's response; if the model dropped or mangled one
@@ -33,11 +35,17 @@ from dataclasses import dataclass
 from diploma_backend.llm_routing.client import DeepSeekClient, Message
 from diploma_backend.llm_routing.retry import generate_with_retry
 
-# Mirrors the two shapes `citations.verification.format_citation` actually produces: an
-# APA-style author-year parenthetical (e.g. "(Author, 2020)") or a GOST-style numbered bracket
-# (e.g. "[3]"). Deliberately pragmatic, not a full citation parser — same spirit as
-# `formatting/upload.py`'s citation-style guesser regexes.
-_APA_CITATION_RE = re.compile(r"\([A-Za-zА-Яа-яЁё .,'-]+,\s*\d{4}\)")
+# Any parenthetical containing a 4-digit year, with no nested parens — matches both the plain
+# "(Author, 2020)" shape `citations.verification.format_citation` produces AND the richer
+# "(Author, 2020, \"Title\")" / "(Author, 2020, \"Title\", с. 45)" shape the generation system
+# prompts now request (user request: page numbers when available). Broader than a tight
+# author/title char-class on purpose — a citation's title can contain almost any punctuation, and
+# under-matching here would leave a real citation unprotected during humanization (the actual
+# safety property this module exists for); an unrelated parenthetical that happens to contain a
+# bare 4-digit number getting swept up as a false positive is a harmless, not a dangerous,
+# failure mode (see `guard_citations`'s docstring). `\b` word boundaries keep a longer digit run
+# (e.g. a phone number or ISBN fragment) from matching as if it were a standalone year.
+_APA_CITATION_RE = re.compile(r"\([^()]*\b\d{4}\b[^()]*\)")
 _GOST_CITATION_RE = re.compile(r"\[\d+\]")
 _CITATION_RE = re.compile(f"{_APA_CITATION_RE.pattern}|{_GOST_CITATION_RE.pattern}")
 
@@ -100,8 +108,9 @@ def normalize_dashes(text: str) -> str:
 def guard_citations(text: str) -> GuardedText:
     """Replace recognized citation markers in `text` with stable `__CITATION_N__` placeholders.
 
-    Recognizes APA-style `(Author, Year)` and GOST-style `[N]` markers (the two shapes
-    `citations.verification.format_citation` produces). Markers are replaced left-to-right with
+    Recognizes any APA-style year-bearing parenthetical (`(Author, Year)`, or the richer
+    `(Author, Year, "Title"[, с. N])` shape — see `_APA_CITATION_RE`) and GOST-style `[N]`
+    markers. Markers are replaced left-to-right with
     `__CITATION_0__`, `__CITATION_1__`, ... in order of appearance; the original marker text for
     each index is kept in the returned `GuardedText.citations` so `restore_citations` can put it
     back later.

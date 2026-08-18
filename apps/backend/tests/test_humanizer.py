@@ -78,6 +78,28 @@ def test_guard_citations_replaces_apa_and_gost_markers() -> None:
     assert guarded.citations == ["(Smith, 2020)", "[3]"]
 
 
+def test_guard_citations_recognizes_the_richer_title_and_page_citation_shape() -> None:
+    """User request: in-text citations now include the work's title and, when available, a page
+    number — e.g. '(Иванов, 2020, "Название статьи", с. 45)' — not just '(Author, Year)'. The
+    citation-preservation guard must still recognize and protect this richer shape from being
+    rewritten during humanization."""
+    text = 'Prior work established this (Иванов, 2020, "Название статьи", с. 45) among findings.'
+
+    guarded = guard_citations(text)
+
+    assert '(Иванов, 2020, "Название статьи", с. 45)' not in guarded.text
+    assert "__CITATION_0__" in guarded.text
+    assert guarded.citations == ['(Иванов, 2020, "Название статьи", с. 45)']
+
+
+def test_guard_citations_recognizes_title_without_a_page_number() -> None:
+    text = 'See (Smith, 2020, "A Study of Things") for details.'
+
+    guarded = guard_citations(text)
+
+    assert guarded.citations == ['(Smith, 2020, "A Study of Things")']
+
+
 def test_guard_then_restore_round_trip_is_identity() -> None:
     text = f"{_APA_TEXT} Also see this. {_GOST_TEXT}"
 
