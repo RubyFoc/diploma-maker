@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
 import { AuthProvider, emptyAuthState, useAuth } from './context/AuthContext'
@@ -90,6 +90,29 @@ function ChatPanel() {
   const [inputValue, setInputValue] = useState('')
   const [isSending, setIsSending] = useState(false)
   const targets = useChapterTargets(doc.projectId, doc.chapters)
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+
+  // User report: a long instruction sent to the chat "disappeared" — really it landed below the
+  // fold, since the message list never scrolled itself down on a new message (only `overflow-y:
+  // auto` from the bounded-height fix, no scroll-to-bottom behavior). Every new message, sent or
+  // received, should bring the latest one into view.
+  useEffect(() => {
+    // jsdom (used by this app's component tests) doesn't implement `scrollIntoView` at all —
+    // guard rather than call it unconditionally, since a real browser always has it.
+    messagesEndRef.current?.scrollIntoView?.({ block: 'end' })
+  }, [chat.messages])
+
+  // Grows the textarea to fit what's typed (up to `max-height` in App.css, which then scrolls
+  // internally) instead of the fixed one-line height a plain `rows={1}` would otherwise freeze it
+  // at — resetting to 'auto' first lets it shrink back down too, e.g. after sending clears it.
+  useEffect(() => {
+    const el = inputRef.current
+    if (el) {
+      el.style.height = 'auto'
+      el.style.height = `${el.scrollHeight}px`
+    }
+  }, [inputValue])
 
   const setChapterStreamingContent = (chapterId: string, streamingContent: string | null) => {
     setDocument((previous) => ({
@@ -312,6 +335,7 @@ function ChatPanel() {
             </div>
           ))
         )}
+        <div ref={messagesEndRef} />
       </div>
       {selectedAnchorBlockId !== null && targetTopLevelChapter && (
         <div className="chat-anchor-indicator">
@@ -328,13 +352,22 @@ function ChatPanel() {
           void handleSend()
         }}
       >
-        <input
-          type="text"
+        <textarea
+          ref={inputRef}
           value={inputValue}
           onChange={(event) => setInputValue(event.target.value)}
+          onKeyDown={(event) => {
+            // Enter sends (matching the old single-line <input>'s behavior); Shift+Enter inserts
+            // a newline, since a <textarea> otherwise can't ever produce one from the keyboard.
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              void handleSend()
+            }
+          }}
           placeholder={strings.chatInputPlaceholder}
           aria-label={strings.chatInputPlaceholder}
           disabled={doc.projectId === null || isSending}
+          rows={1}
         />
         <button type="submit" disabled={doc.projectId === null || isSending}>
           {strings.chatSendButton}
@@ -1001,12 +1034,12 @@ type WorkspaceView = 'landing' | 'workspace'
 function LogoutButton() {
   const { setAuth } = useAuth()
   const { setDocument } = useDocument()
-  const { resetChat } = useChat()
+  const { clearChat } = useChat()
 
   const handleLogout = () => {
     setAuth(emptyAuthState)
     setDocument(emptyDocumentState)
-    resetChat()
+    clearChat()
   }
 
   return (

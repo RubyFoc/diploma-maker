@@ -7,7 +7,7 @@ import { toDocumentState } from '../utils/mapProject'
 
 export function useNewProject(): (institutionId?: string | null) => Promise<void> {
   const { document: doc, setDocument } = useDocument()
-  const { resetChat } = useChat()
+  const { loadChatForProject } = useChat()
 
   return useCallback(
     async (institutionId: string | null = null) => {
@@ -21,8 +21,8 @@ export function useNewProject(): (institutionId?: string | null) => Promise<void
         ),
       )
       setDocument(() => toDocumentState(project))
-      resetChat()
+      loadChatForProject(project.id)
     },
-    [doc.pendingRequiredSources, setDocument, resetChat],
+    [doc.pendingRequiredSources, setDocument, loadChatForProject],
   )
 }

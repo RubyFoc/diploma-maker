@@ -23,7 +23,7 @@ interface ProjectLandingProps {
  */
 export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
   const { document: doc, setDocument } = useDocument()
-  const { resetChat } = useChat()
+  const { clearChat, loadChatForProject, deleteChatForProject } = useChat()
   const startNewProject = useNewProject()
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
   const [loadError, setLoadError] = useState(false)
@@ -73,7 +73,7 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
     }
     const project = await getProject(projectId)
     setDocument(() => toDocumentState(project))
-    resetChat()
+    loadChatForProject(project.id)
     onProjectActivated()
   }
 
@@ -83,9 +83,10 @@ export function ProjectLanding({ onProjectActivated }: ProjectLandingProps) {
       await deleteProject(projectId)
       setProjects((previous) => previous?.filter((project) => project.id !== projectId) ?? previous)
       setConfirmingDeleteId(null)
+      deleteChatForProject(projectId)
       if (doc.projectId === projectId) {
         setDocument((previous) => ({ ...emptyDocumentState, institutionId: previous.institutionId }))
-        resetChat()
+        clearChat()
       }
     } catch {
       setDeleteErrorId(projectId)

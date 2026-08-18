@@ -257,6 +257,91 @@ describe('App', () => {
     expect(await screen.findByText('Write the introduction')).toBeInTheDocument()
   })
 
+  it('persists each project\'s chat separately across switching projects and reloading the page', async () => {
+    let nextProjectId = 0
+    const projectsById: Record<string, { id: string; title: string; created_at: string; chapters: unknown[] }> = {}
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/formatting/institution-configs')) {
+        return Promise.resolve(jsonResponse([institution]))
+      }
+      if (String(url).includes('/formatting/institution-configs/')) {
+        return Promise.resolve(jsonResponse({ detail: 'not found' }, false, 404))
+      }
+      if (String(url).endsWith('/projects') && init?.method === 'POST') {
+        nextProjectId += 1
+        const id = `p${nextProjectId}`
+        const project = { id, title: 'Untitled', created_at: 'now', chapters: [] }
+        projectsById[id] = project
+        return Promise.resolve(jsonResponse(project, true, 201))
+      }
+      if (String(url).endsWith('/projects') && (!init?.method || init.method === 'GET')) {
+        return Promise.resolve(
+          jsonResponse(
+            Object.values(projectsById).map((project) => ({
+              id: project.id,
+              title: project.title,
+              created_at: project.created_at,
+            })),
+          ),
+        )
+      }
+      const projectMatch = String(url).match(/\/projects\/(p\d+)$/)
+      if (projectMatch) {
+        return Promise.resolve(jsonResponse(projectsById[projectMatch[1]]))
+      }
+      if (/\/chapters\/.+\/locks$/.test(String(url))) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      if (/\/chapters\/.+\/operations$/.test(String(url))) {
+        return Promise.resolve(jsonResponse({ operations: [], applied_count: 0, total_operations: 0 }))
+      }
+      if (/\/chapters\/.+\/subchapters$/.test(String(url))) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      if (/\/projects\/.+\/required-sources$/.test(String(url))) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'unexpected request' }, false, 500))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { unmount } = render(<App />)
+    await enterWorkspace()
+    let input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
+    fireEvent.change(input, { target: { value: 'Message for project one' } })
+    fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+    expect(await screen.findByText('Message for project one')).toBeInTheDocument()
+
+    // A freshly created second project starts with its own, empty chat.
+    fireEvent.click(screen.getByRole('button', { name: strings.myProjectsButton }))
+    await screen.findByLabelText(strings.projectLandingTitle)
+    await openNewProjectSetup()
+    await submitNewProjectSetup()
+    await screen.findByLabelText(strings.chatPanelTitle)
+    expect(screen.queryByText('Message for project one')).not.toBeInTheDocument()
+    input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
+    fireEvent.change(input, { target: { value: 'Message for project two' } })
+    fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+    expect(await screen.findByText('Message for project two')).toBeInTheDocument()
+
+    // Switching back to project one via the landing list restores its own chat history.
+    fireEvent.click(screen.getByRole('button', { name: strings.myProjectsButton }))
+    await screen.findByLabelText(strings.projectLandingTitle)
+    const openButtons = await screen.findAllByRole('button', { name: strings.projectLandingOpenButton })
+    fireEvent.click(openButtons[0])
+    expect(await screen.findByText('Message for project one')).toBeInTheDocument()
+    expect(screen.queryByText('Message for project two')).not.toBeInTheDocument()
+
+    // Simulate a page reload (unmount + remount, same as a real refresh with the token already in
+    // localStorage) — project one's chat must have survived via localStorage, not just in-memory
+    // React state that a reload would otherwise wipe.
+    unmount()
+    render(<App />)
+    const reopenButtons = await screen.findAllByRole('button', { name: strings.projectLandingOpenButton })
+    fireEvent.click(reopenButtons[0])
+    expect(await screen.findByText('Message for project one')).toBeInTheDocument()
+  })
+
   it('logging out returns to onboarding and clears the stored access token', async () => {
     const fetchMock = createFetchMock([
       jsonResponse({ id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }, true, 201),
