@@ -78,7 +78,10 @@
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr);
+  /* Chat | Document | table-of-contents sidebar (user request: a right-hand TOC to jump between
+     chapters/subchapters faster than scrolling the whole document panel) — the sidebar gets a
+     narrower, fixed-ish column since it only ever holds short titles, unlike the other two. */
+  grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr) minmax(200px, 260px);
   gap: var(--space-5);
   align-items: stretch;
   /* Bounds the chat/document panels to the viewport instead of growing past it (previously had
@@ -90,6 +93,16 @@
      viewports where the subtraction would otherwise get too small. */
   height: calc(100vh - 220px);
   min-height: 420px;
+}
+
+@media (max-width: 1100px) {
+  .workspace {
+    grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr);
+  }
+
+  .toc-sidebar {
+    display: none;
+  }
 }
 
 @media (max-width: 860px) {
@@ -341,4 +354,49 @@
 .subchapter-item h4 {
   margin: 0 0 var(--space-2);
   font-size: 0.95rem;
+}
+
+/* Table-of-contents sidebar */
+
+.toc-sidebar {
+  overflow-y: auto;
+}
+
+.toc-sidebar-empty {
+  color: var(--color-text-faint);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+.toc-sidebar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.toc-sidebar-item button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.35rem var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.toc-sidebar-item button:hover {
+  background-color: var(--color-bg-subtle);
+}
+
+.toc-sidebar-item--sub button {
+  padding-left: var(--space-5);
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
 }

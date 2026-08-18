@@ -7,6 +7,8 @@ export const strings = {
   chatTargetLabel: 'Write into',
   chatEmpty: 'No messages yet.',
   documentPanelTitle: 'Document',
+  tocSidebarTitle: 'Contents',
+  tocSidebarEmpty: 'No chapters yet.',
   documentEmpty: 'No chapters yet. Start a new project to begin.',
   documentUploadTitle: 'Already have some or all of it written?',
   documentUploadSubtitle:

@@ -40,15 +40,20 @@ import type { ChapterDetail, ChapterVersion, RequiredSource } from './types/proj
 interface ChapterTarget {
   id: string
   label: string
+  /** `true` for a subchapter entry — lets renderers (the chat target `<select>`'s "— " prefix,
+   * `TocSidebar`'s indentation) distinguish it from a top-level chapter without re-parsing
+   * `label`. */
+  isSubchapter: boolean
 }
 
 /**
- * Flattens `chapters` (top-level only) plus each one's subchapters into a single pickable list
- * for `ChatPanel`'s target selector, so a chat instruction can be aimed at a subchapter — not
- * stored in `DocumentContext` at all (see `SubchaptersList`) — the same way it can a top-level
- * chapter. Refetches whenever the top-level chapter set changes; does not react to
- * `subchaptersRefreshToken` since a newly-generated draft doesn't add/remove any subchapters,
- * only fills one in.
+ * Flattens `chapters` (top-level only) plus each one's subchapters into a single pickable list —
+ * originally just for `ChatPanel`'s target selector, now also `TocSidebar`'s navigation list
+ * (user request: a right-hand table of contents to jump between chapters/subchapters), so a chat
+ * instruction/TOC entry can address a subchapter — not stored in `DocumentContext` at all (see
+ * `SubchaptersList`) — the same way it can a top-level chapter. Refetches whenever the top-level
+ * chapter set changes; does not react to `subchaptersRefreshToken` since a newly-generated draft
+ * doesn't add/remove any subchapters, only fills one in.
  */
 function useChapterTargets(projectId: string | null, chapters: Chapter[]): ChapterTarget[] {
   const [targets, setTargets] = useState<ChapterTarget[]>([])
@@ -68,9 +73,9 @@ function useChapterTargets(projectId: string | null, chapters: Chapter[]): Chapt
       }
       const flat: ChapterTarget[] = []
       chapters.forEach((chapter, index) => {
-        flat.push({ id: chapter.id, label: chapter.title })
+        flat.push({ id: chapter.id, label: chapter.title, isSubchapter: false })
         for (const subchapter of subchaptersByChapter[index]) {
-          flat.push({ id: subchapter.id, label: `— ${subchapter.title}` })
+          flat.push({ id: subchapter.id, label: subchapter.title, isSubchapter: true })
         }
       })
       setTargets(flat)
@@ -84,12 +89,45 @@ function useChapterTargets(projectId: string | null, chapters: Chapter[]): Chapt
   return targets
 }
 
-function ChatPanel() {
+/**
+ * Right-hand table of contents (user request: faster navigation between chapters/subchapters
+ * than scrolling through the whole document panel). Purely a navigation aid — clicking an entry
+ * scrolls `DocumentPanel`'s matching `#chapter-anchor-{id}`/`#subchapter-anchor-{id}` element
+ * into view rather than changing any state, so it works regardless of what's expanded/pending.
+ */
+function TocSidebar({ targets }: { targets: ChapterTarget[] }) {
+  const handleJump = (id: string, isSubchapter: boolean) => {
+    const elementId = isSubchapter ? `subchapter-anchor-${id}` : `chapter-anchor-${id}`
+    // jsdom (component tests) has no `scrollIntoView` at all — guard rather than call it
+    // unconditionally, since a real browser always has it.
+    document.getElementById(elementId)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }
+
+  return (
+    <nav className="panel toc-sidebar" aria-label={strings.tocSidebarTitle}>
+      <h2>{strings.tocSidebarTitle}</h2>
+      {targets.length === 0 ? (
+        <p className="toc-sidebar-empty">{strings.tocSidebarEmpty}</p>
+      ) : (
+        <ul className="toc-sidebar-list">
+          {targets.map((target) => (
+            <li key={target.id} className={target.isSubchapter ? 'toc-sidebar-item toc-sidebar-item--sub' : 'toc-sidebar-item'}>
+              <button type="button" onClick={() => handleJump(target.id, target.isSubchapter)}>
+                {target.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </nav>
+  )
+}
+
+function ChatPanel({ targets }: { targets: ChapterTarget[] }) {
   const { chat, appendMessage } = useChat()
   const { document: doc, setDocument } = useDocument()
   const [inputValue, setInputValue] = useState('')
   const [isSending, setIsSending] = useState(false)
-  const targets = useChapterTargets(doc.projectId, doc.chapters)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -318,7 +356,7 @@ function ChatPanel() {
           >
             {targets.map((target) => (
               <option key={target.id} value={target.id}>
-                {target.label}
+                {target.isSubchapter ? `— ${target.label}` : target.label}
               </option>
             ))}
           </select>
@@ -633,7 +671,7 @@ function SubchapterItem({
   }
 
   return (
-    <li className="subchapter-item">
+    <li id={`subchapter-anchor-${subchapter.id}`} className="subchapter-item">
       <h4>{subchapter.title}</h4>
       <DocumentPreview
         content={content}
@@ -917,7 +955,7 @@ function DocumentPanel() {
             // inert. Subchapters never get this toggle at all (see `SubchapterItem`).
             const isChatTargetChapter = chapter.id === doc.selectedChatTargetId
             return (
-              <li key={chapter.id} className="chapter-item">
+              <li key={chapter.id} id={`chapter-anchor-${chapter.id}`} className="chapter-item">
                 <h3>{chapter.title}</h3>
                 <DocumentPreview
                   content={chapter.content}
@@ -1003,6 +1041,9 @@ function ExportButton() {
 
 function Workspace({ onBackToLanding }: { onBackToLanding: () => void }) {
   const { document: doc } = useDocument()
+  // Lifted out of `ChatPanel` so `TocSidebar` can share the same fetched list rather than each
+  // independently re-fetching every chapter's subchapters.
+  const targets = useChapterTargets(doc.projectId, doc.chapters)
 
   return (
     <>
@@ -1014,8 +1055,9 @@ function Workspace({ onBackToLanding }: { onBackToLanding: () => void }) {
         <ExportButton />
       </div>
       <main className="workspace">
-        <ChatPanel />
+        <ChatPanel targets={targets} />
         <DocumentPanel />
+        <TocSidebar targets={targets} />
       </main>
     </>
   )

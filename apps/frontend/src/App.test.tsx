@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { strings } from './strings'
@@ -658,6 +658,84 @@ describe('App', () => {
         expect.objectContaining({ method: 'POST' }),
       )
     })
+  })
+
+  it('shows a table-of-contents sidebar listing chapters and subchapters, and jumps to one on click', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const projectWithChapter = {
+      ...project,
+      chapters: [
+        {
+          id: 'c1',
+          project_id: 'p1',
+          parent_chapter_id: null,
+          title: 'Chapter 1',
+          order: 0,
+          created_at: 'now',
+          accepted_content: null,
+          accepted_manifest: null,
+          pending_draft: null,
+        },
+      ],
+    }
+    const subchapter = {
+      id: 'sub1',
+      project_id: 'p1',
+      parent_chapter_id: 'c1',
+      title: 'Subsection 1.1',
+      order: 0,
+      created_at: 'now',
+      accepted_content: 'Subsection body text.',
+      accepted_manifest: null,
+      pending_draft: null,
+    }
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/formatting/institution-configs')) {
+        return Promise.resolve(jsonResponse([institution]))
+      }
+      if (String(url).endsWith('/projects') && (!init?.method || init.method === 'GET')) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      if (/\/chapters\/c1\/subchapters$/.test(String(url))) {
+        return Promise.resolve(jsonResponse([subchapter]))
+      }
+      if (/\/chapters\/.+\/locks$/.test(String(url))) {
+        return Promise.resolve(jsonResponse([]))
+      }
+      if (String(url).endsWith('/projects/p1/document/upload')) {
+        return Promise.resolve(jsonResponse(projectWithChapter, true, 201))
+      }
+      if (String(url).endsWith('/projects') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse(project, true, 201))
+      }
+      return Promise.resolve(jsonResponse({ detail: 'unexpected request' }, false, 500))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
+
+    const file = new File(['thesis'], 'thesis.docx')
+    fireEvent.change(screen.getByLabelText(strings.documentUploadLabel), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: strings.documentUploadButton }))
+    await findVisibleByText('Subsection 1.1')
+
+    const sidebar = screen.getByLabelText(strings.tocSidebarTitle)
+    const chapterEntry = within(sidebar).getByRole('button', { name: 'Chapter 1' })
+    const subchapterEntry = within(sidebar).getByRole('button', { name: 'Subsection 1.1' })
+    expect(chapterEntry).toBeInTheDocument()
+    expect(subchapterEntry).toBeInTheDocument()
+
+    // jsdom has no real scrollIntoView — stub it so clicking can be asserted without throwing.
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+
+    fireEvent.click(subchapterEntry)
+    expect(scrollIntoView).toHaveBeenCalled()
+
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
   })
 
   it('sends a chat message, creates a default chapter, and shows the generated draft in the diff viewer', async () => {
