@@ -1004,6 +1004,144 @@ describe('App', () => {
     )
   })
 
+  it('still clears the pending draft locally when the post-accept project refresh fails', async () => {
+    // User report: after accepting, a transient failure of the follow-up "refetch the whole
+    // project" call used to leave the diff viewer showing the stale, already-accepted draft as
+    // if nothing had happened — the accept itself (the `/versions/{id}/accept` call) had already
+    // succeeded on the backend, so the user was stuck looking at outdated UI until a manual page
+    // reload re-fetched the true state.
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [], institution_id: institution.institution_id }
+    const chapter = {
+      id: 'c1',
+      project_id: 'p1',
+      title: strings.defaultChapterTitle,
+      order: 0,
+      created_at: 'now',
+      accepted_content: null,
+      pending_draft: null,
+    }
+    const version = {
+      id: 'v1',
+      chapter_id: 'c1',
+      version_number: 1,
+      content: 'Generated introduction text',
+      created_at: 'now',
+      status: 'draft' as const,
+      parent_version_id: null,
+    }
+    const generateResponse = {
+      version,
+      precheck: { plagiarism_score: 0, ai_fingerprint_score: 0, flagged: false, reasons: [] },
+    }
+    const acceptedVersion = { ...version, status: 'accepted' as const }
+    const signal = {
+      id: 's3',
+      institution_id: institution.institution_id,
+      chapter_id: 'c1',
+      version_id: 'v1',
+      signal_type: 'approve' as const,
+      created_at: 'now',
+    }
+
+    const fetchMock = createFetchMock([
+      jsonResponse(project, true, 201),
+      jsonResponse(chapter, true, 201),
+      jsonResponse(project), // title-sync refetch fired after generation's `done` event
+      jsonResponse(acceptedVersion),
+      jsonResponse(signal, true, 201),
+      jsonResponse({ detail: 'network blip' }, false, 500), // the post-accept project refetch
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<App />)
+    await enterWorkspaceWithInstitution()
+    const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
+    fireEvent.change(input, { target: { value: 'Write the introduction' } })
+    fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+    const source = await waitFor(() => latestEventSource())
+    act(() => {
+      source.dispatch('done', JSON.stringify(generateResponse))
+    })
+    await findVisibleByText('Generated introduction text')
+
+    fireEvent.click(screen.getByRole('button', { name: strings.diffAcceptButton }))
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText(strings.diffViewerTitle)).not.toBeInTheDocument()
+    })
+  })
+
+  it('accepting a draft in one chapter preserves the chat target selected for another chapter', async () => {
+    // User report: `toDocumentState` (used to rebuild state from the post-accept project
+    // refetch) always resets the chat target to the first chapter — so accepting any draft used
+    // to silently redirect the next chat instruction away from whatever chapter/subchapter the
+    // user had actually picked.
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const chapterBase = {
+      project_id: 'p1',
+      parent_chapter_id: null,
+      order: 0,
+      created_at: 'now',
+      accepted_content: null,
+      accepted_manifest: null,
+    }
+    const version = {
+      id: 'v1',
+      chapter_id: 'c1',
+      version_number: 0,
+      content: 'Draft body for chapter one.',
+      created_at: 'now',
+      status: 'draft' as const,
+      parent_version_id: null,
+    }
+    const projectWithChapters = {
+      ...project,
+      chapters: [
+        { ...chapterBase, id: 'c1', title: 'Chapter One', pending_draft: version },
+        { ...chapterBase, id: 'c2', title: 'Chapter Two', order: 1, pending_draft: null },
+      ],
+    }
+    const acceptedVersion = { ...version, status: 'accepted' as const }
+    const refreshedProject = {
+      ...project,
+      chapters: [
+        {
+          ...chapterBase,
+          id: 'c1',
+          title: 'Chapter One',
+          accepted_content: 'Draft body for chapter one.',
+          pending_draft: null,
+        },
+        { ...chapterBase, id: 'c2', title: 'Chapter Two', order: 1, pending_draft: null },
+      ],
+    }
+
+    const fetchMock = createFetchMock([
+      jsonResponse(project, true, 201),
+      jsonResponse(projectWithChapters, true, 201),
+      jsonResponse(acceptedVersion),
+      jsonResponse(refreshedProject),
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
+
+    const file = new File(['thesis'], 'thesis.docx')
+    fireEvent.change(screen.getByLabelText(strings.documentUploadLabel), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: strings.documentUploadButton }))
+    await findVisibleByText('Chapter One')
+
+    const select = await screen.findByLabelText(strings.chatTargetLabel)
+    fireEvent.change(select, { target: { value: 'c2' } })
+
+    fireEvent.click(screen.getByRole('button', { name: strings.diffAcceptButton }))
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText(strings.diffViewerTitle)).not.toBeInTheDocument()
+    })
+    expect(await screen.findByLabelText(strings.chatTargetLabel)).toHaveValue('c2')
+  })
+
   it('selecting an "insert here" block sends generateChapterDraft with target_block_id instead of streaming, and surfaces a reroute banner', async () => {
     const chapter = {
       id: 'c1',
@@ -1170,10 +1308,12 @@ describe('App', () => {
       created_at: 'now',
     }
 
+    const rejectedVersion = { ...version, status: 'rejected' as const }
     const fetchMock = createFetchMock([
       jsonResponse(project, true, 201),
       jsonResponse(chapter, true, 201),
       jsonResponse(signal, true, 201),
+      jsonResponse(rejectedVersion, true, 200),
     ])
     vi.stubGlobal('fetch', fetchMock)
 
@@ -1204,6 +1344,12 @@ describe('App', () => {
           signal_type: 'reject',
         }),
       }),
+    )
+    // User report: rejecting used to be purely a frontend-local state change with no backend
+    // call at all, so the "rejected" draft would resurface on the next full project refetch.
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8010/versions/v1/reject',
+      expect.objectContaining({ method: 'POST' }),
     )
   })
 })

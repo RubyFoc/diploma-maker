@@ -917,3 +917,76 @@ def test_accept_already_accepted_draft_returns_409(client: TestClient) -> None:
 
     second_accept = client.post(f"/versions/{draft['id']}/accept")
     assert second_accept.status_code == 409
+
+
+def test_reject_draft_404s_for_unknown_version(client: TestClient) -> None:
+    response = client.post("/versions/does-not-exist/reject")
+
+    assert response.status_code == 404
+
+
+@respx.mock
+def test_reject_draft_flips_status_and_clears_it_as_the_pending_draft(client: TestClient) -> None:
+    """User report: rejecting a draft used to only clear it from the frontend's own in-memory
+    state, with no backend call at all — so the very next full project refetch (e.g. accepting a
+    draft in a different chapter, which re-fetches the whole project) would resurrect the
+    "rejected" draft as if it had never been dismissed."""
+    _mock_generate_and_humanize()
+
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+    draft = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write something."},
+        headers=headers,
+    ).json()["version"]
+
+    reject_response = client.post(f"/versions/{draft['id']}/reject")
+    assert reject_response.status_code == 200
+    assert reject_response.json()["status"] == "rejected"
+
+    project_after = client.get(f"/projects/{project_id}", headers=headers).json()
+    assert project_after["chapters"][0]["pending_draft"] is None
+
+
+@respx.mock
+def test_reject_already_accepted_draft_returns_409(client: TestClient) -> None:
+    _mock_generate_and_humanize()
+
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+    draft = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write something."},
+        headers=headers,
+    ).json()["version"]
+    client.post(f"/versions/{draft['id']}/accept")
+
+    response = client.post(f"/versions/{draft['id']}/reject")
+    assert response.status_code == 409
+
+
+@respx.mock
+def test_reject_already_rejected_draft_returns_409(client: TestClient) -> None:
+    _mock_generate_and_humanize()
+
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+    draft = client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write something."},
+        headers=headers,
+    ).json()["version"]
+    client.post(f"/versions/{draft['id']}/reject")
+
+    response = client.post(f"/versions/{draft['id']}/reject")
+    assert response.status_code == 409

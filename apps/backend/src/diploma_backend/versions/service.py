@@ -284,3 +284,23 @@ async def accept_draft_version(db: AsyncIOMotorDatabase, version_id: str) -> Cha
     await db[_COLLECTION].update_one({"id": version_id}, {"$set": {"status": "accepted"}})
     version.status = "accepted"
     return version
+
+
+async def reject_draft_version(db: AsyncIOMotorDatabase, version_id: str) -> ChapterVersion:
+    """Flip the draft version `version_id` to `status="rejected"` and return it (user report:
+    rejecting a draft used to be purely a frontend-local state change, so the very next full
+    project refetch would resurrect it — see `versions.models.VersionStatus`'s docstring).
+
+    Raises `ValueError` if no version with `version_id` exists, or if it exists but isn't
+    currently a draft — same contract as `accept_draft_version`, since a version can only be
+    resolved (accepted or rejected) once.
+    """
+    version = await get_version(db, version_id)
+    if version is None:
+        raise ValueError(f"no version with id {version_id!r}")
+    if version.status != "draft":
+        raise ValueError(f"version {version_id!r} is not a draft (status={version.status!r})")
+
+    await db[_COLLECTION].update_one({"id": version_id}, {"$set": {"status": "rejected"}})
+    version.status = "rejected"
+    return version

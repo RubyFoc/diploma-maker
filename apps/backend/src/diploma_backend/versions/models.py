@@ -16,7 +16,16 @@ from pydantic import BaseModel, Field
 
 from diploma_backend.locks.models import Block
 
-VersionStatus = Literal["accepted", "draft"]
+VersionStatus = Literal["accepted", "draft", "rejected"]
+"""`"rejected"` (user report — see `versions.service.reject_draft_version`): a draft the user
+explicitly dismissed. Distinct from simply deleting the row: `get_latest_draft_version`/
+`get_current_accepted_version` both filter by exact status, so a rejected version is invisible to
+either without needing a delete — but the row (and its `id`) still exists for anything that might
+reference it (e.g. `parent_version_id` on a later draft, or an in-flight API response the client
+already received). Before this status existed, rejecting a draft was purely a frontend-local
+state change with no backend call at all — the very next full refetch of the project (switching
+projects, accepting a draft in a *different* chapter, or reopening the project) would show the
+"rejected" draft again, since the server never learned it was dismissed."""
 
 
 class ChapterVersion(BaseModel):

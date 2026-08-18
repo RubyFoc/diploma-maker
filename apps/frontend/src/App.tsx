@@ -22,6 +22,7 @@ import {
   generateChapterDraft,
   getProject,
   listSubchapters,
+  rejectDraft,
   uploadChapterDraft,
   uploadDocument,
   uploadToc,
@@ -663,10 +664,14 @@ function SubchapterItem({
     setPendingDraft(null)
   }
 
-  const handleReject = () => {
-    if (pendingDraft && institutionId !== null) {
+  const handleReject = async () => {
+    if (!pendingDraft) {
+      return
+    }
+    if (institutionId !== null) {
       void recordSignal(institutionId, subchapter.id, pendingDraft.id, 'reject').catch(() => {})
     }
+    await rejectDraft(pendingDraft.id).catch(() => {})
     setPendingDraft(null)
   }
 
@@ -684,7 +689,7 @@ function SubchapterItem({
           before={content}
           after={pendingDraft.content}
           onAccept={() => void handleAccept()}
-          onReject={handleReject}
+          onReject={() => void handleReject()}
           institutionConfig={institutionConfig}
           manifest={pendingDraft.manifest}
         />
@@ -912,9 +917,22 @@ function DocumentPanel() {
       void recordSignal(doc.institutionId, chapterId, draftId, 'approve').catch(() => {})
     }
     if (doc.projectId !== null) {
-      const project = await getProject(doc.projectId)
-      setDocument(() => toDocumentState(project))
-      return
+      try {
+        const project = await getProject(doc.projectId)
+        // Preserves whatever the user had picked as the chat target — `toDocumentState`
+        // otherwise always resets it to the first chapter, silently redirecting the next chat
+        // instruction to the wrong place after every single accept.
+        setDocument((previous) => ({
+          ...toDocumentState(project),
+          selectedChatTargetId: previous.selectedChatTargetId,
+        }))
+        return
+      } catch {
+        // The accept itself already succeeded on the backend (the `acceptDraft` call above) —
+        // only this follow-up refetch failed (e.g. a transient network blip). Fall through to
+        // the local-only update below instead of leaving the UI stuck showing the stale pending
+        // draft as if nothing happened (user report: "I always have to refresh the page").
+      }
     }
     setDocument((previous) => ({
       ...previous,
@@ -924,10 +942,15 @@ function DocumentPanel() {
     }))
   }
 
-  const handleReject = (chapterId: string, draftId: string) => {
+  const handleReject = async (chapterId: string, draftId: string) => {
     if (doc.institutionId !== null) {
       void recordSignal(doc.institutionId, chapterId, draftId, 'reject').catch(() => {})
     }
+    // Persists the rejection on the backend (user report: this used to be a purely local state
+    // change, so the very next full project refetch — e.g. accepting a draft in another chapter
+    // just above — would resurrect this "rejected" draft as if it had never been dismissed).
+    // Best-effort: a failure here shouldn't block the user from moving on locally.
+    await rejectDraft(draftId).catch(() => {})
     setDocument((previous) => ({
       ...previous,
       chapters: previous.chapters.map((chapter) =>
@@ -999,7 +1022,7 @@ function DocumentPanel() {
                     chapter={chapter}
                     institutionConfig={institutionConfig}
                     onAccept={() => void handleAccept(chapter.id, pendingDraft.id)}
-                    onReject={() => handleReject(chapter.id, pendingDraft.id)}
+                    onReject={() => void handleReject(chapter.id, pendingDraft.id)}
                     onDraftUpdated={(version) => handleDraftUpdated(chapter.id, version)}
                   />
                 )}

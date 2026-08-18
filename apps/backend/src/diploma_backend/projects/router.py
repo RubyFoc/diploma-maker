@@ -130,11 +130,12 @@ from diploma_backend.versions.service import (
     create_draft_version_at_anchor,
     get_current_accepted_version,
     get_latest_draft_version,
+    reject_draft_version,
 )
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
-# Separate, prefix-less router for the accept-draft endpoint: the contract requires
+# Separate, prefix-less router for the accept/reject-draft endpoints: the contract requires
 # `POST /versions/{version_id}/accept` (not nested under `/projects`), and there is no other
 # `versions` router yet to attach it to. Both routers are included in `main.py`.
 versions_router = APIRouter(prefix="/versions", tags=["projects"])
@@ -1979,3 +1980,28 @@ async def accept_draft_version_endpoint(
 
     await _summarize_and_persist_chapter(db, version.chapter_id, version.content)
     return version
+
+
+@versions_router.post("/{version_id}/reject", response_model=ChapterVersion)
+async def reject_draft_version_endpoint(
+    version_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> ChapterVersion:
+    """Reject a pending draft version, flipping it to `status="rejected"` (user report: rejecting
+    used to be purely a frontend-local state change with no backend call at all, so the very next
+    full project refetch — switching projects, accepting a draft in a different chapter, or
+    reopening the project — would resurrect the "rejected" draft as if it had never been
+    dismissed, since `get_latest_draft_version` only ever cared whether a version was `"draft"`).
+
+    Raises `HTTPException(404)` if `version_id` doesn't exist, or `HTTPException(409)` if it
+    exists but isn't currently a draft (see `versions.service.reject_draft_version`'s `ValueError`
+    messages, which this distinguishes by substring) — same contract as the accept endpoint, but
+    with no chapter-summarization side effect, since there's no accepted content to summarize.
+    """
+    try:
+        return await reject_draft_version(db, version_id)
+    except ValueError as exc:
+        message = str(exc)
+        if "no version" in message:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message) from exc

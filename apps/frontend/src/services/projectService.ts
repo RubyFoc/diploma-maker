@@ -147,6 +147,16 @@ export function acceptDraft(versionId: string): Promise<ChapterVersion> {
 }
 
 /**
+ * Persists a draft rejection on the backend (user report: rejecting used to only clear the
+ * frontend's own in-memory state, so the very next full project refetch — accepting a draft in a
+ * different chapter, switching projects, reopening the project — would resurrect the "rejected"
+ * draft as if it had never been dismissed, since the server never learned about it).
+ */
+export function rejectDraft(versionId: string): Promise<ChapterVersion> {
+  return request<ChapterVersion>(`/versions/${versionId}/reject`, { method: 'POST' })
+}
+
+/**
  * Parses an uploaded `.docx` table of contents and creates one chapter per entry, in order
  * (TASK-E10-2/E10-3). Returns the updated `ProjectDetail` with the new chapters.
  */

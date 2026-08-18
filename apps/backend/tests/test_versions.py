@@ -17,8 +17,10 @@ from diploma_backend.versions.service import (
     create_draft_version_at_anchor,
     create_version,
     get_current_accepted_version,
+    get_latest_draft_version,
     get_version,
     list_versions_for_chapter,
+    reject_draft_version,
     update_draft_manifest,
 )
 
@@ -180,6 +182,55 @@ async def test_accept_draft_version_already_accepted_raises(client: TestClient) 
 
     with pytest.raises(ValueError):
         await accept_draft_version(db, accepted.id)
+
+
+async def test_reject_draft_version_flips_status(client: TestClient) -> None:
+    db = _fake_db(client)
+    draft = await create_draft_version(db, "chapter-1", "proposed edit")
+
+    rejected = await reject_draft_version(db, draft.id)
+    assert rejected.id == draft.id
+    assert rejected.status == "rejected"
+
+    stored = await get_version(db, draft.id)
+    assert stored is not None
+    assert stored.status == "rejected"
+
+
+async def test_reject_draft_version_missing_id_raises(client: TestClient) -> None:
+    db = _fake_db(client)
+    with pytest.raises(ValueError):
+        await reject_draft_version(db, "does-not-exist")
+
+
+async def test_reject_draft_version_already_accepted_raises(client: TestClient) -> None:
+    db = _fake_db(client)
+    accepted = _build_version(version_number=0, status="accepted")
+    await create_version(db, accepted)
+
+    with pytest.raises(ValueError):
+        await reject_draft_version(db, accepted.id)
+
+
+async def test_reject_draft_version_already_rejected_raises(client: TestClient) -> None:
+    db = _fake_db(client)
+    draft = await create_draft_version(db, "chapter-1", "proposed edit")
+    await reject_draft_version(db, draft.id)
+
+    with pytest.raises(ValueError):
+        await reject_draft_version(db, draft.id)
+
+
+async def test_rejected_draft_no_longer_returned_as_the_latest_draft(client: TestClient) -> None:
+    """User report: rejecting a draft used to be purely a frontend-local state change with no
+    backend call at all — the very next full refetch (via get_latest_draft_version, which is
+    what `_build_chapter_detail` uses for `pending_draft`) would resurrect it as if it had never
+    been dismissed."""
+    db = _fake_db(client)
+    draft = await create_draft_version(db, "chapter-1", "proposed edit")
+    await reject_draft_version(db, draft.id)
+
+    assert await get_latest_draft_version(db, "chapter-1") is None
 
 
 async def test_create_draft_version_at_anchor_no_accepted_version_raises(
