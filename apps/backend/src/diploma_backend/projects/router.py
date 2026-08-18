@@ -318,22 +318,64 @@ _ANCHOR_GENERATION_SYSTEM_PROMPT = (
 _RAG_EXCERPT_LIMIT = 3
 
 
-async def _accumulated_chapter_summaries(db: AsyncIOMotorDatabase, project_id: str) -> list[str]:
-    """Fetch `project_id`'s accumulated per-chapter summaries for `assemble_prompt`'s
-    `chapter_summaries` (ADR-0003 addendum, follow-up to TASK-E03-2/E17).
+# Per-chapter cap on the raw-excerpt fallback in `_accumulated_chapter_summaries` (see that
+# function's docstring for why the fallback exists at all). Short enough that a project with many
+# still-pending chapters (a bulk TOC/whole-document import, user request) doesn't blow up the
+# prompt into one huge, cache-hostile block; long enough to give the model real terminology/
+# content awareness rather than just a title.
+_CONTEXT_EXCERPT_MAX_CHARS = 600
 
-    Filters `list_chapters_for_project` down to chapters with a non-`None` `summary` (i.e. ones
-    that have been accepted at least once and summarized successfully by
-    `_summarize_and_persist_chapter`), then orders them by `created_at` — chronological creation
-    order, unlike `Chapter.order` which is only unique within a `(project_id, parent_chapter_id)`
-    scope (ADR-0014) and so cannot globally order chapters that have different parents/subchapters
-    against each other. The chapter currently being generated is deliberately included too if it
-    already has a summary from a prior accept — no exclusion logic, per this feature's scope.
+
+async def _accumulated_chapter_summaries(
+    db: AsyncIOMotorDatabase, project_id: str, *, exclude_chapter_id: str | None = None
+) -> list[str]:
+    """Fetch `project_id`'s accumulated per-chapter context for `assemble_prompt`'s
+    `chapter_summaries` (ADR-0003 addendum, follow-up to TASK-E03-2/E17), so drafting a new
+    chapter/subchapter has awareness of every other chapter/subchapter/appendix in the project —
+    not just ones that happen to already be accepted.
+
+    For each chapter `list_chapters_for_project` returns (top-level chapters, subchapters, and
+    appendix entries alike — that function applies no `parent_chapter_id` filter), in `created_at`
+    order (chronological creation order, unlike `Chapter.order`, which is only unique within a
+    `(project_id, parent_chapter_id)` scope per ADR-0014 and so cannot order chapters with
+    different parents against each other):
+
+    - If it has a persisted `summary` (accepted at least once and summarized successfully by
+      `_summarize_and_persist_chapter`), that compact summary is used, as before.
+    - Otherwise (user report: a bulk TOC/whole-document import leaves most chapters as an
+      unaccepted pending draft, so `chapter_summaries` was empty for an entire freshly-imported
+      project — nothing was visible to the model until the user accepted every single chapter
+      first), a truncated raw excerpt (`_CONTEXT_EXCERPT_MAX_CHARS`) of its latest known content
+      — the pending draft if one exists, else the current accepted content — is used instead,
+      labeled with the chapter's title so the model can tell which chapter an excerpt belongs to.
+      Skipped entirely if the chapter has neither a summary nor any content yet (nothing to add).
+
+    `exclude_chapter_id`, when given, skips the raw-excerpt fallback for that one chapter (the
+    chapter currently being generated into) — feeding a model the full pending draft it's about
+    to rewrite is redundant at best and confusing at worst. Its own persisted `summary`, if any,
+    is still included, matching this function's original behavior of never excluding a chapter's
+    summary regardless of which chapter is being generated.
     """
     chapters = await list_chapters_for_project(db, project_id)
-    summarized = [chapter for chapter in chapters if chapter.summary is not None]
-    summarized.sort(key=lambda chapter: chapter.created_at)
-    return [chapter.summary for chapter in summarized]
+    chapters.sort(key=lambda chapter: chapter.created_at)
+
+    entries: list[str] = []
+    for chapter in chapters:
+        if chapter.summary is not None:
+            entries.append(chapter.summary)
+            continue
+        if chapter.id == exclude_chapter_id:
+            continue
+        draft = await get_latest_draft_version(db, chapter.id)
+        accepted = await get_current_accepted_version(db, chapter.id)
+        content = draft.content if draft is not None else (accepted.content if accepted is not None else None)
+        if not content:
+            continue
+        excerpt = content[:_CONTEXT_EXCERPT_MAX_CHARS]
+        if len(content) > _CONTEXT_EXCERPT_MAX_CHARS:
+            excerpt += "…"
+        entries.append(f"{chapter.title}: {excerpt}")
+    return entries
 
 
 async def _fetch_rag_excerpts(instruction: str) -> list[str]:
@@ -1435,7 +1477,7 @@ async def generate_chapter_draft_endpoint(
             if body.target_block_id is not None
             else _GENERATION_SYSTEM_PROMPT
         ),
-        chapter_summaries=await _accumulated_chapter_summaries(db, project_id),
+        chapter_summaries=await _accumulated_chapter_summaries(db, project_id, exclude_chapter_id=chapter_id),
         rag_excerpts=rag_excerpts,
         user_message=body.instruction,
     )
@@ -1629,7 +1671,7 @@ async def generate_chapter_draft_stream_endpoint(
     rag_excerpts = required_excerpts + await _fetch_rag_excerpts(instruction)
     messages = assemble_prompt(
         system_prompt=_GENERATION_SYSTEM_PROMPT,
-        chapter_summaries=await _accumulated_chapter_summaries(db, project_id),
+        chapter_summaries=await _accumulated_chapter_summaries(db, project_id, exclude_chapter_id=chapter_id),
         rag_excerpts=rag_excerpts,
         user_message=instruction,
     )

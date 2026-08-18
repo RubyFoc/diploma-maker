@@ -183,3 +183,115 @@ def test_generation_sends_other_chapters_persisted_summaries_in_prompt(client: T
     )
     sent_body = generation_call.request.content.decode()
     assert "Summary of chapter one." in sent_body
+
+
+@respx.mock
+def test_generation_includes_raw_excerpt_for_unaccepted_pending_chapter(client: TestClient) -> None:
+    """User report: a bulk TOC/whole-document import leaves most chapters/subchapters/appendices
+    as unaccepted pending drafts, so they had no persisted summary and were entirely invisible to
+    later generation calls until each one was individually accepted first. A chapter with no
+    summary but a pending draft should still contribute a raw excerpt."""
+    _mock_generation_pipeline(humanized="Draft body about widgets and gadgets.")
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_one_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+    chapter_two_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Literature Review"}, headers=headers
+    ).json()["id"]
+
+    # Generate but deliberately do NOT accept chapter one — it stays an unaccepted pending draft
+    # with no summary.
+    client.post(
+        f"/projects/{project_id}/chapters/{chapter_one_id}/generate",
+        json={"instruction": "Write the introduction."},
+        headers=headers,
+    )
+    assert _chapter_summary(chapter_one_id, project_id) is None
+
+    client.post(
+        f"/projects/{project_id}/chapters/{chapter_two_id}/generate",
+        json={"instruction": "Write the literature review."},
+        headers=headers,
+    )
+
+    generation_call = next(
+        call
+        for call in respx.calls
+        if call.request.url == _CHAT_URL
+        and b'"deepseek-v4-pro"' in call.request.content
+        and b"literature review" in call.request.content
+    )
+    sent_body = generation_call.request.content.decode()
+    assert "Introduction" in sent_body
+    assert "Draft body about widgets and gadgets." in sent_body
+
+
+@respx.mock
+def test_generation_does_not_feed_a_chapter_its_own_pending_draft_as_context(
+    client: TestClient,
+) -> None:
+    _mock_generation_pipeline(humanized="First draft text unique-marker-xyz.")
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+
+    client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write the introduction."},
+        headers=headers,
+    )
+    # Regenerate the very same (still-unaccepted) chapter — its own pending draft from the call
+    # above must not be fed back to itself as "other chapters' context".
+    client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Write the introduction again."},
+        headers=headers,
+    )
+
+    generation_calls = [
+        call
+        for call in respx.calls
+        if call.request.url == _CHAT_URL and b'"deepseek-v4-pro"' in call.request.content
+    ]
+    assert len(generation_calls) == 2
+    second_call_body = generation_calls[-1].request.content.decode()
+    assert "unique-marker-xyz" not in second_call_body
+
+
+@respx.mock
+def test_generation_truncates_a_long_pending_excerpt(client: TestClient) -> None:
+    _mock_generation_pipeline(humanized="X" * 2000)
+    headers = _auth_headers(client)
+    project_id = client.post("/projects", json={"title": "Thesis"}, headers=headers).json()["id"]
+    chapter_one_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Introduction"}, headers=headers
+    ).json()["id"]
+    chapter_two_id = client.post(
+        f"/projects/{project_id}/chapters", json={"title": "Literature Review"}, headers=headers
+    ).json()["id"]
+
+    client.post(
+        f"/projects/{project_id}/chapters/{chapter_one_id}/generate",
+        json={"instruction": "Write the introduction."},
+        headers=headers,
+    )
+    client.post(
+        f"/projects/{project_id}/chapters/{chapter_two_id}/generate",
+        json={"instruction": "Write the literature review."},
+        headers=headers,
+    )
+
+    generation_call = next(
+        call
+        for call in respx.calls
+        if call.request.url == _CHAT_URL
+        and b'"deepseek-v4-pro"' in call.request.content
+        and b"literature review" in call.request.content
+    )
+    sent_body = generation_call.request.content.decode()
+    assert "X" * 601 not in sent_body
+    assert "X" * 600 in sent_body
