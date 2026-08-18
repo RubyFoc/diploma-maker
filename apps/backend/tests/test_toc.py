@@ -572,6 +572,32 @@ def test_parse_document_sections_with_subchapters_splits_heading_2_and_excludes_
     assert chapter_2[2] == []
 
 
+def test_parse_document_sections_with_subchapters_keeps_content_when_heading_2_style_bleeds_onto_body(
+) -> None:
+    """User report: subsections that DO have written body text in the uploaded document ended up
+    empty. Root cause: Word frequently leaves the paragraph right after a real subsection heading
+    still styled `Heading 2` (pasted text, "Format Painter", Ctrl+Shift+V not fully clearing
+    formatting) — that body sentence must not be misread as a second, bogus subchapter, which
+    would leave the real one's content empty."""
+    document = Document()
+    document.add_paragraph("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ", style="Heading 1")
+    document.add_paragraph("1.1 Первый подраздел", style="Heading 2")
+    # Accidentally still "Heading 2" (the style-bleed artifact), but reads like a sentence, not a
+    # title — must be treated as this subsection's body, not a new subsection boundary.
+    document.add_paragraph("Текст первого подраздела.", style="Heading 2")
+    document.add_paragraph("Продолжение текста.")
+    document.add_paragraph("1.2 Второй подраздел", style="Heading 2")
+    document.add_paragraph("Текст второго подраздела.")
+
+    chapters = parse_document_sections_with_subchapters(_docx_bytes(document))
+
+    chapter_1 = chapters[0]
+    assert [(title, content) for title, content in chapter_1[2]] == [
+        ("1.1 Первый подраздел", "Текст первого подраздела.\n\nПродолжение текста."),
+        ("1.2 Второй подраздел", "Текст второго подраздела."),
+    ]
+
+
 def test_upload_document_creates_subchapters_from_heading_2(client: TestClient) -> None:
     headers = _auth_headers(client)
     create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
@@ -598,6 +624,13 @@ def test_upload_document_creates_subchapters_from_heading_2(client: TestClient) 
         f"/projects/{project_id}/chapters/{chapter_1['id']}/subchapters", headers=headers
     ).json()
     assert [sub["title"] for sub in subchapters] == ["1.1 Первый подраздел", "1.2 Второй подраздел"]
+    # Titles alone matching isn't enough — a regression that empties a subsection's *content*
+    # while keeping its title correct (the exact user-reported bug) would slip past a
+    # titles-only assertion.
+    assert [sub["pending_draft"]["content"] for sub in subchapters] == [
+        "Текст первого подраздела.",
+        "Текст второго подраздела.",
+    ]
 
     chapter_2 = chapters_by_title["ГЛАВА 2 БЕЗ ПОДРАЗДЕЛОВ"]
     subchapters_2 = client.get(

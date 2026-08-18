@@ -98,6 +98,21 @@ _CHAPTER_CONCLUSION_RE = re.compile(r"^выводы\s+по\s+глав", re.IGNOR
 # chapter title itself, just the label of the page listing them.
 _TOC_PAGE_TITLE_WORDS = frozenset({"оглавление", "содержание", "table of contents", "contents"})
 
+# A real subsection *title* essentially never ends mid-sentence — unlike a subsection's *body*
+# text, which (being ordinary prose) almost always does. Word documents frequently carry a
+# "Heading 2"-style artifact onto the paragraph right after a real subsection heading (pasted
+# text, "Format Painter", Ctrl+Shift+V not fully clearing formatting) — without this check,
+# `parse_document_sections_with_subchapters` would misread that first body sentence as the start
+# of a brand-new (bogus) subchapter, leaving the real subsection's own content empty (user
+# report: "подглавы, которые написаны в документе, остаются пустыми"). Only applied to the
+# `Heading 2`-style signal — a dotted-number match (`_DOTTED_SUBSECTION_RE`) is trusted
+# regardless, since a body sentence starting with "1.1 " is implausible.
+_SENTENCE_TERMINATOR_CHARS = ".!?…"
+
+
+def _looks_like_a_heading(text: str) -> bool:
+    return not text.rstrip("»\"'”").endswith(tuple(_SENTENCE_TERMINATOR_CHARS))
+
 
 def _is_toc_subsection_or_page_title(text: str) -> bool:
     """`True` if `text` is a recognizable subsection/noise line that should never be treated as
@@ -392,8 +407,11 @@ def parse_document_sections_with_subchapters(
     undifferentiated body text under the parent chapter.
 
     A subsection boundary is recognized two ways, either sufficient on its own: a `Heading 2`-
-    styled paragraph (the more reliable signal, when present), or — the same fallback
-    `parse_toc_with_subchapters` uses for an unstyled TOC — a paragraph matching
+    styled paragraph that also looks like a title rather than a sentence (see
+    `_looks_like_a_heading` — guards against the common Word artifact where the paragraph right
+    after a real subsection heading keeps its `Heading 2` style by mistake, which would otherwise
+    misread that body text as a second, bogus subchapter and leave the real one empty), or — the
+    same fallback `parse_toc_with_subchapters` uses for an unstyled TOC — a paragraph matching
     `_DOTTED_SUBSECTION_RE`'s dotted-number pattern regardless of style. A paragraph matching
     `_CHAPTER_CONCLUSION_RE` (e.g. `"Выводы по главе 1"`) is never itself treated as a
     subchapter — real theses commonly style it as `Heading 2` too, but it's a summary of the
@@ -434,7 +452,8 @@ def parse_document_sections_with_subchapters(
         normalized = _normalize_heading_text(raw_text) if raw_text else ""
         dotted_match = _DOTTED_SUBSECTION_RE.match(normalized) if normalized else None
         is_subsection_boundary = bool(normalized) and (
-            style_name == _HEADING_2_STYLE or dotted_match is not None
+            dotted_match is not None
+            or (style_name == _HEADING_2_STYLE and _looks_like_a_heading(normalized))
         )
 
         if is_subsection_boundary and _CHAPTER_CONCLUSION_RE.match(normalized):
