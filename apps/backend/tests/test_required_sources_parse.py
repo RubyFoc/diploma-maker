@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from diploma_backend.llm_routing.required_sources_parse import (
     RequiredSourcesParseError,
     parse_response,
+    split_into_batches,
 )
 
 _CHAT_URL = "https://api.deepseek.com/chat/completions"
@@ -86,6 +87,40 @@ class TestParseResponse:
         assert parse_response(content) == [{"author": "Jane Doe"}]
 
 
+class TestSplitIntoBatches:
+    def test_returns_a_single_batch_for_input_at_or_below_batch_size(self) -> None:
+        entries = [f"Entry {i}." for i in range(3)]
+        text = "\n\n".join(entries)
+
+        assert split_into_batches(text, batch_size=8) == [text]
+
+    def test_splits_into_multiple_batches_above_batch_size(self) -> None:
+        entries = [f"Entry {i}." for i in range(10)]
+        text = "\n\n".join(entries)
+
+        batches = split_into_batches(text, batch_size=4)
+
+        assert len(batches) == 3
+        assert batches[0] == "\n\n".join(entries[:4])
+        assert batches[1] == "\n\n".join(entries[4:8])
+        assert batches[2] == "\n\n".join(entries[8:10])
+
+    def test_falls_back_to_one_batch_when_there_are_no_blank_line_separators(self) -> None:
+        text = "Doe, J. A single entry with no blank lines anywhere in it."
+
+        assert split_into_batches(text, batch_size=4) == [text]
+
+    def test_empty_input_returns_no_batches(self) -> None:
+        assert split_into_batches("", batch_size=4) == []
+
+    def test_ignores_extra_blank_lines_between_entries(self) -> None:
+        text = "Entry one.\n\n\n\nEntry two."
+
+        batches = split_into_batches(text, batch_size=4)
+
+        assert batches == ["Entry one.\n\nEntry two."]
+
+
 class TestParseBulkEndpoint:
     @respx.mock
     def test_returns_parsed_entries(self, client: TestClient) -> None:
@@ -104,6 +139,38 @@ class TestParseBulkEndpoint:
 
         assert response.status_code == 200
         assert response.json() == [{"author": "Jane Doe", "title": "A Study of Things", "url": None}]
+
+    @respx.mock
+    def test_splits_a_large_paste_into_multiple_batched_calls_and_merges_results_in_order(
+        self, client: TestClient
+    ) -> None:
+        """User report: a real ~20-entry GOST-style reference list came back as a 502 every
+        time, because a single model call over that many entries spent its whole completion-
+        token budget on internal reasoning and never emitted an answer (see
+        `required_sources_parse`'s module docstring). Splitting into batches of 8 fixes it."""
+        headers = _auth_headers(client)
+        # 9 entries — one more than the batch size (8) — so this must span two calls.
+        entries = [f"Author{i}, A. Title {i}." for i in range(9)]
+        pasted_text = "\n\n".join(entries)
+
+        def side_effect(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            sent_text = body["messages"][1]["content"]
+            if "Author0" in sent_text:
+                authors = [f"Author{i}" for i in range(8)]
+            else:
+                authors = ["Author8"]
+            return _chat_response(json.dumps([{"author": author} for author in authors]))
+
+        respx.post(_CHAT_URL).mock(side_effect=side_effect)
+
+        response = client.post(
+            "/projects/required-sources/parse-bulk", json={"text": pasted_text}, headers=headers
+        )
+
+        assert response.status_code == 200
+        assert [entry["author"] for entry in response.json()] == [f"Author{i}" for i in range(9)]
+        assert len(respx.calls) == 2
 
     def test_blank_text_returns_empty_list_without_calling_the_model(
         self, client: TestClient

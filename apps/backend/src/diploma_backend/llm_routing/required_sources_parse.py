@@ -1,17 +1,28 @@
 """Bulk-text required-sources parsing (user request).
 
 Turns a block of pasted bibliography text (e.g. a full GOST-style reference list, many entries
-long) into structured `(author, title)` pairs via a single fast-tier DeepSeek call, so a user
-with many must-cite sources doesn't have to add each one through `sources.router`'s
+long) into structured `(author, title, url)` triples via one or more fast-tier DeepSeek calls, so
+a user with many must-cite sources doesn't have to add each one through `sources.router`'s
 one-at-a-time Author/Work-title form.
 
-Deliberately stateless: this module only builds the prompt and parses the model's response, the
-same "thin, single-purpose function that composes with `DeepSeekClient`" shape as
-`llm_routing.title`. Persisting parsed entries as `RequiredSource` rows is the caller's job
-(`sources.router`'s existing create endpoint), not this module's.
+Deliberately stateless: this module only builds the prompt, batches the input, and parses the
+model's response, the same "thin, single-purpose function that composes with `DeepSeekClient`"
+shape as `llm_routing.title`. Persisting parsed entries as `RequiredSource` rows is the caller's
+job (`sources.router`'s existing create endpoint), not this module's.
+
+Batching (`split_into_batches`, user report — a real ~20-entry GOST-style reference list came
+back as `502 Model response was not valid JSON` every time): `deepseek-v4-flash` is a reasoning
+model that spends part of its completion-token budget on an internal chain-of-thought before
+emitting the actual answer. Measured directly against DeepSeek's API: a 20-entry bulk paste
+consumed the *entire* budget on reasoning and produced zero answer content even at
+`max_tokens=16000`, while the same prompt shape with 8 entries succeeded comfortably within 8000.
+Reasoning-token cost does not scale linearly with entry count for this model on this task — no
+single fixed `max_tokens` ceiling reliably covers "one call for the whole paste," so the input is
+instead split into fixed-size batches of entries, each parsed with its own call.
 """
 
 import json
+import re
 
 from diploma_backend.llm_routing.client import Message
 
@@ -26,13 +37,36 @@ _PARSE_SYSTEM_PROMPT = (
     "No commentary, no markdown code fences, just the JSON array itself."
 )
 
-PARSE_MAX_TOKENS = 4000
-"""Completion-token cap: generous enough for a few dozen parsed entries (a realistic bulk-paste
-upper bound) without leaving a runaway response uncapped."""
+PARSE_MAX_TOKENS = 8000
+"""Completion-token cap per batch (see module docstring) — empirically covers `_PARSE_BATCH_SIZE`
+entries' worth of reasoning + answer with headroom (8 entries measured at ~4300 completion
+tokens), without leaving a runaway response uncapped."""
+
+_PARSE_BATCH_SIZE = 8
+"""Entries per model call (see module docstring's reasoning-token measurements). A smaller value
+would mean more, slower round trips for a large paste; a larger one risks the exact
+all-budget-spent-on-reasoning failure this batching exists to avoid — 8 is the largest size
+measured to reliably finish within `PARSE_MAX_TOKENS`."""
 
 
 class RequiredSourcesParseError(Exception):
     """Raised when the model's response isn't parseable as the expected JSON array shape."""
+
+
+def split_into_batches(text: str, batch_size: int = _PARSE_BATCH_SIZE) -> list[str]:
+    """Splits `text` into blank-line-separated bibliography entries, then regroups them into
+    chunks of at most `batch_size` entries each (rejoined with blank lines) for
+    `sources.router.parse_required_sources_bulk_endpoint` to parse with one model call per chunk
+    (see module docstring).
+
+    Falls back to a single batch containing the whole input if it has no blank-line separators
+    at all (e.g. a short, single-entry paste) — nothing to split, and guessing at some other
+    boundary (a lone newline) would risk cutting a wrapped multi-line entry in half.
+    """
+    entries = [entry.strip() for entry in re.split(r"\n\s*\n", text) if entry.strip()]
+    if len(entries) <= 1:
+        return [text] if text.strip() else []
+    return ["\n\n".join(entries[i : i + batch_size]) for i in range(0, len(entries), batch_size)]
 
 
 def build_parse_messages(text: str) -> list[Message]:

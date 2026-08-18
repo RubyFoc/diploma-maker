@@ -20,6 +20,7 @@ from diploma_backend.llm_routing.required_sources_parse import (
     RequiredSourcesParseError,
     build_parse_messages,
     parse_response,
+    split_into_batches,
 )
 from diploma_backend.llm_routing.tasks import generate_with_retry_task
 from diploma_backend.projects.service import get_project
@@ -31,7 +32,14 @@ from diploma_backend.sources.required import (
 
 router = APIRouter(prefix="/projects", tags=["sources"])
 
-_PARSE_TASK_TIMEOUT_SECONDS = 30.0
+# Per-batch (see `split_into_batches`), not per-request — batches run sequentially, so this
+# bounds each individual DeepSeek call, not the endpoint's total wall time. `deepseek-v4-flash`'s
+# reasoning-token spend is unpredictable per batch, not just a function of entry count: measured
+# directly against a real 20-entry GOST-style reference list, one 8-entry batch finished in
+# ~10.6s while another (same size, denser/dissertation-style entries) took ~61s. 120s leaves
+# generous headroom above that for slower batches plus `generate_with_retry_task`'s internal
+# retries, at the cost of a slower response for a rarely-used, already-a-button-click action.
+_PARSE_TASK_TIMEOUT_SECONDS = 120.0
 
 
 async def _check_owned_project(db: AsyncIOMotorDatabase, project_id: str, owner_id: str) -> None:
@@ -116,28 +124,41 @@ async def parse_required_sources_bulk_endpoint(
     Project-independent by design (fixed path, no `{project_id}`): runs during new-project setup,
     before a project exists to scope a `RequiredSource` to. Requires auth like every other
     endpoint in this router, but doesn't otherwise touch project ownership. Returns an empty list
-    for blank input. Raises `HTTPException(502)` if the DeepSeek call itself fails, or if its
+    for blank input. Raises `HTTPException(502)` if a DeepSeek call itself fails, or if its
     response couldn't be parsed as the expected JSON shape (both genuine infra/model failures,
     not user error).
+
+    A large paste is split into multiple batched calls (`split_into_batches`, user report — see
+    that function's and this module's docstrings for why a single call over ~20 real GOST-style
+    entries reliably came back empty/unparseable), run concurrently and merged in order.
     """
     text = body.text.strip()
     if not text:
         return []
 
-    messages = build_parse_messages(text)
+    batches = split_into_batches(text)
 
-    def _run_parse() -> str:
+    def _run_parse(batch_text: str) -> str:
+        messages = build_parse_messages(batch_text)
         return generate_with_retry_task.delay("fast", messages, max_tokens=PARSE_MAX_TOKENS).get(
             timeout=_PARSE_TASK_TIMEOUT_SECONDS
         )
 
     try:
-        content = await asyncio.to_thread(_run_parse)
+        # Sequential, not `asyncio.gather`-concurrent: `task_always_eager` (tests) runs a task's
+        # body synchronously on whichever thread calls `.delay()`, and Celery's "never block on a
+        # task result from inside a task" guard misfires when multiple such eager calls overlap
+        # across threads. A real worker (production) has no such restriction either way, and a
+        # handful of sequential ~10s batch calls is an acceptable trade-off for this rarely-used,
+        # already-a-button-click, user-initiated action.
+        contents = [await asyncio.to_thread(_run_parse, batch) for batch in batches]
     except LLMRequestError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
+    entries: list[dict[str, str]] = []
     try:
-        entries = parse_response(content)
+        for content in contents:
+            entries.extend(parse_response(content))
     except RequiredSourcesParseError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
