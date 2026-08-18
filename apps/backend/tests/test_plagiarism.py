@@ -129,3 +129,36 @@ def test_flag_sentences_varied_starters_are_not_flagged_ai_like() -> None:
     flags = flag_sentences(_VARIED_HUMAN_TEXT, [])
 
     assert all(flag.is_ai_like is False for flag in flags)
+
+
+def test_score_ai_fingerprint_detects_cliche_phrases_even_with_varied_sentence_structure() -> None:
+    """`_sentence_length_uniformity`/`_repeated_starter_ratio` alone are blind to a single
+    formulaic sentence with a unique opening word and ordinary length variation — user report:
+    text using "не только ... но и" scored as clean despite reading as obviously AI-generated."""
+    cliche_text = (
+        "Названия гостиниц выполняют не только номинативную, но и рекламную функцию. "
+        "Таким образом, они формируют образ страны для туристов."
+    )
+    clean_text = (
+        "Названия гостиниц называют объект и одновременно продают его туристу. "
+        "Поэтому выбор имени редко бывает случайным."
+    )
+
+    assert score_ai_fingerprint(cliche_text) > score_ai_fingerprint(clean_text)
+
+
+def test_flag_sentences_marks_cliche_phrase_sentences_as_ai_like_even_with_a_unique_starter() -> None:
+    text = "Названия гостиниц выполняют не только номинативную, но и рекламную функцию."
+
+    flags = flag_sentences(text, [])
+
+    assert len(flags) == 1
+    assert flags[0].is_ai_like is True
+
+
+def test_flag_sentences_detects_english_cliche_phrases_too() -> None:
+    text = "Moreover, the hotel names reflect local identity."
+
+    flags = flag_sentences(text, [])
+
+    assert flags[0].is_ai_like is True

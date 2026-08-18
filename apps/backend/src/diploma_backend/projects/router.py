@@ -275,12 +275,16 @@ _FALLBACK_EXPORT_FILENAME = "thesis"
 _GENERATION_SYSTEM_PROMPT = (
     "You are an academic writing assistant helping a student draft a chapter of their thesis. "
     "Write clear, well-structured, formal academic prose that directly follows the user's "
-    "instruction. Do not include meta-commentary about being an AI. If reference sources are "
-    "provided below, ground relevant claims in them and cite each one in-text as "
-    "(Author, Year) — using the source's own title/year if no author name is given — when you "
-    "draw on it directly. Never invent a citation for a source that was not provided; if none of "
-    "the provided sources are relevant to a claim, state it plainly without a citation rather "
-    "than fabricating one."
+    "instruction, in plain and direct language rather than dense or inflated phrasing. Do not "
+    "include meta-commentary about being an AI. If reference sources are provided below, ground "
+    "relevant claims in them and cite each one in-text as (Author, Year) — using the source's "
+    "own title/year if no author name is given — when you draw on it directly. An excerpt marked "
+    "\"[REQUIRED]\" is a source the student specifically asked to have cited in this project: "
+    "work it into the chapter and cite it at least once if it is even plausibly relevant to the "
+    "instruction, rather than skipping it the way you might skip an unmarked excerpt that "
+    "doesn't fit — treat skipping a [REQUIRED] source as a last resort, not a default. Never "
+    "invent a citation for a source that was not provided; if none of the provided sources are "
+    "relevant to a claim, state it plainly without a citation rather than fabricating one."
 )
 
 # TASK-E15-1: distinct system prompt for "insert at anchor" generation mode. Reuses everything
@@ -295,12 +299,17 @@ _ANCHOR_GENERATION_SYSTEM_PROMPT = (
     "material flows naturally with what surrounds it. Output ONLY the new text to insert — do not "
     "repeat, rephrase, or continue past the surrounding context, and do not rewrite or summarize "
     "the rest of the chapter. Write clear, well-structured, formal academic prose that directly "
-    "follows the user's instruction. Do not include meta-commentary about being an AI. If "
-    "reference sources are provided below, ground relevant claims in them and cite each one "
-    "in-text as (Author, Year) — using the source's own title/year if no author name is given — "
-    "when you draw on it directly. Never invent a citation for a source that was not provided; if "
-    "none of the provided sources are relevant to a claim, state it plainly without a citation "
-    "rather than fabricating one."
+    "follows the user's instruction, in plain and direct language rather than dense or inflated "
+    "phrasing. Do not include meta-commentary about being an AI. If reference sources are "
+    "provided below, ground relevant claims in them and cite each one in-text as (Author, Year) — "
+    "using the source's own title/year if no author name is given — when you draw on it "
+    "directly. An excerpt marked \"[REQUIRED]\" is a source the student specifically asked to "
+    "have cited in this project: work it into this inserted text and cite it at least once if it "
+    "is even plausibly relevant to the instruction, rather than skipping it the way you might "
+    "skip an unmarked excerpt that doesn't fit — treat skipping a [REQUIRED] source as a last "
+    "resort, not a default. Never invent a citation for a source that was not provided; if none "
+    "of the provided sources are relevant to a claim, state it plainly without a citation rather "
+    "than fabricating one."
 )
 
 # Caps how many external search results become RAG excerpts per generation call — enough to
@@ -384,7 +393,13 @@ async def _fetch_required_source_excerpts(
         if matched is None:
             unmet.append(label)
             continue
-        excerpts.append(f"{matched.title} ({matched.year}): {matched.abstract}")
+        # "[REQUIRED]" distinguishes this from an ordinary `_fetch_rag_excerpts` result once both
+        # are concatenated into one `rag_excerpts` list for `assemble_prompt` — otherwise the
+        # model has no way to tell a must-cite source apart from a generic search hit, and (per
+        # `_GENERATION_SYSTEM_PROMPT`'s "cite it when you draw on it directly" wording) is free to
+        # judge it irrelevant and skip it like any other excerpt. See the system prompts' own
+        # `[REQUIRED]` handling for the citation obligation this marker carries.
+        excerpts.append(f"[REQUIRED] {matched.title} ({matched.year}): {matched.abstract}")
 
     return excerpts, unmet
 

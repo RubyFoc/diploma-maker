@@ -35,6 +35,30 @@ _SHINGLE_SIZE = 5
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?]+(?:\s+|$)")
 _WORD_RE = re.compile(r"[a-z0-9']+")
 
+# Stock AI-generated-text tells (Russian and English) that `_sentence_length_uniformity`/
+# `_repeated_starter_ratio` are structurally blind to: a sentence built entirely of short,
+# varied-length words with a unique opening word still reads as flatly AI-generated if it's
+# built out of one of these formulaic transitions/hedges. Not exhaustive — a hand-picked, easily
+# extended denylist of the phrases most commonly cited as AI "tells", not a general style
+# classifier. `re.IGNORECASE` throughout; `.{0,80}` between the two halves of a paired
+# construction ("не только ... но и") tolerates whatever sits between them without matching
+# across unrelated sentences (a real instance is never that far apart).
+_CLICHE_PATTERNS = [
+    re.compile(r"не\s+только\b.{0,80}?\bно\s+и\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\bnot\s+only\b.{0,80}?\bbut\s+also\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\bтаким\s+образом\b", re.IGNORECASE),
+    re.compile(r"\bважно\s+отметить\b", re.IGNORECASE),
+    re.compile(r"\bстоит\s+подчеркнуть\b", re.IGNORECASE),
+    re.compile(r"\bследует\s+отметить\b", re.IGNORECASE),
+    re.compile(r"\bв\s+заключение\b", re.IGNORECASE),
+    re.compile(r"\bне\s+будет\s+преувеличением\s+сказать\b", re.IGNORECASE),
+    re.compile(r"\bmoreover\b", re.IGNORECASE),
+    re.compile(r"\bfurthermore\b", re.IGNORECASE),
+    re.compile(r"\bit\s+is\s+important\s+to\s+note\b", re.IGNORECASE),
+    re.compile(r"\bin\s+conclusion\b", re.IGNORECASE),
+    re.compile(r"\bdelve\s+into\b", re.IGNORECASE),
+]
+
 
 def _normalize_words(text: str) -> list[str]:
     """Lowercase `text` and split it into alphanumeric words (apostrophes kept)."""
@@ -167,14 +191,36 @@ def _repeated_starter_ratio(sentences: list[str]) -> float:
     return sum(flags) / non_empty_count
 
 
+def _sentence_has_cliche(sentence: str) -> bool:
+    """`True` if `sentence` contains any of `_CLICHE_PATTERNS`' stock AI-tell phrases."""
+    return any(pattern.search(sentence) is not None for pattern in _CLICHE_PATTERNS)
+
+
+def _cliche_ratio(sentences: list[str]) -> float:
+    """Fraction of `sentences` containing a stock AI-tell phrase/transition (`_CLICHE_PATTERNS`).
+
+    Catches formulaic phrasing ("не только ... но и", "moreover", "in conclusion", ...) that
+    `_sentence_length_uniformity`/`_repeated_starter_ratio` cannot see, since a single formulaic
+    sentence needs neither uniform length nor a repeated opening word to read as AI-generated.
+    Returns 0.0 for empty input.
+    """
+    if not sentences:
+        return 0.0
+    return sum(1 for sentence in sentences if _sentence_has_cliche(sentence)) / len(sentences)
+
+
 def score_ai_fingerprint(text: str) -> float:
     """Score how strongly `text` reads as flatly AI-generated prose (0.0-1.0).
 
-    Heuristic proxy combining two surface signals, each documented in its own helper:
+    Heuristic proxy combining three surface signals, each documented in its own helper:
     - `_sentence_length_uniformity`: suspiciously uniform sentence lengths (low variance).
     - `_repeated_starter_ratio`: sentences repeatedly opening with the same starting word.
+    - `_cliche_ratio`: sentences containing a stock AI-tell phrase (e.g. "не только ... но и",
+      "moreover", "in conclusion") — added because the first two signals are purely statistical
+      and structurally cannot catch a single formulaic sentence with varied length and a unique
+      opening word (user report: text using "не только ... но и" scored as clean).
 
-    The combined score is the simple average of the two sub-signals. There is no ground-truth
+    The combined score is the simple average of the three sub-signals. There is no ground-truth
     AI-detection dataset available to calibrate against in this MVP, so this combination is
     chosen for being simple and clearly documented rather than tuned for precision; treat the
     result as a coarse signal, not a calibrated probability.
@@ -187,7 +233,8 @@ def score_ai_fingerprint(text: str) -> float:
     sentences = _sentences(text)
     uniformity = _sentence_length_uniformity(sentences)
     repeated_starters = _repeated_starter_ratio(sentences)
-    return (uniformity + repeated_starters) / 2
+    cliches = _cliche_ratio(sentences)
+    return (uniformity + repeated_starters + cliches) / 3
 
 
 @dataclass(frozen=True)
@@ -221,10 +268,12 @@ def flag_sentences(
 
     `is_ai_like` flags a sentence whose first normalized word is a "repeated starter" — shared
     with at least one other sentence in `text` (`_repeated_starter_flags`, the same per-sentence
-    signal `_repeated_starter_ratio` aggregates for the whole chapter's AI-fingerprint score).
-    This is a narrower per-sentence signal than `score_ai_fingerprint`, which also folds in
-    sentence-length uniformity — a whole-chapter-only signal with no single sentence to pin it
-    on, so it's deliberately not reflected in `is_ai_like`.
+    signal `_repeated_starter_ratio` aggregates for the whole chapter's AI-fingerprint score) —
+    OR that contains a stock AI-tell phrase (`_sentence_has_cliche`/`_cliche_ratio`'s per-sentence
+    check, e.g. "не только ... но и", "moreover"). This is a narrower per-sentence signal than
+    `score_ai_fingerprint`, which also folds in sentence-length uniformity — a whole-chapter-only
+    signal with no single sentence to pin it on, so it's deliberately not reflected in
+    `is_ai_like`.
 
     Returns one `SentenceFlag` per non-empty sentence `_sentences` finds; sentences with no
     normalizable words (rare edge case, e.g. a sentence of only punctuation) get
@@ -232,7 +281,11 @@ def flag_sentences(
     """
     sentences = _sentences(text)
     source_shingles = _shingles(_normalize_words(" ".join(source_excerpts)))
-    ai_like_flags = _repeated_starter_flags(sentences)
+    repeated_starter_flags = _repeated_starter_flags(sentences)
+    ai_like_flags = [
+        is_repeated_starter or _sentence_has_cliche(sentence)
+        for sentence, is_repeated_starter in zip(sentences, repeated_starter_flags, strict=True)
+    ]
 
     flags: list[SentenceFlag] = []
     for sentence, is_ai_like in zip(sentences, ai_like_flags, strict=True):

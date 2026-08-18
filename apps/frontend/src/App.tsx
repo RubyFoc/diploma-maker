@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
 import './App.css'
 import { AuthProvider, emptyAuthState, useAuth } from './context/AuthContext'
 import { ChatProvider, useChat } from './context/ChatContext'
@@ -7,6 +8,7 @@ import { useInstitutionConfig } from './hooks/useInstitutionConfig'
 import { strings } from './strings'
 import { DiffViewer } from './components/DiffViewer'
 import { DocumentPreview } from './components/DocumentPreview'
+import { Linkify } from './components/Linkify'
 import { Onboarding } from './components/Onboarding'
 import { PlagiarismCheckPanel } from './components/PlagiarismCheckPanel'
 import { ProjectLanding } from './components/ProjectLanding'
@@ -25,10 +27,15 @@ import {
   uploadToc,
 } from './services/projectService'
 import { streamChapterDraft } from './services/generateStream'
+import {
+  createRequiredSource,
+  listRequiredSources,
+  parseRequiredSourcesBulk,
+} from './services/requiredSourcesService'
 import { toDocumentState } from './utils/mapProject'
 import type { Chapter } from './context/DocumentContext'
 import type { InstitutionConfig } from './types/institution'
-import type { ChapterDetail, ChapterVersion } from './types/project'
+import type { ChapterDetail, ChapterVersion, RequiredSource } from './types/project'
 
 interface ChapterTarget {
   id: string
@@ -182,6 +189,13 @@ function ChatPanel() {
             role: 'assistant',
             text: result.precheck.flagged ? strings.chatDraftFlaggedMessage : strings.chatDraftReadyMessage,
           })
+          if (result.unmet_required_sources.length > 0) {
+            appendMessage({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              text: strings.chatUnmetRequiredSourcesMessage(result.unmet_required_sources),
+            })
+          }
           void getProject(projectId)
             .then((project) => {
               setDocument((previous) => ({ ...previous, title: project.title }))
@@ -210,7 +224,7 @@ function ChatPanel() {
               setChapterStreamingContent(chapterId, streamedText)
             }
           },
-          onDone: ({ version: draft, precheck }) => {
+          onDone: ({ version: draft, precheck, unmet_required_sources: unmetRequiredSources = [] }) => {
             if (isTopLevel) {
               setDocument((previous) => ({
                 ...previous,
@@ -231,6 +245,13 @@ function ChatPanel() {
               role: 'assistant',
               text: precheck.flagged ? strings.chatDraftFlaggedMessage : strings.chatDraftReadyMessage,
             })
+            if (unmetRequiredSources.length > 0) {
+              appendMessage({
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                text: strings.chatUnmetRequiredSourcesMessage(unmetRequiredSources),
+              })
+            }
             // Server-side generation may retitle the project from its default (e.g. via an
             // LLM-derived title from the user's first instruction) — refetch rather than guess
             // the new title client-side. Best-effort, mirrors the recordSignal fire-and-forget
@@ -658,6 +679,138 @@ function SubchaptersList({
   )
 }
 
+/**
+ * Lets the user view and add must-cite authors/works (TASK-E14) for the life of the project,
+ * not just once at creation time (user request: `NewProjectSetup`'s required-sources UI only
+ * ever ran during new-project setup — there was no way back into it afterward). Reuses the same
+ * one-at-a-time and bulk-paste-auto-detect flows, but posts straight to the now-existing
+ * project via `createRequiredSource` instead of staging into `DocumentContext.
+ * pendingRequiredSources` (that staging area only exists for the pre-creation case, per its own
+ * doc comment).
+ */
+function RequiredSourcesManager({ projectId }: { projectId: string }) {
+  const [sources, setSources] = useState<RequiredSource[]>([])
+  const [loadError, setLoadError] = useState(false)
+  const [author, setAuthor] = useState('')
+  const [title, setTitle] = useState('')
+  const [addError, setAddError] = useState(false)
+  const [bulkText, setBulkText] = useState('')
+  const [isBulkDetecting, setIsBulkDetecting] = useState(false)
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    listRequiredSources(projectId)
+      .then((result) => {
+        if (!cancelled) {
+          setSources(result)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoadError(true)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  const sourceKey = (author: string, title: string | null) => `${author.trim().toLowerCase()}|${(title ?? '').trim().toLowerCase()}`
+
+  const handleAdd = async (event: FormEvent) => {
+    event.preventDefault()
+    const trimmedAuthor = author.trim()
+    if (trimmedAuthor === '') {
+      return
+    }
+    setAddError(false)
+    try {
+      const created = await createRequiredSource(projectId, trimmedAuthor, title.trim() || undefined)
+      setSources((previous) => [...previous, created])
+      setAuthor('')
+      setTitle('')
+    } catch {
+      setAddError(true)
+    }
+  }
+
+  const handleBulkDetect = async (event: FormEvent) => {
+    event.preventDefault()
+    const text = bulkText.trim()
+    if (text === '' || isBulkDetecting) {
+      return
+    }
+    setIsBulkDetecting(true)
+    setBulkMessage(null)
+    try {
+      const detected = await parseRequiredSourcesBulk(text)
+      if (detected.length === 0) {
+        setBulkMessage(strings.newProjectSetupRequiredSourceBulkEmptyMessage)
+        return
+      }
+      const existingKeys = new Set(sources.map((source) => sourceKey(source.author, source.title)))
+      const newOnes = detected.filter((source) => !existingKeys.has(sourceKey(source.author, source.title ?? null)))
+      const created = await Promise.all(newOnes.map((source) => createRequiredSource(projectId, source.author, source.title)))
+      setSources((previous) => [...previous, ...created])
+      setBulkText('')
+    } catch {
+      setBulkMessage(strings.newProjectSetupRequiredSourceBulkError)
+    } finally {
+      setIsBulkDetecting(false)
+    }
+  }
+
+  return (
+    <div className="required-sources-manager">
+      <h3>{strings.requiredSourcesManagerTitle}</h3>
+      <p className="document-panel-hint">{strings.requiredSourcesManagerSubtitle}</p>
+      {loadError && <p className="document-panel-error">{strings.requiredSourcesManagerLoadError}</p>}
+      {sources.length > 0 && (
+        <ul className="onboarding-required-sources-list">
+          {sources.map((source) => (
+            <li key={source.id}>
+              <span>
+                <Linkify text={source.title ? `${source.author} — ${source.title}` : source.author} />
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {sources.length === 0 && !loadError && <p className="document-panel-hint">{strings.requiredSourcesManagerEmpty}</p>}
+      <form className="onboarding-form" onSubmit={(event) => void handleAdd(event)}>
+        <label>
+          {strings.newProjectSetupRequiredSourceAuthorLabel}
+          <input type="text" value={author} onChange={(event) => setAuthor(event.target.value)} />
+        </label>
+        <label>
+          {strings.newProjectSetupRequiredSourceTitleLabel}
+          <input type="text" value={title} onChange={(event) => setTitle(event.target.value)} />
+        </label>
+        <button type="submit">{strings.newProjectSetupRequiredSourceAddButton}</button>
+        {addError && <p className="document-panel-error">{strings.requiredSourcesManagerAddError}</p>}
+      </form>
+      <form className="onboarding-form" onSubmit={(event) => void handleBulkDetect(event)}>
+        <label>
+          {strings.newProjectSetupRequiredSourceBulkLabel}
+          <textarea
+            rows={4}
+            placeholder={strings.newProjectSetupRequiredSourceBulkPlaceholder}
+            value={bulkText}
+            onChange={(event) => setBulkText(event.target.value)}
+          />
+        </label>
+        {bulkMessage !== null && <p className="document-panel-error">{bulkMessage}</p>}
+        <button type="submit" disabled={isBulkDetecting || bulkText.trim() === ''}>
+          {isBulkDetecting
+            ? strings.newProjectSetupRequiredSourceBulkButtonPending
+            : strings.newProjectSetupRequiredSourceBulkButton}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 function DocumentPanel() {
   const { document: doc, setDocument } = useDocument()
   const { config: institutionConfig } = useInstitutionConfig(doc.institutionId)
@@ -716,6 +869,7 @@ function DocumentPanel() {
   return (
     <section className="panel document-panel" aria-label={strings.documentPanelTitle}>
       <h2>{strings.documentPanelTitle}</h2>
+      {doc.projectId && <RequiredSourcesManager projectId={doc.projectId} />}
       <DocumentUploadForm />
       <TocUploadForm />
       {doc.chapters.length === 0 ? (

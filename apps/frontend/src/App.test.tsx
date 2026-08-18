@@ -117,6 +117,12 @@ function createFetchMock(queued: Response[] = []) {
     if (/\/chapters\/.+\/subchapters$/.test(String(url)) && (!init?.method || init.method === 'GET')) {
       return Promise.resolve(jsonResponse([]))
     }
+    // `RequiredSourcesManager` fetches `/projects/{id}/required-sources` once a project is
+    // active — respond with an empty list rather than consuming a queue slot, same reasoning as
+    // institution-configs/projects/locks/operations/subchapters above.
+    if (/\/projects\/.+\/required-sources$/.test(String(url)) && (!init?.method || init.method === 'GET')) {
+      return Promise.resolve(jsonResponse([]))
+    }
     const next = queue.shift()
     return Promise.resolve(next ?? jsonResponse({ detail: 'unexpected request' }, false, 500))
   })
@@ -396,6 +402,84 @@ describe('App', () => {
     const source = await waitFor(() => latestEventSource())
     expect(source.url).toContain('/projects/p1/chapters/c2/generate/stream')
     expect(source.url).not.toContain('/chapters/c1/generate/stream')
+  })
+
+  it('lets the user add a required source while working on an already-created project', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const createdSource = {
+      id: 'rs1',
+      project_id: 'p1',
+      author: 'Jane Doe',
+      title: 'A Study of Things',
+      year: null,
+      created_at: 'now',
+    }
+    const fetchMock = createFetchMock([jsonResponse(project, true, 201), jsonResponse(createdSource, true, 201)])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
+
+    fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceAuthorLabel), {
+      target: { value: 'Jane Doe' },
+    })
+    fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceTitleLabel), {
+      target: { value: 'A Study of Things' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupRequiredSourceAddButton }))
+
+    expect(await screen.findByText('Jane Doe — A Study of Things')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8010/projects/p1/required-sources',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ author: 'Jane Doe', title: 'A Study of Things' }),
+      }),
+    )
+  })
+
+  it('shows a chat message listing required sources that could not be grounded/cited', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const chapter = {
+      id: 'c1',
+      project_id: 'p1',
+      title: strings.defaultChapterTitle,
+      order: 0,
+      created_at: 'now',
+      accepted_content: null,
+      pending_draft: null,
+    }
+    const fetchMock = createFetchMock([jsonResponse(project, true, 201), jsonResponse(chapter, true, 201)])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspaceWithInstitution()
+
+    const input = await screen.findByPlaceholderText(strings.chatInputPlaceholder)
+    fireEvent.change(input, { target: { value: 'Write the introduction' } })
+    fireEvent.click(screen.getByRole('button', { name: strings.chatSendButton }))
+
+    const source = await waitFor(() => latestEventSource())
+    act(() => {
+      source.dispatch(
+        'done',
+        JSON.stringify({
+          version: {
+            id: 'v1',
+            chapter_id: 'c1',
+            version_number: 1,
+            content: 'Generated text',
+            created_at: 'now',
+            status: 'draft',
+            parent_version_id: null,
+          },
+          precheck: { plagiarism_score: 0, ai_fingerprint_score: 0, flagged: false, reasons: [] },
+          unmet_required_sources: ['Jane Doe — A Study of Things'],
+        }),
+      )
+    })
+
+    expect(
+      await screen.findByText(strings.chatUnmetRequiredSourcesMessage(['Jane Doe — A Study of Things'])),
+    ).toBeInTheDocument()
   })
 
   it('renders a chapter\'s subchapters with their own content and lets the user accept a pending one', async () => {

@@ -95,6 +95,10 @@ def test_required_source_is_boosted_into_the_prompt(client: TestClient) -> None:
     sent_body = generation_call.request.content.decode()
     assert "Foundations of Widget Theory" in sent_body
     assert "This foundational work establishes widget theory." in sent_body
+    # Marked distinctly from an ordinary RAG excerpt (user report: required sources were being
+    # silently skipped even when found, since the model had no signal that citing them wasn't
+    # optional) — see `_fetch_required_source_excerpts`'s `"[REQUIRED]"` prefix.
+    assert "[REQUIRED] Foundations of Widget Theory" in sent_body
 
 
 @respx.mock

@@ -229,16 +229,26 @@
 }
 
 .document-upload-section,
-.toc-upload-section {
+.toc-upload-section,
+.required-sources-manager {
   margin-bottom: var(--space-5);
   padding-bottom: var(--space-4);
   border-bottom: 1px solid var(--color-border);
 }
 
 .document-upload-section h3,
-.toc-upload-section h3 {
+.toc-upload-section h3,
+.required-sources-manager h3 {
   margin: 0 0 var(--space-1);
   font-size: 0.95rem;
+}
+
+.required-sources-manager .onboarding-form {
+  margin-top: var(--space-3);
+}
+
+.required-sources-manager .onboarding-required-sources-list {
+  margin-top: var(--space-2);
 }
 
 .document-panel-hint {

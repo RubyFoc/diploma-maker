@@ -38,6 +38,8 @@ export const strings = {
   chatDraftFlaggedMessage:
     'Draft ready, but flagged by the plagiarism/AI-detection pre-check — review it carefully in the document panel.',
   chatGenerationErrorMessage: 'Generation failed. Please try again.',
+  chatUnmetRequiredSourcesMessage: (sources: string[]) =>
+    `Could not find/ground these required sources for this draft, so they were not cited: ${sources.join('; ')}.`,
   chapterStreamingLabel: 'Draft streaming in progress',
   defaultChapterTitle: 'Chapter 1',
   chapterContentEmpty: 'No accepted content yet.',
@@ -144,6 +146,12 @@ export const strings = {
   newProjectSetupRequiredSourceBulkError:
     'Could not detect sources from the pasted text. Please try again or add them one at a time above.',
   newProjectSetupRequiredSourceBulkEmptyMessage: 'No authors or works were detected in that text.',
+  requiredSourcesManagerTitle: 'Required sources',
+  requiredSourcesManagerSubtitle:
+    'Authors/works generated chapters should cite. Add more any time — not just when creating the project.',
+  requiredSourcesManagerAddError: 'Failed to add that source. Please try again.',
+  requiredSourcesManagerLoadError: 'Failed to load required sources. Please try again.',
+  requiredSourcesManagerEmpty: 'No required sources yet.',
   historyControlsTitle: 'Undo/Redo',
   historyUndoLastButton: 'Undo last edit',
   historyRedoLastButton: 'Redo last edit',
