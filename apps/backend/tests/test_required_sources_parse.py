@@ -147,20 +147,22 @@ class TestParseBulkEndpoint:
         """User report: a real ~20-entry GOST-style reference list came back as a 502 every
         time, because a single model call over that many entries spent its whole completion-
         token budget on internal reasoning and never emitted an answer (see
-        `required_sources_parse`'s module docstring). Splitting into batches of 8 fixes it."""
+        `required_sources_parse`'s module docstring). Splitting into fixed-size batches fixes
+        it.
+
+        Derives its mock responses from the real `split_into_batches` output (rather than
+        hardcoding which authors land in which call) so this test doesn't need updating every
+        time `_PARSE_BATCH_SIZE` is tuned."""
         headers = _auth_headers(client)
-        # 9 entries — one more than the batch size (8) — so this must span two calls.
         entries = [f"Author{i}, A. Title {i}." for i in range(9)]
         pasted_text = "\n\n".join(entries)
+        expected_batches = split_into_batches(pasted_text)
+        assert len(expected_batches) > 1  # sanity: this test only makes sense if it actually splits
 
         def side_effect(request: httpx.Request) -> httpx.Response:
-            body = json.loads(request.content)
-            sent_text = body["messages"][1]["content"]
-            if "Author0" in sent_text:
-                authors = [f"Author{i}" for i in range(8)]
-            else:
-                authors = ["Author8"]
-            return _chat_response(json.dumps([{"author": author} for author in authors]))
+            sent_text = json.loads(request.content)["messages"][1]["content"]
+            authors_in_batch = [f"Author{i}" for i in range(9) if entries[i] in sent_text]
+            return _chat_response(json.dumps([{"author": author} for author in authors_in_batch]))
 
         respx.post(_CHAT_URL).mock(side_effect=side_effect)
 
@@ -170,7 +172,78 @@ class TestParseBulkEndpoint:
 
         assert response.status_code == 200
         assert [entry["author"] for entry in response.json()] == [f"Author{i}" for i in range(9)]
-        assert len(respx.calls) == 2
+        assert len(respx.calls) == len(expected_batches)
+
+    @respx.mock
+    def test_retries_a_batch_that_comes_back_empty_before_giving_up_on_it(
+        self, client: TestClient
+    ) -> None:
+        """User report: the exact same batch of entries sometimes came back with a fully empty
+        completion (the model spent its whole token budget on internal reasoning) on one
+        attempt, yet succeeded moments later — a probabilistic failure, not a deterministic
+        function of the batch's content. A retry should recover it."""
+        headers = _auth_headers(client)
+        attempts = {"count": 0}
+
+        def side_effect(request: httpx.Request) -> httpx.Response:
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                return _chat_response("")
+            return _chat_response(json.dumps([{"author": "Jane Doe"}]))
+
+        respx.post(_CHAT_URL).mock(side_effect=side_effect)
+
+        response = client.post(
+            "/projects/required-sources/parse-bulk",
+            json={"text": "Doe, J. A Study of Things. 2020."},
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        assert [entry["author"] for entry in response.json()] == ["Jane Doe"]
+        assert attempts["count"] == 3
+
+    @respx.mock
+    def test_one_batch_failing_every_attempt_does_not_discard_other_successful_batches(
+        self, client: TestClient
+    ) -> None:
+        headers = _auth_headers(client)
+        entries = [f"Author{i}, A. Title {i}." for i in range(9)]
+        pasted_text = "\n\n".join(entries)
+        expected_batches = split_into_batches(pasted_text)
+        assert len(expected_batches) > 1  # sanity: need at least one batch to fail and one to survive
+        failing_batch = expected_batches[0]
+
+        def side_effect(request: httpx.Request) -> httpx.Response:
+            sent_text = json.loads(request.content)["messages"][1]["content"]
+            if sent_text == failing_batch:
+                # This batch never succeeds, no matter how many times it's retried.
+                return _chat_response("")
+            authors_in_batch = [f"Author{i}" for i in range(9) if entries[i] in sent_text]
+            return _chat_response(json.dumps([{"author": author} for author in authors_in_batch]))
+
+        respx.post(_CHAT_URL).mock(side_effect=side_effect)
+
+        response = client.post(
+            "/projects/required-sources/parse-bulk", json={"text": pasted_text}, headers=headers
+        )
+
+        assert response.status_code == 200
+        surviving_authors = [f"Author{i}" for i in range(9) if entries[i] not in failing_batch]
+        assert [entry["author"] for entry in response.json()] == surviving_authors
+
+    @respx.mock
+    def test_returns_502_only_when_every_batch_fails(self, client: TestClient) -> None:
+        headers = _auth_headers(client)
+        respx.post(_CHAT_URL).mock(return_value=_chat_response(""))
+
+        response = client.post(
+            "/projects/required-sources/parse-bulk",
+            json={"text": "Doe, J. A Study of Things. 2020."},
+            headers=headers,
+        )
+
+        assert response.status_code == 502
 
     def test_blank_text_returns_empty_list_without_calling_the_model(
         self, client: TestClient

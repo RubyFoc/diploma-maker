@@ -15,10 +15,18 @@ back as `502 Model response was not valid JSON` every time): `deepseek-v4-flash`
 model that spends part of its completion-token budget on an internal chain-of-thought before
 emitting the actual answer. Measured directly against DeepSeek's API: a 20-entry bulk paste
 consumed the *entire* budget on reasoning and produced zero answer content even at
-`max_tokens=16000`, while the same prompt shape with 8 entries succeeded comfortably within 8000.
-Reasoning-token cost does not scale linearly with entry count for this model on this task — no
-single fixed `max_tokens` ceiling reliably covers "one call for the whole paste," so the input is
-instead split into fixed-size batches of entries, each parsed with its own call.
+`max_tokens=16000`, while the same prompt shape with 8 entries usually succeeded comfortably
+within 8000. Reasoning-token cost does not scale linearly with entry count for this model on this
+task — no single fixed `max_tokens` ceiling reliably covers "one call for the whole paste," so
+the input is instead split into fixed-size batches of entries, each parsed with its own call.
+
+Even at a smaller batch size, the same failure mode still shows up *occasionally* — observed
+directly in production logs: an 8-entry batch that returned a fully empty completion (all
+`reasoning_tokens`, zero answer) despite the exact same batch succeeding on a different attempt
+moments earlier. This is a probabilistic sampling issue, not a deterministic function of batch
+content, so `sources.router.parse_required_sources_bulk_endpoint` retries a batch that comes back
+empty/unparseable a few times before giving up on it specifically (and even then, one stubborn
+batch doesn't sink the other, successfully-parsed batches in the same request).
 """
 
 import json
@@ -37,16 +45,24 @@ _PARSE_SYSTEM_PROMPT = (
     "No commentary, no markdown code fences, just the JSON array itself."
 )
 
-PARSE_MAX_TOKENS = 8000
-"""Completion-token cap per batch (see module docstring) — empirically covers `_PARSE_BATCH_SIZE`
-entries' worth of reasoning + answer with headroom (8 entries measured at ~4300 completion
-tokens), without leaving a runaway response uncapped."""
+PARSE_MAX_TOKENS = 6000
+"""Completion-token cap per batch (see module docstring) — comfortable headroom over
+`_PARSE_BATCH_SIZE` entries' worth of reasoning + answer (5 entries typically measured at well
+under half of this), without leaving a runaway response uncapped."""
 
-_PARSE_BATCH_SIZE = 8
+_PARSE_BATCH_SIZE = 3
 """Entries per model call (see module docstring's reasoning-token measurements). A smaller value
-would mean more, slower round trips for a large paste; a larger one risks the exact
-all-budget-spent-on-reasoning failure this batching exists to avoid — 8 is the largest size
-measured to reliably finish within `PARSE_MAX_TOKENS`."""
+means more, slower round trips for a large paste; a larger one raises the odds of the
+all-budget-spent-on-reasoning failure this batching exists to avoid — both 8 and 5 were still
+observed to fail occasionally in production (once even losing a whole batch to
+`PARSE_BATCH_MAX_ATTEMPTS` exhaustion on a real 20-entry paste). 3 matches the size measured to
+reliably finish in well under half of `PARSE_MAX_TOKENS` — combined with
+`parse_required_sources_bulk_endpoint`'s per-batch retry, this is about reducing how often a
+retry is even needed, not the only line of defense."""
+
+PARSE_BATCH_MAX_ATTEMPTS = 4
+"""How many times `sources.router.parse_required_sources_bulk_endpoint` retries a single batch
+that comes back empty/unparseable before giving up on it (see module docstring)."""
 
 
 class RequiredSourcesParseError(Exception):

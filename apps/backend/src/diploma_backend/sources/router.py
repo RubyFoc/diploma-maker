@@ -16,6 +16,7 @@ from diploma_backend.auth.dependencies import get_current_user_id
 from diploma_backend.db import get_database
 from diploma_backend.llm_routing.client import LLMRequestError
 from diploma_backend.llm_routing.required_sources_parse import (
+    PARSE_BATCH_MAX_ATTEMPTS,
     PARSE_MAX_TOKENS,
     RequiredSourcesParseError,
     build_parse_messages,
@@ -112,6 +113,35 @@ class ParsedRequiredSource(BaseModel):
     url: str | None = None
 
 
+async def _parse_batch_with_retries(batch_text: str) -> list[dict[str, str]] | None:
+    """Parses one batch (see `required_sources_parse.split_into_batches`), retrying up to
+    `PARSE_BATCH_MAX_ATTEMPTS` times on a failed DeepSeek call or an unparseable/empty response
+    before giving up on this batch specifically.
+
+    Both failure modes have been observed to be probabilistic rather than deterministic for a
+    given batch's content — `required_sources_parse`'s module docstring records a real
+    production case where an 8-entry batch came back with a fully empty completion (the model
+    spent its whole token budget on internal reasoning) on one attempt, for the exact same input
+    that succeeded moments earlier. Returns `None` (doesn't raise) once every attempt is
+    exhausted, so the caller can skip this batch without discarding every other,
+    successfully-parsed one in the same request.
+    """
+    messages = build_parse_messages(batch_text)
+
+    def _run() -> str:
+        return generate_with_retry_task.delay("fast", messages, max_tokens=PARSE_MAX_TOKENS).get(
+            timeout=_PARSE_TASK_TIMEOUT_SECONDS
+        )
+
+    for _attempt in range(PARSE_BATCH_MAX_ATTEMPTS):
+        try:
+            content = await asyncio.to_thread(_run)
+            return parse_response(content)
+        except (LLMRequestError, RequiredSourcesParseError):
+            continue
+    return None
+
+
 @router.post("/required-sources/parse-bulk", response_model=list[ParsedRequiredSource])
 async def parse_required_sources_bulk_endpoint(
     body: ParseRequiredSourcesBulkRequest,
@@ -124,13 +154,13 @@ async def parse_required_sources_bulk_endpoint(
     Project-independent by design (fixed path, no `{project_id}`): runs during new-project setup,
     before a project exists to scope a `RequiredSource` to. Requires auth like every other
     endpoint in this router, but doesn't otherwise touch project ownership. Returns an empty list
-    for blank input. Raises `HTTPException(502)` if a DeepSeek call itself fails, or if its
-    response couldn't be parsed as the expected JSON shape (both genuine infra/model failures,
-    not user error).
+    for blank input. Raises `HTTPException(502)` only if EVERY batch failed to parse — a single
+    stubborn batch (see `_parse_batch_with_retries`) doesn't discard every other
+    successfully-parsed one.
 
     A large paste is split into multiple batched calls (`split_into_batches`, user report — see
-    that function's and this module's docstrings for why a single call over ~20 real GOST-style
-    entries reliably came back empty/unparseable), run concurrently and merged in order.
+    that function's and `required_sources_parse`'s module docstrings for why a single call over
+    ~20 real GOST-style entries reliably came back empty/unparseable), merged in order.
     """
     text = body.text.strip()
     if not text:
@@ -138,29 +168,26 @@ async def parse_required_sources_bulk_endpoint(
 
     batches = split_into_batches(text)
 
-    def _run_parse(batch_text: str) -> str:
-        messages = build_parse_messages(batch_text)
-        return generate_with_retry_task.delay("fast", messages, max_tokens=PARSE_MAX_TOKENS).get(
-            timeout=_PARSE_TASK_TIMEOUT_SECONDS
-        )
-
-    try:
-        # Sequential, not `asyncio.gather`-concurrent: `task_always_eager` (tests) runs a task's
-        # body synchronously on whichever thread calls `.delay()`, and Celery's "never block on a
-        # task result from inside a task" guard misfires when multiple such eager calls overlap
-        # across threads. A real worker (production) has no such restriction either way, and a
-        # handful of sequential ~10s batch calls is an acceptable trade-off for this rarely-used,
-        # already-a-button-click, user-initiated action.
-        contents = [await asyncio.to_thread(_run_parse, batch) for batch in batches]
-    except LLMRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-
     entries: list[dict[str, str]] = []
-    try:
-        for content in contents:
-            entries.extend(parse_response(content))
-    except RequiredSourcesParseError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    any_batch_failed = False
+    # Sequential, not `asyncio.gather`-concurrent: `task_always_eager` (tests) runs a task's body
+    # synchronously on whichever thread calls `.delay()`, and Celery's "never block on a task
+    # result from inside a task" guard misfires when multiple such eager calls overlap across
+    # threads. A real worker (production) has no such restriction either way, and a handful of
+    # sequential ~10s batch calls is an acceptable trade-off for this rarely-used, already-a-
+    # button-click, user-initiated action.
+    for batch in batches:
+        batch_entries = await _parse_batch_with_retries(batch)
+        if batch_entries is None:
+            any_batch_failed = True
+            continue
+        entries.extend(batch_entries)
+
+    if not entries and any_batch_failed:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not parse any entries after {PARSE_BATCH_MAX_ATTEMPTS} attempts.",
+        )
 
     # A model can still mistranscribe a long URL despite being told to copy it verbatim
     # (`required_sources_parse._PARSE_SYSTEM_PROMPT`) — drop any `url` that doesn't appear
