@@ -184,6 +184,31 @@ def infer_insertion_order(existing_chapters: list[Chapter], title: str) -> int:
     return append_order
 
 
+async def reorder_chapters(
+    db: AsyncIOMotorDatabase,
+    project_id: str,
+    parent_chapter_id: str | None,
+    chapter_ids: list[str],
+) -> None:
+    """Sets each id in `chapter_ids`'s `order` field to its position in the list (0, 1, 2, ...),
+    scoped to `(project_id, parent_chapter_id)` per ADR-0014.
+
+    Used by `projects.router`'s TOC/whole-document upload endpoints to make the final `order`
+    match the just-parsed document sequence exactly, for every chapter/subchapter touched by that
+    upload — overriding both `create_chapter`'s append-at-end default for newly created siblings
+    and any stale `order` a *reused* (matched) chapter already carried from an earlier upload pass
+    or manual creation. Without this, a chapter matched by `_match_existing_chapter` keeps
+    whatever `order` it happened to get earlier while newly created siblings are appended at the
+    end of the whole list, regardless of the position `title` actually has in the newly parsed
+    TOC/document — silently producing an out-of-order chapter/subchapter list (user report).
+    """
+    for index, chapter_id in enumerate(chapter_ids):
+        await db[_CHAPTERS_COLLECTION].update_one(
+            {"id": chapter_id, "project_id": project_id, "parent_chapter_id": parent_chapter_id},
+            {"$set": {"order": index}},
+        )
+
+
 async def list_chapters_for_project(db: AsyncIOMotorDatabase, project_id: str) -> list[Chapter]:
     """Return all chapters (and subchapters) for `project_id`, ordered by `order`.
 

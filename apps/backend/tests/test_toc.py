@@ -461,6 +461,50 @@ def test_upload_document_reuses_chapters_from_a_prior_toc_upload(client: TestCli
     )
 
 
+def test_upload_document_keeps_chapters_in_document_order_even_when_one_is_unmatched(
+    client: TestClient,
+) -> None:
+    """User report: chapters/subchapters ended up out of TOC/document order. A chapter whose
+    wording doesn't match anything from a prior TOC upload used to always get appended at the very
+    end (`create_chapter` is append-only), even though the loop that creates it is walking the
+    document in the correct order — so it landed after chapters that come after it in the actual
+    document. It should instead land between its real neighbors, same as the document read it."""
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+    project_id = create_response.json()["id"]
+
+    toc_document = Document()
+    toc_document.add_paragraph("Introduction")
+    toc_document.add_paragraph("Literature Review")
+    toc_document.add_paragraph("Conclusion")
+    client.post(
+        f"/projects/{project_id}/toc/upload",
+        files={"file": ("toc.docx", _docx_bytes(toc_document), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+
+    document = Document()
+    document.add_paragraph("Introduction", style="Heading 1")
+    # Worded differently enough from the TOC's "Literature Review" that neither the exact-title
+    # nor leading-number match in `_match_existing_chapter` fires — this is the "unmatched middle
+    # chapter" case that used to get pushed to the end instead of staying in the middle.
+    document.add_paragraph("Prior Research and Related Work", style="Heading 1")
+    document.add_paragraph("Conclusion", style="Heading 1")
+
+    document_response = client.post(
+        f"/projects/{project_id}/document/upload",
+        files={"file": ("thesis.docx", _docx_bytes(document), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+
+    assert document_response.status_code == 201
+    titles = [chapter["title"] for chapter in document_response.json()["chapters"]]
+    # The unmatched "Prior Research and Related Work" sits between Introduction and Conclusion,
+    # matching the document's actual order; the TOC's now-orphaned "Literature Review" duplicate
+    # is pushed after it rather than corrupting the ordering of the touched chapters.
+    assert titles == ["Introduction", "Prior Research and Related Work", "Conclusion", "Literature Review"]
+
+
 def test_upload_document_reuses_toc_chapter_matched_only_by_leading_number(
     client: TestClient,
 ) -> None:

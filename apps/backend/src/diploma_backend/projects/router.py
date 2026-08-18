@@ -106,6 +106,7 @@ from diploma_backend.projects.service import (
     list_chapters_for_project,
     list_projects_for_user,
     list_subchapters,
+    reorder_chapters,
     update_chapter_summary,
     update_project_title,
 )
@@ -1259,19 +1260,43 @@ async def upload_toc_endpoint(
         [chapter for chapter in existing_chapters if chapter.parent_chapter_id is None]
     )
 
+    chapter_order: list[str] = []
     for title, subchapter_titles in chapters:
         chapter = _match_existing_chapter(title, by_title, by_number) or await create_chapter(
             db, project_id, title
         )
+        chapter_order.append(chapter.id)
         existing_subchapters = [
             existing for existing in existing_chapters if existing.parent_chapter_id == chapter.id
         ]
         sub_by_title, sub_by_number = _index_existing_chapters(existing_subchapters)
+        subchapter_order: list[str] = []
         for subchapter_title in subchapter_titles:
-            if _match_existing_chapter(subchapter_title, sub_by_title, sub_by_number) is None:
-                await create_chapter(
-                    db, project_id, subchapter_title, parent_chapter_id=chapter.id
-                )
+            subchapter = _match_existing_chapter(
+                subchapter_title, sub_by_title, sub_by_number
+            ) or await create_chapter(db, project_id, subchapter_title, parent_chapter_id=chapter.id)
+            subchapter_order.append(subchapter.id)
+        # Renumbers this chapter's subchapters to match the TOC's own subsection order (see
+        # `reorder_chapters`'s docstring) — matters whenever any of them were reused from an
+        # earlier upload pass rather than freshly created here. Any pre-existing subchapter this
+        # TOC pass never mentions (e.g. a stale duplicate from an earlier mismatched-title upload)
+        # is left out of the freshly-ordered run and appended after it, in its own prior relative
+        # order, rather than being interleaved into the middle of a sequence it wasn't part of.
+        touched_subchapter_ids = set(subchapter_order)
+        leftover_subchapters = [
+            existing.id
+            for existing in sorted(existing_subchapters, key=lambda existing: existing.order)
+            if existing.id not in touched_subchapter_ids
+        ]
+        await reorder_chapters(db, project_id, chapter.id, subchapter_order + leftover_subchapters)
+    # Same renumbering for the top-level chapters themselves.
+    touched_chapter_ids = set(chapter_order)
+    leftover_chapters = [
+        existing.id
+        for existing in sorted(existing_chapters, key=lambda existing: existing.order)
+        if existing.parent_chapter_id is None and existing.id not in touched_chapter_ids
+    ]
+    await reorder_chapters(db, project_id, None, chapter_order + leftover_chapters)
     return await _build_project_detail(db, project)
 
 
@@ -1331,10 +1356,12 @@ async def upload_document_endpoint(
         [chapter for chapter in existing_chapters if chapter.parent_chapter_id is None]
     )
 
+    chapter_order: list[str] = []
     for title, section_content, subchapters in sections:
         chapter = _match_existing_chapter(title, by_title, by_number) or await create_chapter(
             db, project_id, title
         )
+        chapter_order.append(chapter.id)
         if section_content.strip():
             await create_draft_version(db, chapter.id, content=section_content)
 
@@ -1342,12 +1369,35 @@ async def upload_document_endpoint(
             existing for existing in existing_chapters if existing.parent_chapter_id == chapter.id
         ]
         sub_by_title, sub_by_number = _index_existing_chapters(existing_subchapters)
+        subchapter_order: list[str] = []
         for subtitle, subcontent in subchapters:
             subchapter = _match_existing_chapter(
                 subtitle, sub_by_title, sub_by_number
             ) or await create_chapter(db, project_id, subtitle, parent_chapter_id=chapter.id)
+            subchapter_order.append(subchapter.id)
             if subcontent.strip():
                 await create_draft_version(db, subchapter.id, content=subcontent)
+        # Renumbers this chapter's subchapters to match the document's own subsection order (see
+        # `reorder_chapters`'s docstring) — matters whenever any of them were reused from an
+        # earlier upload pass rather than freshly created here. Any pre-existing subchapter this
+        # pass never mentions is left out of the freshly-ordered run and appended after it, in its
+        # own prior relative order, rather than being interleaved into the middle of a sequence it
+        # wasn't part of.
+        touched_subchapter_ids = set(subchapter_order)
+        leftover_subchapters = [
+            existing.id
+            for existing in sorted(existing_subchapters, key=lambda existing: existing.order)
+            if existing.id not in touched_subchapter_ids
+        ]
+        await reorder_chapters(db, project_id, chapter.id, subchapter_order + leftover_subchapters)
+    # Same renumbering for the top-level chapters themselves.
+    touched_chapter_ids = set(chapter_order)
+    leftover_chapters = [
+        existing.id
+        for existing in sorted(existing_chapters, key=lambda existing: existing.order)
+        if existing.parent_chapter_id is None and existing.id not in touched_chapter_ids
+    ]
+    await reorder_chapters(db, project_id, None, chapter_order + leftover_chapters)
     return await _build_project_detail(db, project)
 
 
