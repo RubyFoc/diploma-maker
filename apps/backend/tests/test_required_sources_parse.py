@@ -73,6 +73,18 @@ class TestParseResponse:
         with pytest.raises(RequiredSourcesParseError):
             parse_response(json.dumps({"author": "Jane Doe"}))
 
+    def test_parses_entries_with_a_url(self) -> None:
+        content = json.dumps([{"author": "Jane Doe", "url": "https://example.com/paper.pdf"}])
+
+        assert parse_response(content) == [
+            {"author": "Jane Doe", "url": "https://example.com/paper.pdf"}
+        ]
+
+    def test_omits_url_when_blank(self) -> None:
+        content = json.dumps([{"author": "Jane Doe", "url": "   "}])
+
+        assert parse_response(content) == [{"author": "Jane Doe"}]
+
 
 class TestParseBulkEndpoint:
     @respx.mock
@@ -91,7 +103,7 @@ class TestParseBulkEndpoint:
         )
 
         assert response.status_code == 200
-        assert response.json() == [{"author": "Jane Doe", "title": "A Study of Things"}]
+        assert response.json() == [{"author": "Jane Doe", "title": "A Study of Things", "url": None}]
 
     def test_blank_text_returns_empty_list_without_calling_the_model(
         self, client: TestClient
@@ -122,3 +134,60 @@ class TestParseBulkEndpoint:
         response = client.post("/projects/required-sources/parse-bulk", json={"text": "Doe, J."})
 
         assert response.status_code == 401
+
+    @respx.mock
+    def test_keeps_a_url_that_appears_verbatim_in_the_pasted_text(self, client: TestClient) -> None:
+        headers = _auth_headers(client)
+        pasted_text = (
+            "Doe, J. A Study of Things. 2020. URL: https://example.com/paper.pdf "
+            "(дата обращения: 05.08.2026)."
+        )
+        respx.post(_CHAT_URL).mock(
+            return_value=_chat_response(
+                json.dumps(
+                    [
+                        {
+                            "author": "Jane Doe",
+                            "title": "A Study of Things",
+                            "url": "https://example.com/paper.pdf",
+                        }
+                    ]
+                )
+            )
+        )
+
+        response = client.post(
+            "/projects/required-sources/parse-bulk", json={"text": pasted_text}, headers=headers
+        )
+
+        assert response.status_code == 200
+        assert response.json()[0]["url"] == "https://example.com/paper.pdf"
+
+    @respx.mock
+    def test_drops_a_url_the_model_invented_or_mistranscribed(self, client: TestClient) -> None:
+        """The model is told to copy a URL verbatim, but could still mangle a long one — a URL
+        that doesn't appear character-for-character in the original pasted text is dropped rather
+        than trusted and later fetched (`projects.router._fetch_required_source_excerpts`)."""
+        headers = _auth_headers(client)
+        respx.post(_CHAT_URL).mock(
+            return_value=_chat_response(
+                json.dumps(
+                    [
+                        {
+                            "author": "Jane Doe",
+                            "title": "A Study of Things",
+                            "url": "https://example.com/hallucinated-url.pdf",
+                        }
+                    ]
+                )
+            )
+        )
+
+        response = client.post(
+            "/projects/required-sources/parse-bulk",
+            json={"text": "Doe, J. A Study of Things. 2020."},
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json()[0]["url"] is None

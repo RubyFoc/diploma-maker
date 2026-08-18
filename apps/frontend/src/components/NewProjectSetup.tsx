@@ -49,6 +49,7 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting, submitError 
 
   const [requiredSourceAuthor, setRequiredSourceAuthor] = useState('')
   const [requiredSourceTitle, setRequiredSourceTitle] = useState('')
+  const [requiredSourceUrl, setRequiredSourceUrl] = useState('')
 
   const [bulkText, setBulkText] = useState('')
   const [isBulkDetecting, setIsBulkDetecting] = useState(false)
@@ -107,15 +108,21 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting, submitError 
       return
     }
     const title = requiredSourceTitle.trim()
+    const url = requiredSourceUrl.trim()
     setDocument((previous) => ({
       ...previous,
       pendingRequiredSources: [
         ...previous.pendingRequiredSources,
-        title === '' ? { author } : { author, title },
+        {
+          author,
+          ...(title !== '' ? { title } : {}),
+          ...(url !== '' ? { url } : {}),
+        },
       ],
     }))
     setRequiredSourceAuthor('')
     setRequiredSourceTitle('')
+    setRequiredSourceUrl('')
   }
 
   const handleRemoveRequiredSource = (index: number) => {
@@ -181,6 +188,14 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting, submitError 
               onChange={(event) => setRequiredSourceTitle(event.target.value)}
             />
           </label>
+          <label>
+            {strings.newProjectSetupRequiredSourceUrlLabel}
+            <input
+              type="text"
+              value={requiredSourceUrl}
+              onChange={(event) => setRequiredSourceUrl(event.target.value)}
+            />
+          </label>
           <button type="submit">{strings.newProjectSetupRequiredSourceAddButton}</button>
         </form>
         {doc.pendingRequiredSources.length > 0 && (
@@ -188,7 +203,14 @@ export function NewProjectSetup({ onSubmit, onCancel, isSubmitting, submitError 
             {doc.pendingRequiredSources.map((source, index) => (
               <li key={index}>
                 <span>
-                  <Linkify text={source.title ? `${source.author} — ${source.title}` : source.author} />
+                  <Linkify
+                    text={[
+                      source.title ? `${source.author} — ${source.title}` : source.author,
+                      source.url,
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  />
                 </span>
                 <button type="button" onClick={() => handleRemoveRequiredSource(index)}>
                   {strings.newProjectSetupRequiredSourceRemoveButton}

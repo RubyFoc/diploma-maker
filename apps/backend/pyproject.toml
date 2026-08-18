@@ -16,6 +16,7 @@ dependencies = [
     "pypdf>=5.1",
     "celery>=5.4",
     "redis>=5.2",
+    "beautifulsoup4>=4.12",
 ]
 
 [dependency-groups]

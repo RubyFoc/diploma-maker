@@ -29,10 +29,11 @@ export function createRequiredSource(
   projectId: string,
   author: string,
   title?: string,
+  url?: string,
 ): Promise<RequiredSource> {
   return request<RequiredSource>(`/projects/${projectId}/required-sources`, {
     method: 'POST',
-    body: JSON.stringify({ author, title: title ?? null }),
+    body: JSON.stringify({ author, title: title ?? null, url: url ?? null }),
   })
 }
 

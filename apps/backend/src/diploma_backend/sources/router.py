@@ -52,6 +52,7 @@ class CreateRequiredSourceRequest(BaseModel):
     author: str
     title: str | None = None
     year: int | None = None
+    url: str | None = None
 
 
 @router.post(
@@ -71,7 +72,7 @@ async def create_required_source_endpoint(
     endpoint's — this only records the requirement.
     """
     await _check_owned_project(db, project_id, owner_id)
-    return await create_required_source(db, project_id, body.author, body.title, body.year)
+    return await create_required_source(db, project_id, body.author, body.title, body.year, body.url)
 
 
 @router.get("/{project_id}/required-sources", response_model=list[RequiredSource])
@@ -100,6 +101,7 @@ class ParsedRequiredSource(BaseModel):
 
     author: str
     title: str | None = None
+    url: str | None = None
 
 
 @router.post("/required-sources/parse-bulk", response_model=list[ParsedRequiredSource])
@@ -138,5 +140,14 @@ async def parse_required_sources_bulk_endpoint(
         entries = parse_response(content)
     except RequiredSourcesParseError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    # A model can still mistranscribe a long URL despite being told to copy it verbatim
+    # (`required_sources_parse._PARSE_SYSTEM_PROMPT`) — drop any `url` that doesn't appear
+    # character-for-character in the original pasted text rather than risk persisting (and later
+    # having `projects.router` fetch) a URL the user never actually provided.
+    for entry in entries:
+        url = entry.get("url")
+        if url is not None and url not in text:
+            del entry["url"]
 
     return [ParsedRequiredSource(**entry) for entry in entries]

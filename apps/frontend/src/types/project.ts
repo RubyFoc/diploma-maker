@@ -114,6 +114,10 @@ export interface RequiredSource {
   author: string
   title: string | null
   year: number | null
+  /** A direct link to the source itself (user request) — used server-side as the first, most
+   * reliable grounding attempt before falling back to academic/web search (see
+   * `projects.router._fetch_required_source_excerpts`). */
+  url: string | null
   created_at: string
 }
 
@@ -122,4 +126,5 @@ export interface RequiredSource {
 export interface PendingRequiredSource {
   author: string
   title?: string
+  url?: string
 }

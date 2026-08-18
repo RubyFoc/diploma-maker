@@ -169,6 +169,22 @@ describe('NewProjectSetup', () => {
       expect(await screen.findByText('Jane Doe — A Study of Things')).toBeInTheDocument()
     })
 
+    it('adding a required source with a URL queues it and renders it as a clickable link', async () => {
+      renderSetup()
+      await screen.findByLabelText(strings.newProjectSetupInstitutionSelectLabel)
+
+      fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceAuthorLabel), {
+        target: { value: 'Jane Doe' },
+      })
+      fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceUrlLabel), {
+        target: { value: 'https://example.com/paper.pdf' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupRequiredSourceAddButton }))
+
+      const link = await screen.findByRole('link', { name: 'https://example.com/paper.pdf' })
+      expect(link).toHaveAttribute('href', 'https://example.com/paper.pdf')
+    })
+
     it('does not add an entry with a blank author', async () => {
       renderSetup()
       await screen.findByLabelText(strings.newProjectSetupInstitutionSelectLabel)

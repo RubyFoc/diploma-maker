@@ -18,9 +18,11 @@ from diploma_backend.llm_routing.client import Message
 _PARSE_SYSTEM_PROMPT = (
     "You extract a list of cited authors and their works from a block of pasted bibliography "
     "text (often GOST-style academic references, one entry per line or paragraph). For each "
-    "distinct work, output one entry with the author's name and the work's title. Respond with "
-    'ONLY a JSON array of objects shaped like [{"author": "...", "title": "..."}, ...] — omit '
-    '"title" (or set it to null) if an entry only names an author with no clear specific work. '
+    "distinct work, output one entry with the author's name, the work's title, and its URL if "
+    "the entry includes one (GOST-style references often have a 'URL: https://...' segment). "
+    'Respond with ONLY a JSON array of objects shaped like [{"author": "...", "title": "...", '
+    '"url": "..."}, ...] — omit "title"/"url" (or set them to null) when absent. Copy the URL '
+    "character-for-character exactly as it appears in the input, never invent or modify one. "
     "No commentary, no markdown code fences, just the JSON array itself."
 )
 
@@ -50,6 +52,11 @@ def parse_response(content: str) -> list[dict[str, str]]:
     array, so the caller can surface a clear failure rather than silently returning nothing.
     Entries missing a non-empty `author` are dropped rather than raising, since one malformed
     entry in a long pasted list shouldn't discard every other correctly-parsed one.
+
+    `url` is returned as-is, verbatim from the model — the caller (`sources.router
+    .parse_required_sources_bulk_endpoint`) is responsible for cross-checking it against the
+    original pasted text before trusting it, since a model can still transcribe a long URL
+    incorrectly despite being told to copy it exactly.
     """
     text = content.strip()
     if text.startswith("```"):
@@ -76,5 +83,8 @@ def parse_response(content: str) -> list[dict[str, str]]:
         title = item.get("title")
         if isinstance(title, str) and title.strip():
             entry["title"] = title.strip()
+        url = item.get("url")
+        if isinstance(url, str) and url.strip():
+            entry["url"] = url.strip()
         entries.append(entry)
     return entries

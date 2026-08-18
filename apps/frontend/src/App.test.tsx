@@ -517,7 +517,42 @@ describe('App', () => {
       'http://localhost:8010/projects/p1/required-sources',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ author: 'Jane Doe', title: 'A Study of Things' }),
+        body: JSON.stringify({ author: 'Jane Doe', title: 'A Study of Things', url: null }),
+      }),
+    )
+  })
+
+  it('lets the user attach a direct URL to a required source, rendered as a clickable link', async () => {
+    const project = { id: 'p1', title: 'Untitled', created_at: 'now', chapters: [] }
+    const createdSource = {
+      id: 'rs1',
+      project_id: 'p1',
+      author: 'Jane Doe',
+      title: null,
+      year: null,
+      url: 'https://example.com/paper.pdf',
+      created_at: 'now',
+    }
+    const fetchMock = createFetchMock([jsonResponse(project, true, 201), jsonResponse(createdSource, true, 201)])
+    vi.stubGlobal('fetch', fetchMock)
+    render(<App />)
+    await enterWorkspace()
+
+    fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceAuthorLabel), {
+      target: { value: 'Jane Doe' },
+    })
+    fireEvent.change(screen.getByLabelText(strings.newProjectSetupRequiredSourceUrlLabel), {
+      target: { value: 'https://example.com/paper.pdf' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: strings.newProjectSetupRequiredSourceAddButton }))
+
+    const link = await screen.findByRole('link', { name: 'https://example.com/paper.pdf' })
+    expect(link).toHaveAttribute('href', 'https://example.com/paper.pdf')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:8010/projects/p1/required-sources',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ author: 'Jane Doe', title: null, url: 'https://example.com/paper.pdf' }),
       }),
     )
   })

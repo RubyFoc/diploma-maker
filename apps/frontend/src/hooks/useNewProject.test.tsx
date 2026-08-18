@@ -83,7 +83,7 @@ describe('useNewProject', () => {
       `${BASE_URL}/projects/p1/required-sources`,
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ author: 'Jane Doe', title: 'A Study of Things' }),
+        body: JSON.stringify({ author: 'Jane Doe', title: 'A Study of Things', url: null }),
       }),
     )
     expect(result.current.doc.document.pendingRequiredSources).toEqual([])

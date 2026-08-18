@@ -764,6 +764,7 @@ function RequiredSourcesManager({ projectId }: { projectId: string }) {
   const [loadError, setLoadError] = useState(false)
   const [author, setAuthor] = useState('')
   const [title, setTitle] = useState('')
+  const [url, setUrl] = useState('')
   const [addError, setAddError] = useState(false)
   const [bulkText, setBulkText] = useState('')
   const [isBulkDetecting, setIsBulkDetecting] = useState(false)
@@ -797,10 +798,16 @@ function RequiredSourcesManager({ projectId }: { projectId: string }) {
     }
     setAddError(false)
     try {
-      const created = await createRequiredSource(projectId, trimmedAuthor, title.trim() || undefined)
+      const created = await createRequiredSource(
+        projectId,
+        trimmedAuthor,
+        title.trim() || undefined,
+        url.trim() || undefined,
+      )
       setSources((previous) => [...previous, created])
       setAuthor('')
       setTitle('')
+      setUrl('')
     } catch {
       setAddError(true)
     }
@@ -822,7 +829,9 @@ function RequiredSourcesManager({ projectId }: { projectId: string }) {
       }
       const existingKeys = new Set(sources.map((source) => sourceKey(source.author, source.title)))
       const newOnes = detected.filter((source) => !existingKeys.has(sourceKey(source.author, source.title ?? null)))
-      const created = await Promise.all(newOnes.map((source) => createRequiredSource(projectId, source.author, source.title)))
+      const created = await Promise.all(
+        newOnes.map((source) => createRequiredSource(projectId, source.author, source.title, source.url)),
+      )
       setSources((previous) => [...previous, ...created])
       setBulkText('')
     } catch {
@@ -842,7 +851,14 @@ function RequiredSourcesManager({ projectId }: { projectId: string }) {
           {sources.map((source) => (
             <li key={source.id}>
               <span>
-                <Linkify text={source.title ? `${source.author} — ${source.title}` : source.author} />
+                <Linkify
+                  text={[
+                    source.title ? `${source.author} — ${source.title}` : source.author,
+                    source.url,
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                />
               </span>
             </li>
           ))}
@@ -857,6 +873,10 @@ function RequiredSourcesManager({ projectId }: { projectId: string }) {
         <label>
           {strings.newProjectSetupRequiredSourceTitleLabel}
           <input type="text" value={title} onChange={(event) => setTitle(event.target.value)} />
+        </label>
+        <label>
+          {strings.newProjectSetupRequiredSourceUrlLabel}
+          <input type="text" value={url} onChange={(event) => setUrl(event.target.value)} />
         </label>
         <button type="submit">{strings.newProjectSetupRequiredSourceAddButton}</button>
         {addError && <p className="document-panel-error">{strings.requiredSourcesManagerAddError}</p>}

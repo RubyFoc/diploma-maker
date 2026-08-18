@@ -17,7 +17,7 @@ export function useNewProject(): (institutionId?: string | null) => Promise<void
       // (e.g. a transient network error) shouldn't stop the others or block entering the project.
       await Promise.all(
         doc.pendingRequiredSources.map((source) =>
-          createRequiredSource(project.id, source.author, source.title).catch(() => {}),
+          createRequiredSource(project.id, source.author, source.title, source.url).catch(() => {}),
         ),
       )
       setDocument(() => toDocumentState(project))

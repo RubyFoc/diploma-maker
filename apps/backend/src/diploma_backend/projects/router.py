@@ -111,8 +111,13 @@ from diploma_backend.projects.service import (
     update_project_title,
 )
 from diploma_backend.sources.client import delete_project_vectors
-from diploma_backend.sources.required import list_required_sources_for_project
+from diploma_backend.sources.required import (
+    list_required_sources_for_project,
+    update_required_source_cached_excerpt,
+)
 from diploma_backend.sources.search import SourceSearchError, search_sources
+from diploma_backend.sources.url_fetch import UrlFetchError, fetch_url_text
+from diploma_backend.sources.web_search import WebSearchError, web_search
 from diploma_backend.toc.parser import TocParseError
 from diploma_backend.toc.tasks import (
     parse_document_sections_with_subchapters_task,
@@ -419,20 +424,47 @@ async def _fetch_rag_excerpts(instruction: str) -> list[str]:
     return excerpts
 
 
+# Caps how much of a fetched-URL/web-search excerpt is fed into the prompt — a direct-URL fetch
+# or web-search snippet can be far longer than an academic abstract, and up to ~20 required
+# sources' excerpts all land in the same prompt (see module docstring's `_RAG_EXCERPT_LIMIT`
+# discussion), so each one needs a firm ceiling to keep the total prompt size sane.
+_REQUIRED_SOURCE_EXCERPT_MAX_CHARS = 4000
+
+
+def _truncate_excerpt(text: str) -> str:
+    text = text.strip()
+    if len(text) <= _REQUIRED_SOURCE_EXCERPT_MAX_CHARS:
+        return text
+    return text[:_REQUIRED_SOURCE_EXCERPT_MAX_CHARS] + "…"
+
+
 async def _fetch_required_source_excerpts(
     db: AsyncIOMotorDatabase, project_id: str
 ) -> tuple[list[str], list[str]]:
     """Boost `project_id`'s must-cite sources (TASK-E14-1/2/3) into the RAG excerpt set, each via
-    its own targeted search rather than leaving it to compete with `_fetch_rag_excerpts`'s
+    its own grounding attempt rather than leaving it to compete with `_fetch_rag_excerpts`'s
     instruction-driven, `_RAG_EXCERPT_LIMIT`-capped results.
 
-    For each `RequiredSource`, searches `f"{author} {title}"` (or just `author` if no `title`)
-    and takes the first result with an abstract as that source's excerpt. Returns
-    `(excerpts, unmet_labels)`: `unmet_labels` collects the `"{author} — {title}"` (or just
-    `author`) label of every required source that couldn't be matched to an abstract-bearing
-    result, or whose search failed outright (`SourceSearchError`) — surfaced to the caller as
-    `GenerateDraftResponse.unmet_required_sources` (see module docstring for why this fails open
-    per-source rather than fabricating a citation or blocking generation).
+    Tries, in order, stopping at the first success (user report: a required source's own direct
+    URL was collected but never actually used, and academic-only search finds almost nothing for
+    regional-journal/student-conference literature — a common shape for a real thesis's
+    bibliography):
+
+    1. `required.cached_excerpt`, if grounding already succeeded for this source before
+       (`update_required_source_cached_excerpt`) — avoids re-fetching/re-searching on every
+       generation call.
+    2. `required.url` fetched directly (`sources.url_fetch.fetch_url_text`), when present — the
+       most reliable signal available, since it's the user's own citation link rather than a
+       keyword guess. Cached on success.
+    3. Academic search (`sources.search.search_sources`, Semantic Scholar/CORE) by
+       `f"{author} {title}"`, same as before this fallback chain existed. Cached on success.
+    4. General web search (`sources.web_search.web_search`, Google Custom Search) by the same
+       query — a last resort for literature no academic API indexes at all. Cached on success.
+
+    Returns `(excerpts, unmet_labels)`: `unmet_labels` collects the `"{author} — {title}"` (or
+    just `author`) label of every required source where every attempt above failed — surfaced to
+    the caller as `GenerateDraftResponse.unmet_required_sources` (see module docstring for why
+    this fails open per-source rather than fabricating a citation or blocking generation).
     """
     required_sources = await list_required_sources_for_project(db, project_id)
     excerpts: list[str] = []
@@ -441,23 +473,49 @@ async def _fetch_required_source_excerpts(
     for required in required_sources:
         label = f"{required.author} — {required.title}" if required.title else required.author
         query = f"{required.author} {required.title}" if required.title else required.author
-        try:
-            results = await search_sources(query, limit=1)
-        except SourceSearchError:
+
+        grounding_text: str | None = required.cached_excerpt
+
+        if grounding_text is None and required.url:
+            try:
+                grounding_text = _truncate_excerpt(await fetch_url_text(required.url))
+            except UrlFetchError:
+                pass
+
+        if grounding_text is None:
+            try:
+                results = await search_sources(query, limit=1)
+                matched = next((result for result in results if result.abstract), None)
+                if matched is not None:
+                    grounding_text = _truncate_excerpt(
+                        f"{matched.title} ({matched.year}): {matched.abstract}"
+                    )
+            except SourceSearchError:
+                pass
+
+        if grounding_text is None:
+            try:
+                web_results = await web_search(query, limit=1)
+                if web_results:
+                    grounding_text = _truncate_excerpt(
+                        f"{web_results[0].title}: {web_results[0].snippet}"
+                    )
+            except WebSearchError:
+                pass
+
+        if grounding_text is None:
             unmet.append(label)
             continue
 
-        matched = next((result for result in results if result.abstract), None)
-        if matched is None:
-            unmet.append(label)
-            continue
+        if grounding_text != required.cached_excerpt:
+            await update_required_source_cached_excerpt(db, required.id, grounding_text)
         # "[REQUIRED]" distinguishes this from an ordinary `_fetch_rag_excerpts` result once both
         # are concatenated into one `rag_excerpts` list for `assemble_prompt` — otherwise the
         # model has no way to tell a must-cite source apart from a generic search hit, and (per
         # `_GENERATION_SYSTEM_PROMPT`'s "cite it when you draw on it directly" wording) is free to
         # judge it irrelevant and skip it like any other excerpt. See the system prompts' own
         # `[REQUIRED]` handling for the citation obligation this marker carries.
-        excerpts.append(f"[REQUIRED] {matched.title} ({matched.year}): {matched.abstract}")
+        excerpts.append(f"[REQUIRED] {label}: {grounding_text}")
 
     return excerpts, unmet
 

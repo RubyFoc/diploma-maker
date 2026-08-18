@@ -43,14 +43,14 @@ describe('requiredSourcesService', () => {
       `${BASE_URL}/projects/p1/required-sources`,
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ author: 'Jane Doe', title: 'A Study of Things' }),
+        body: JSON.stringify({ author: 'Jane Doe', title: 'A Study of Things', url: null }),
         headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
       }),
     )
     expect(result).toEqual(source)
   })
 
-  it('createRequiredSource omits title as null when not provided', async () => {
+  it('createRequiredSource omits title/url as null when not provided', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}, true, 201))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -58,7 +58,25 @@ describe('requiredSourcesService', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${BASE_URL}/projects/p1/required-sources`,
-      expect.objectContaining({ body: JSON.stringify({ author: 'Jane Doe', title: null }) }),
+      expect.objectContaining({ body: JSON.stringify({ author: 'Jane Doe', title: null, url: null }) }),
+    )
+  })
+
+  it('createRequiredSource posts a url when provided', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}, true, 201))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createRequiredSource('p1', 'Jane Doe', 'A Study of Things', 'https://example.com/paper.pdf')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE_URL}/projects/p1/required-sources`,
+      expect.objectContaining({
+        body: JSON.stringify({
+          author: 'Jane Doe',
+          title: 'A Study of Things',
+          url: 'https://example.com/paper.pdf',
+        }),
+      }),
     )
   })
 

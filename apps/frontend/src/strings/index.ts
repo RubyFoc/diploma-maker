@@ -136,6 +136,7 @@ export const strings = {
     'List any authors or works your thesis must cite. We will try to ground generated chapters in them.',
   newProjectSetupRequiredSourceAuthorLabel: 'Author',
   newProjectSetupRequiredSourceTitleLabel: 'Work title (optional)',
+  newProjectSetupRequiredSourceUrlLabel: 'URL (optional)',
   newProjectSetupRequiredSourceAddButton: 'Add',
   newProjectSetupRequiredSourceRemoveButton: 'Remove',
   newProjectSetupRequiredSourceBulkTitle: 'Or add many at once',

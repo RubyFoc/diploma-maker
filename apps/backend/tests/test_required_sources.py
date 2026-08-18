@@ -11,6 +11,7 @@ from diploma_backend.main import app
 from diploma_backend.sources.required import (
     create_required_source,
     list_required_sources_for_project,
+    update_required_source_cached_excerpt,
 )
 
 
@@ -43,6 +44,29 @@ class TestService:
 
         assert created.title is None
         assert created.year is None
+        assert created.url is None
+        assert created.cached_excerpt is None
+
+    async def test_create_required_source_persists_url(self) -> None:
+        db = _db()
+
+        created = await create_required_source(db, "p1", "Jane Doe", url="https://example.com/paper.pdf")
+
+        assert created.url == "https://example.com/paper.pdf"
+
+    async def test_update_required_source_cached_excerpt_persists_it(self) -> None:
+        db = _db()
+        created = await create_required_source(db, "p1", "Jane Doe")
+
+        await update_required_source_cached_excerpt(db, created.id, "Extracted text.")
+
+        sources = await list_required_sources_for_project(db, "p1")
+        assert sources[0].cached_excerpt == "Extracted text."
+
+    async def test_update_required_source_cached_excerpt_does_nothing_for_unknown_id(self) -> None:
+        db = _db()
+
+        await update_required_source_cached_excerpt(db, "does-not-exist", "Extracted text.")
 
     async def test_list_required_sources_for_project_returns_only_that_projects_sources(
         self,
@@ -82,6 +106,19 @@ class TestRouter:
         assert body["title"] == "A Study of Things"
         assert body["year"] == 2020
         assert body["project_id"] == project_id
+
+    def test_create_required_source_persists_url(self, client: TestClient) -> None:
+        headers = _auth_headers(client)
+        project_id = self._create_project(client, headers)
+
+        response = client.post(
+            f"/projects/{project_id}/required-sources",
+            json={"author": "Jane Doe", "url": "https://example.com/paper.pdf"},
+            headers=headers,
+        )
+
+        assert response.status_code == 201
+        assert response.json()["url"] == "https://example.com/paper.pdf"
 
     def test_create_required_source_only_requires_author(self, client: TestClient) -> None:
         headers = _auth_headers(client)
