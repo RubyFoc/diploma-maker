@@ -86,6 +86,15 @@ def _has_page_number_suffix(text: str) -> bool:
 # `_NUMBERED_ENTRY_RE`'s capture group.
 _DOTTED_SUBSECTION_RE = re.compile(r"^\d+(?:\.\d+)+[.):]?\s+(.+)$")
 
+# Same heuristic as `projects.router._LEADING_CHAPTER_NUMBER_RE` (duplicated locally rather than
+# imported, matching that module's own precedent of duplicating a small private helper across a
+# module boundary rather than reaching into another module's private name): pulls a chapter's
+# leading number out of its title regardless of the surrounding words. Used by
+# `parse_document_sections_with_subchapters` to synthesize a numbered subsection title when the
+# subsection's own paragraph text has no literal number of its own — see that function's inline
+# comment for why that happens.
+_CHAPTER_LEADING_NUMBER_RE = re.compile(r"^\D*(\d+)")
+
 # Matches a lettered appendix sub-item ("Приложение А. ...", "Appendix A ...") — a sub-item of
 # the single top-level "ПРИЛОЖЕНИЯ"/"Appendices" entry, not a chapter of its own.
 _APPENDIX_SUBITEM_RE = re.compile(r"^(приложение|appendix)\s+[a-zа-яё0-9]+\b", re.IGNORECASE)
@@ -422,6 +431,15 @@ def parse_document_sections_with_subchapters(
     become that chapter's own content; everything from a subsection boundary onward, up to the
     next boundary or the next `Heading 1`, becomes that subsection's content.
 
+    A `Heading 2`-styled subsection whose own paragraph text has no literal number (Word's
+    automatic multilevel-list numbering renders as "1.1" on screen but is never present in
+    `paragraph.text` — the same phenomenon this module's own docstring describes for top-level
+    chapters) gets one synthesized from its chapter's leading number plus a running count of its
+    subsections so far, matching the numbering `parse_toc_with_subchapters` keeps in a TOC
+    upload's subchapter titles — otherwise the two uploads' titles for the same real subsection
+    could never match (`projects.router._match_existing_chapter`), permanently stranding the
+    TOC's stub empty while the real content lands in an unmatched duplicate (user report).
+
     Returns `[(chapter_title, chapter_content, [(subchapter_title, subchapter_content), ...]),
     ...]`, in document order. `chapter_content` and each `subchapter_content` are empty strings
     when that section/subsection has no body paragraphs. Raises `TocParseError` under the same
@@ -464,6 +482,22 @@ def parse_document_sections_with_subchapters(
             # Keeps the leading number for a dotted subsection ("1.1 Онимы ...") in its title —
             # see `parse_toc_with_subchapters`'s identical choice for why (user request).
             subtitle = _clean_toc_entry_title(normalized)
+            if dotted_match is None:
+                # Detected purely via the `Heading 2`-style signal, with no literal number
+                # anywhere in the paragraph's own text — common when a thesis's body headings use
+                # Word's automatic multilevel-list numbering, which (like the top-level-chapter
+                # case this module's docstring already describes) renders as "1.1" on screen but
+                # is never present in `paragraph.text`, since Word generates it from the list
+                # definition rather than storing it as text. Synthesize the same "{chapter}.{n}"
+                # numbering a TOC upload keeps in ITS subchapter titles (`parse_toc_with_
+                # subchapters`), from this chapter's own leading number plus a running count of
+                # its subsections so far — otherwise the two uploads' subchapter titles can never
+                # match (`projects.router._match_existing_chapter`), leaving a TOC-created stub
+                # empty forever while its real content lands in a second, duplicate subchapter
+                # (user report).
+                chapter_number_match = _CHAPTER_LEADING_NUMBER_RE.match(current["title"])
+                if chapter_number_match is not None:
+                    subtitle = f"{chapter_number_match.group(1)}.{len(current['subchapters']) + 1} {subtitle}"
             if subtitle:
                 current["subchapters"].append({"title": subtitle, "content": []})
                 continue

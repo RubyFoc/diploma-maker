@@ -598,6 +598,75 @@ def test_parse_document_sections_with_subchapters_keeps_content_when_heading_2_s
     ]
 
 
+def test_parse_document_sections_with_subchapters_synthesizes_numbers_for_unnumbered_heading_2(
+) -> None:
+    """User report: subsections detected purely by `Heading 2` style, with no literal number
+    anywhere in the heading's own text (Word's automatic multilevel-list numbering renders "1.1"
+    on screen but never stores it as text), used to keep a bare, unnumbered title — which could
+    never match the numbered title a prior TOC upload already created for the same subsection
+    (`parse_toc_with_subchapters` always keeps the number), leaving that TOC stub empty forever
+    and the real content stranded in a second, duplicate subchapter."""
+    document = Document()
+    document.add_paragraph("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ", style="Heading 1")
+    document.add_paragraph("Онимы в системе языка", style="Heading 2")
+    document.add_paragraph("Текст первого подраздела.")
+    document.add_paragraph("Эргонимы как объект исследования", style="Heading 2")
+    document.add_paragraph("Текст второго подраздела.")
+
+    chapters = parse_document_sections_with_subchapters(_docx_bytes(document))
+
+    chapter_1 = chapters[0]
+    assert [(title, content) for title, content in chapter_1[2]] == [
+        ("1.1 Онимы в системе языка", "Текст первого подраздела."),
+        ("1.2 Эргонимы как объект исследования", "Текст второго подраздела."),
+    ]
+
+
+def test_upload_document_merges_unnumbered_heading_2_subsection_into_its_toc_stub(
+    client: TestClient,
+) -> None:
+    """End-to-end version of the synthesis test above: a TOC upload creates the numbered stub
+    first, then a whole-document upload — whose own subsection headings carry no literal number —
+    must fill that same stub in rather than creating a separate, permanently-empty duplicate."""
+    headers = _auth_headers(client)
+    create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)
+    project_id = create_response.json()["id"]
+
+    toc_document = Document()
+    toc_document.add_paragraph("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ")
+    toc_document.add_paragraph("1.1 Онимы в системе языка")
+    toc_response = client.post(
+        f"/projects/{project_id}/toc/upload",
+        files={"file": ("toc.docx", _docx_bytes(toc_document), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+    assert toc_response.status_code == 201
+    chapter_id = toc_response.json()["chapters"][0]["id"]
+    toc_subchapters = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/subchapters", headers=headers
+    ).json()
+    assert [sub["title"] for sub in toc_subchapters] == ["1.1 Онимы в системе языка"]
+
+    document = Document()
+    document.add_paragraph("ГЛАВА 1 ТЕОРЕТИЧЕСКИЕ ОСНОВЫ", style="Heading 1")
+    document.add_paragraph("Онимы в системе языка", style="Heading 2")
+    document.add_paragraph("Текст подраздела.")
+
+    document_response = client.post(
+        f"/projects/{project_id}/document/upload",
+        files={"file": ("thesis.docx", _docx_bytes(document), "application/vnd.openxmlformats")},
+        headers=headers,
+    )
+    assert document_response.status_code == 201
+
+    subchapters = client.get(
+        f"/projects/{project_id}/chapters/{chapter_id}/subchapters", headers=headers
+    ).json()
+    # Exactly one subchapter — the TOC's own stub, now filled in — not two.
+    assert [sub["title"] for sub in subchapters] == ["1.1 Онимы в системе языка"]
+    assert subchapters[0]["pending_draft"]["content"] == "Текст подраздела."
+
+
 def test_upload_document_creates_subchapters_from_heading_2(client: TestClient) -> None:
     headers = _auth_headers(client)
     create_response = client.post("/projects", json={"title": "My Thesis"}, headers=headers)

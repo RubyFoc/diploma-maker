@@ -154,37 +154,52 @@ _TOC_PARSE_TASK_TIMEOUT_SECONDS = 60.0
 # match alone would treat these as unrelated and create a duplicate chapter.
 _LEADING_CHAPTER_NUMBER_RE = re.compile(r"^\D*(\d+)")
 
+# Same idea as `_LEADING_CHAPTER_NUMBER_RE`, but for subchapters: captures the FULL dotted number
+# ("1.1", "2.3.1"), not just its first component. Using `_LEADING_CHAPTER_NUMBER_RE` for
+# subchapters too would extract "1" from every one of "1.1", "1.2", "1.3", ... — making them all
+# collide on the same key and, per `_match_existing_chapter`'s ambiguous-match guard, never match
+# by number at all (user report: subchapters from a TOC upload and their counterparts from a
+# whole-document upload ended up as separate, never-merged duplicates instead of one chapter with
+# real content).
+_LEADING_SUBSECTION_NUMBER_RE = re.compile(r"^\D*(\d+(?:\.\d+)+)")
+
 
 def _index_existing_chapters(
-    chapters: list[Chapter],
+    chapters: list[Chapter], number_re: re.Pattern[str] = _LEADING_CHAPTER_NUMBER_RE
 ) -> tuple[dict[str, Chapter], dict[str, list[Chapter]]]:
     """Builds the two lookup indexes `_match_existing_chapter` needs from a flat chapter list:
-    by exact (trimmed, case-insensitive) title, and by leading chapter number. Callers pass an
-    already-scoped list (e.g. just one chapter's subchapters, or just a project's top-level
-    chapters) — this function does no scoping of its own.
+    by exact (trimmed, case-insensitive) title, and by leading number (`number_re` — the default
+    matches a top-level chapter's single leading number; callers indexing subchapters should pass
+    `_LEADING_SUBSECTION_NUMBER_RE` instead, see its docstring). Callers pass an already-scoped
+    list (e.g. just one chapter's subchapters, or just a project's top-level chapters) — this
+    function does no scoping of its own.
     """
     by_title: dict[str, Chapter] = {}
     by_number: dict[str, list[Chapter]] = {}
     for chapter in chapters:
         by_title[chapter.title.strip().casefold()] = chapter
-        number_match = _LEADING_CHAPTER_NUMBER_RE.match(chapter.title)
+        number_match = number_re.match(chapter.title)
         if number_match is not None:
             by_number.setdefault(number_match.group(1), []).append(chapter)
     return by_title, by_number
 
 
 def _match_existing_chapter(
-    title: str, by_title: dict[str, Chapter], by_number: dict[str, list[Chapter]]
+    title: str,
+    by_title: dict[str, Chapter],
+    by_number: dict[str, list[Chapter]],
+    number_re: re.Pattern[str] = _LEADING_CHAPTER_NUMBER_RE,
 ) -> Chapter | None:
     """Finds `title`'s existing counterpart, if any: an exact (trimmed, case-insensitive) title
-    match first, else a leading-chapter-number match — but only when exactly one existing
-    chapter shares that number, since matching against an ambiguous number would risk merging
-    two genuinely different chapters that happen to both start with e.g. "1".
+    match first, else a leading-number match (`number_re`, see `_index_existing_chapters`'s
+    docstring — must be the same pattern the caller indexed `by_number` with) — but only when
+    exactly one existing chapter shares that number, since matching against an ambiguous number
+    would risk merging two genuinely different chapters that happen to both start with e.g. "1".
     """
     exact = by_title.get(title.strip().casefold())
     if exact is not None:
         return exact
-    number_match = _LEADING_CHAPTER_NUMBER_RE.match(title)
+    number_match = number_re.match(title)
     if number_match is None:
         return None
     candidates = by_number.get(number_match.group(1), [])
@@ -1269,11 +1284,13 @@ async def upload_toc_endpoint(
         existing_subchapters = [
             existing for existing in existing_chapters if existing.parent_chapter_id == chapter.id
         ]
-        sub_by_title, sub_by_number = _index_existing_chapters(existing_subchapters)
+        sub_by_title, sub_by_number = _index_existing_chapters(
+            existing_subchapters, number_re=_LEADING_SUBSECTION_NUMBER_RE
+        )
         subchapter_order: list[str] = []
         for subchapter_title in subchapter_titles:
             subchapter = _match_existing_chapter(
-                subchapter_title, sub_by_title, sub_by_number
+                subchapter_title, sub_by_title, sub_by_number, number_re=_LEADING_SUBSECTION_NUMBER_RE
             ) or await create_chapter(db, project_id, subchapter_title, parent_chapter_id=chapter.id)
             subchapter_order.append(subchapter.id)
         # Renumbers this chapter's subchapters to match the TOC's own subsection order (see
@@ -1368,11 +1385,13 @@ async def upload_document_endpoint(
         existing_subchapters = [
             existing for existing in existing_chapters if existing.parent_chapter_id == chapter.id
         ]
-        sub_by_title, sub_by_number = _index_existing_chapters(existing_subchapters)
+        sub_by_title, sub_by_number = _index_existing_chapters(
+            existing_subchapters, number_re=_LEADING_SUBSECTION_NUMBER_RE
+        )
         subchapter_order: list[str] = []
         for subtitle, subcontent in subchapters:
             subchapter = _match_existing_chapter(
-                subtitle, sub_by_title, sub_by_number
+                subtitle, sub_by_title, sub_by_number, number_re=_LEADING_SUBSECTION_NUMBER_RE
             ) or await create_chapter(db, project_id, subtitle, parent_chapter_id=chapter.id)
             subchapter_order.append(subchapter.id)
             if subcontent.strip():
