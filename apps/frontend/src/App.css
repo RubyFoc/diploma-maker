@@ -1,5 +1,13 @@
 #root {
-  max-width: 1200px;
+  /* 1200px is the original, pre-TOC-sidebar width (chat + document panels only) — the sidebar
+     column adds on top of it (`--toc-sidebar-width` + one grid gap) rather than eating into that
+     budget, so the chat/document panels stay exactly the size they were before the sidebar
+     existed on any viewport wide enough to fit all three; `min(...)` still caps it to the actual
+     viewport so it never causes horizontal overflow on narrower ones (below `.workspace`'s
+     1100px breakpoint the sidebar hides itself anyway, and the two remaining columns are free to
+     use the full 1200px again). */
+  --toc-sidebar-width: 260px;
+  max-width: min(100%, calc(1200px + var(--toc-sidebar-width) + var(--space-5)));
   margin: 0 auto;
   padding: var(--space-5) var(--space-4) var(--space-7);
 }
@@ -80,8 +88,12 @@
   display: grid;
   /* Chat | Document | table-of-contents sidebar (user request: a right-hand TOC to jump between
      chapters/subchapters faster than scrolling the whole document panel) — the sidebar gets a
-     narrower, fixed-ish column since it only ever holds short titles, unlike the other two. */
-  grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr) minmax(200px, 260px);
+     narrower, fixed-ish column since it only ever holds short titles, unlike the other two.
+     `#root`'s `max-width` was widened by exactly `--toc-sidebar-width` + one gap for this column,
+     so the chat/document `fr` split below still resolves to the same pixel widths they had before
+     the sidebar existed, on any viewport wide enough to fit all three (user request: don't shrink
+     the existing panels to make room, only extend the page further right). */
+  grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr) minmax(200px, var(--toc-sidebar-width));
   gap: var(--space-5);
   align-items: stretch;
   /* Bounds the chat/document panels to the viewport instead of growing past it (previously had
