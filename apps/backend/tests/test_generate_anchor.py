@@ -7,6 +7,7 @@ The frontend (TASK-E15-3) is a separate, later task with its own tests.
 """
 
 import asyncio
+import json
 
 import httpx
 import respx
@@ -150,6 +151,37 @@ def test_anchor_generation_happy_path_splices_new_draft(client: TestClient) -> N
     # The anchor is the chapter's first block, so only the "after" neighbor is available as
     # context (see `_anchor_context_excerpts`).
     assert "Second paragraph." in sent_body
+
+
+@respx.mock
+def test_anchor_generation_system_prompt_forbids_appending_a_bibliography_section(
+    client: TestClient,
+) -> None:
+    """Same user report as `test_projects.py`'s equivalent test, for the anchor-mode prompt:
+    an inserted snippet must never carry its own references list — the model is only told to
+    cite in-text, and nothing routes a references list anywhere in the document."""
+    headers = _auth_headers(client)
+    project_id, chapter_id = _setup_project_and_chapter(client, headers)
+    accepted = _accept_chapter_content(client, chapter_id, "First paragraph.\nSecond paragraph.")
+    anchor_block_id = accepted["manifest"][0]["id"]
+
+    respx.get(_SEMANTIC_SCHOLAR_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    _mock_generate_and_humanize()
+
+    client.post(
+        f"/projects/{project_id}/chapters/{chapter_id}/generate",
+        json={"instruction": "Add a transitional sentence.", "target_block_id": anchor_block_id},
+        headers=headers,
+    )
+
+    generation_call = next(
+        call
+        for call in respx.calls
+        if call.request.url == _CHAT_URL and b'"deepseek-v4-pro"' in call.request.content
+    )
+    system_content = json.loads(generation_call.request.content)["messages"][0]["content"]
+    assert "Список использованных источников" in system_content
+    assert "never append" in system_content.lower()
 
 
 @respx.mock

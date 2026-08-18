@@ -305,7 +305,11 @@ _GENERATION_SYSTEM_PROMPT = (
     "instruction, rather than skipping it the way you might skip an unmarked excerpt that "
     "doesn't fit — treat skipping a [REQUIRED] source as a last resort, not a default. Never "
     "invent a citation for a source that was not provided; if none of the provided sources are "
-    "relevant to a claim, state it plainly without a citation rather than fabricating one."
+    "relevant to a claim, state it plainly without a citation rather than fabricating one. Output "
+    "ONLY the chapter's own body text — cite sources in-text as they come up, but never append a "
+    "\"Список использованных источников\"/\"References\"/\"Bibliography\" heading or list of any "
+    "kind at the end; the thesis's bibliography lives in its own separate section elsewhere in "
+    "the document, not inside this chapter."
 )
 
 # TASK-E15-1: distinct system prompt for "insert at anchor" generation mode. Reuses everything
@@ -330,7 +334,10 @@ _ANCHOR_GENERATION_SYSTEM_PROMPT = (
     "skip an unmarked excerpt that doesn't fit — treat skipping a [REQUIRED] source as a last "
     "resort, not a default. Never invent a citation for a source that was not provided; if none "
     "of the provided sources are relevant to a claim, state it plainly without a citation rather "
-    "than fabricating one."
+    "than fabricating one. Output ONLY the new text to insert — cite sources in-text as they come "
+    "up, but never append a \"Список использованных источников\"/\"References\"/\"Bibliography\" "
+    "heading or list of any kind; the thesis's bibliography lives in its own separate section "
+    "elsewhere in the document, not inside this insertion."
 )
 
 # Caps how many external search results become RAG excerpts per generation call — enough to
