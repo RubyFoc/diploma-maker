@@ -30,7 +30,14 @@ from pypdf.errors import PdfReadError
 from diploma_backend.plagiarism.extract import PlagiarismFileParseError, extract_text_from_docx
 
 _ALLOWED_SCHEMES = {"http", "https"}
-_TIMEOUT_SECONDS = 20.0
+# User report: some real citation URLs (Belarusian university repositories, e.g. elib.bsu.by)
+# were measured taking 10-22s just to establish a TCP connection, on top of whatever the actual
+# transfer takes — comfortably exceeding the previous 20s ceiling and reporting the source as
+# unmet even though the link was genuinely reachable, just slow. 45s trades slower generation for
+# a source with an as-yet-uncached URL (this result is cached after the first successful fetch,
+# see `projects.router._fetch_required_source_excerpts`) for a real chance of it succeeding
+# instead of always failing outright.
+_TIMEOUT_SECONDS = 45.0
 # Caps how much of a response body is read — generous enough for any real journal-article PDF/
 # HTML page, small enough to bound memory/time spent on an unexpectedly huge or malicious file.
 _MAX_BYTES = 20 * 1024 * 1024
